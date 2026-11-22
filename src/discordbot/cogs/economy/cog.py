@@ -96,7 +96,7 @@ from discordbot.utils.interaction_responses import (
     send_private_followup,
     send_expiring_followup,
     send_ephemeral_response,
-    send_loan_request_followup,
+    send_tracked_view_followup,
     send_expiring_followup_after_private_defer,
 )
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
@@ -832,7 +832,7 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
-        await send_loan_request_followup(
+        await send_tracked_view_followup(
             interaction=interaction,
             embed=embed,
             view=CreditLoanDecisionView(
@@ -1136,7 +1136,7 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
-        await send_loan_request_followup(
+        await send_tracked_view_followup(
             interaction=interaction,
             embed=embed,
             view=CentralBankLoanDecisionView(

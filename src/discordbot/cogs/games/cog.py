@@ -24,9 +24,7 @@ from discordbot.cogs.games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs.games.bot_player import kelly_bet, count_adjusted_edge
-from discordbot.utils.message_cleanup import track_public_message
 from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
@@ -37,6 +35,7 @@ from discordbot.utils.interaction_responses import (
     send_private_followup,
     send_expiring_followup,
     send_ephemeral_response,
+    send_tracked_view_followup,
 )
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency
@@ -208,15 +207,12 @@ class GamesCogs(commands.Cog):
     @staticmethod
     async def _open_lobby(interaction: Interaction[commands.Bot], view: BaseGameLobbyView) -> None:
         """Posts a lobby as the interaction's public followup and tracks it for cleanup."""
-        embed = view.lobby_embed()
-        message = await interaction.followup.send(
-            embed=embed,
+        await send_tracked_view_followup(
+            interaction=interaction,
+            embed=view.lobby_embed(),
             view=view,
-            wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+            user_name=view.owner.account_name,
         )
-        await track_public_message(message=message, user_name=view.owner.account_name)
-        view.message = message
 
     @nextcord.slash_command(
         name="games",
