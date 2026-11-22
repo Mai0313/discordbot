@@ -44,6 +44,7 @@ from tests.helpers.discord_mocks import (
     FakeUser,
     FakeInteraction,
     FakeDiscordMessage,
+    stub_bot,
     text_channel_granting,
 )
 from tests.helpers.logfire_capture import capture_logs, capture_levels
@@ -104,7 +105,7 @@ def _research_cog(enabled: bool) -> research_cog.ResearchCogs:
 
     The key is always present so the switch alone decides `deep_research_available`.
     """
-    cog = research_cog.ResearchCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = research_cog.ResearchCogs(bot=stub_bot())
     cog.config = LLMConfig.model_construct(
         deep_research_enabled=enabled, gemini_api_key="AIza-key"
     )

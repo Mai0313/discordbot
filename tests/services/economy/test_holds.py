@@ -1,6 +1,5 @@
 """What a started Blackjack round holds of a wallet (`services/economy/holds.py`)."""
 
-from types import SimpleNamespace
 import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import Callable, Coroutine, AsyncGenerator
@@ -33,9 +32,8 @@ from discordbot.services.economy.database import (
     create_personal_loan_request,
 )
 
-from tests.helpers.casting import as_bot
 from tests.helpers.economy import seed_balance, open_personal_loan
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, stub_bot
 
 
 class _Holder(BaseModel):
@@ -306,7 +304,7 @@ async def test_a_refused_repayment_blames_the_table_only_when_a_loan_exists_and_
             proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob", actor_avatar_url=""
         )
     hold_stake(user_id=1, holder=_Holder(), amount=held)
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
+    cog = EconomyCogs(bot=stub_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
 
     await EconomyCogs.credit_repay.callback(

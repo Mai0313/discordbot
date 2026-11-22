@@ -1,7 +1,5 @@
 """Tests for the reply slot a link expansion claims before it has anything to show."""
 
-from typing import Unpack
-
 import pytest
 from nextcord import Embed, Message
 
@@ -24,7 +22,7 @@ from tests.helpers.casting import (
     make_not_found,
     make_invalid_form_body,
 )
-from tests.helpers.discord_mocks import FakeUser, DiscordPayload, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs
 
 _TEXT = "-# 正在讀取貼文⋯"
@@ -137,7 +135,9 @@ async def test_a_refused_placeholder_is_logged_without_a_traceback(
     )
 
     ((_message, fields),) = warns
-    assert (fields["message_id"], fields["channel_id"]) == (1, 2)
+    assert (fields["message_id"], fields["channel_id"]) == (source.id, source.channel.id)
+    assert fields["code"] == 0
+    assert fields["error_type"] == "Forbidden"
     assert "_exc_info" not in fields
 
 
@@ -223,22 +223,9 @@ class _RecordingExpand:
             await placeholder.deliver(embeds=[Embed(description="the card")])
 
 
-async def _interrupted(
-    source_id: int = 11, placeholder_id: int = 1
-) -> tuple[FakeDiscordMessage, FakeDiscordMessage, _FakeChannel]:
+async def _interrupted() -> tuple[FakeDiscordMessage, FakeDiscordMessage, _FakeChannel]:
     """Leaves a recorded placeholder behind with nothing delivered onto it, as a restart does."""
     source = FakeDiscordMessage()
-    # The double gives every message the same id, and the sweep tells them apart by id.
-    source.id = source_id
-    post_reply = source.reply
-
-    async def reply(**kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
-        """Posts the placeholder under its own id, which is also its row's key."""
-        posted = await post_reply(**kwargs)
-        posted.id = placeholder_id
-        return posted
-
-    source.reply = reply
     placeholder = await send_expansion_placeholder(
         message=as_message(fake=source), text=_TEXT, source=_SOURCE, url=_URL
     )
@@ -277,10 +264,10 @@ async def test_a_restart_leaves_the_expansions_this_process_started(
     is what a link pasted between READY and `on_ready` leaves, while one recorded before it is
     what the restart interrupted.
     """
-    interrupted, _placeholder, before = await _interrupted(source_id=11, placeholder_id=1)
+    interrupted, _placeholder, before = await _interrupted()
     bot = _FakeBot(channel=None)
     cog = ThreadsCogs(bot=as_bot(fake=bot))
-    _source, running, after = await _interrupted(source_id=12, placeholder_id=2)
+    _source, running, after = await _interrupted()
     bot.channel = _FakeChannel(messages={**before.messages, **after.messages})
     expand = _RecordingExpand()
     monkeypatch.setattr(cog, "_expand", expand)

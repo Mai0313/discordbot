@@ -19,7 +19,7 @@ from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_M
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 
-from tests.helpers.casting import as_bot, as_message, step_dicts
+from tests.helpers.casting import as_message, step_dicts
 from tests.helpers.gen_reply import FakeGeminiFiles
 from tests.helpers.reply_fakes import (
     FakeAuthor,
@@ -37,6 +37,7 @@ from tests.helpers.reply_fakes import (
     _media_builder,
     _context_builder,
 )
+from tests.helpers.discord_mocks import stub_bot
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
@@ -337,7 +338,7 @@ async def test_a_keyless_deployment_inlines_attachments_instead_of_dropping_them
         lambda model_name: {"text", "image", "audio", "video"},
     )
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
-    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    bot = stub_bot()
     toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), config=LLMConfig.model_construct())
     builder = toolkit.input_builder
     pic = FakeAttachment(

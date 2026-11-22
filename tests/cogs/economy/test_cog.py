@@ -53,7 +53,7 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
@@ -61,7 +61,14 @@ from tests.helpers.economy import (
     seed_participant,
     open_personal_loan,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import (
+    BOT_USER_ID,
+    FakeUser,
+    FakeGuild,
+    FakeInteraction,
+    FakeDiscordMessage,
+    stub_bot,
+)
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 if TYPE_CHECKING:
@@ -74,7 +81,7 @@ if TYPE_CHECKING:
 
 def _bot() -> commands.Bot:
     """A stub bot whose own account is the dealer, id 999."""
-    return as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    return stub_bot(user=FakeUser(user_id=BOT_USER_ID, display_name="Dealer"))
 
 
 def _alice_in_the_lending_guild() -> FakeInteraction:
@@ -140,7 +147,7 @@ async def test_a_failed_money_command_stays_private() -> None:
     someone changes on its own.
     """
     for command, kwargs in _LOAN_SETTLEMENTS:
-        cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
+        cog = EconomyCogs(bot=stub_bot())
         # Administrator, or `central_bank_call` returns from its permission branch and this
         # stops covering the failure path it was written for — while still passing, because
         # that branch defers and follows up ephemerally just like the one under test.
@@ -172,9 +179,7 @@ async def test_a_settled_loan_is_posted_to_the_channel(monkeypatch: pytest.Monke
         interaction = _alice_in_the_lending_guild()
 
         await getattr(EconomyCogs, command).callback(
-            EconomyCogs(bot=as_bot(fake=SimpleNamespace())),
-            as_interaction(fake=interaction),
-            **kwargs,
+            EconomyCogs(bot=stub_bot()), as_interaction(fake=interaction), **kwargs
         )
 
         assert interaction.response.deferred_ephemeral is True, (
@@ -416,7 +421,7 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     bot_receiver = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
     record_scheduled_deletes(monkeypatch=monkeypatch)
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=bot_receiver)))
+    cog = EconomyCogs(bot=stub_bot(user=bot_receiver))
 
     await EconomyCogs.give.callback(
         cog, as_interaction(fake=interaction), member=bot_receiver, amount="100"
@@ -672,7 +677,7 @@ async def test_a_request_over_the_ceiling_is_refused_before_anyone_is_asked() ->
     await seed_participant(user_id=1, name="alice", amount=1_000)
     assert await get_credit_ceiling(user_id=1) == 2_000
 
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
+    cog = EconomyCogs(bot=stub_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), guild_id=LENDING_GUILD)
     await EconomyCogs.central_bank_borrow.callback(
         cog, as_interaction(fake=interaction), amount="2001", monthly_rate_percent=0.0
@@ -699,7 +704,7 @@ async def test_overlapping_vip_purchases_report_one_purchase(
             return await buy_vip(user_id=user_id, name=name, avatar_url=avatar_url)
 
     monkeypatch.setattr("discordbot.cogs.economy.cog.buy_vip", overlapping_purchase)
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = EconomyCogs(bot=stub_bot())
     interactions = [
         FakeInteraction(user=FakeUser(user_id=1, name="alice"), slash_command=True)
         for _ in range(2)
@@ -745,8 +750,7 @@ async def test_vip_purchase_reports_an_insufficient_balance(balance: int) -> Non
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), slash_command=True)
 
     await EconomyCogs.vip_command.callback(
-        self=EconomyCogs(bot=as_bot(fake=SimpleNamespace())),
-        interaction=as_interaction(fake=interaction),
+        self=EconomyCogs(bot=stub_bot()), interaction=as_interaction(fake=interaction)
     )
 
     assert (
@@ -765,8 +769,7 @@ async def test_existing_vip_is_not_charged_again() -> None:
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), slash_command=True)
 
     await EconomyCogs.vip_command.callback(
-        self=EconomyCogs(bot=as_bot(fake=SimpleNamespace())),
-        interaction=as_interaction(fake=interaction),
+        self=EconomyCogs(bot=stub_bot()), interaction=as_interaction(fake=interaction)
     )
 
     assert (
@@ -784,8 +787,7 @@ async def test_exhausted_vip_purchase_does_not_claim_insufficient_balance(
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), slash_command=True)
 
     await EconomyCogs.vip_command.callback(
-        self=EconomyCogs(bot=as_bot(fake=SimpleNamespace())),
-        interaction=as_interaction(fake=interaction),
+        self=EconomyCogs(bot=stub_bot()), interaction=as_interaction(fake=interaction)
     )
 
     # Whatever it says, it is none of the answers that would misstate what happened.

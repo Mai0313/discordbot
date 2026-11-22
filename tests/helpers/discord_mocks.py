@@ -13,17 +13,23 @@ from typing import TYPE_CHECKING, Unpack, TypedDict
 import asyncio
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from itertools import count
 from unittest.mock import MagicMock
 
 from nextcord import Permissions, TextChannel, MessageFlags
 
-from tests.helpers.casting import make_not_found
+from tests.helpers.casting import as_bot, make_not_found
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
 
     from nextcord import File, Embed, Attachment, AllowedMentions
     from nextcord.ui import View
+    from nextcord.ext import commands
+
+# The id every stub bot answers to, so a test mentions it as `<@999>`.
+BOT_USER_ID = 999
+_MESSAGE_IDS = count(start=1)
 
 
 class DiscordPayload(TypedDict, total=False):
@@ -163,16 +169,18 @@ class FakeDiscordMessage:
         author: FakeUser | None = None,
         content: str = "",
         guild: FakeGuild | SimpleNamespace | None = None,
+        message_id: int | None = None,
     ) -> None:
         """Initializes the fields a listener reads and the message mutation records.
 
-        `guild` defaults to None, which a real message carries only in a DM. Setting
+        `guild` defaults to None, which a real message carries only in a DM. Each instance receives
+        a distinct auto-incrementing id unless `message_id` is passed explicitly. Setting
         `edit_failure` makes every later edit raise it, the way Discord refuses one.
         """
         self.author = author or FakeUser()
         self.content = content
         self.guild = guild
-        self.id = 1
+        self.id = next(_MESSAGE_IDS) if message_id is None else message_id
         self.channel = SimpleNamespace(id=2)
         self.flags = MessageFlags()
         self.edit_failure: Exception | None = None
@@ -294,6 +302,11 @@ def text_channel_granting(permissions: Permissions | None = None) -> MagicMock:
 
     channel.permissions_for.side_effect = permissions_for
     return channel
+
+
+def stub_bot(user: FakeUser | None = None) -> commands.Bot:
+    """A bot whose user a test can mention as `<@BOT_USER_ID>`, or a custom `user`."""
+    return as_bot(fake=SimpleNamespace(user=user or FakeUser(user_id=BOT_USER_ID, bot=True)))
 
 
 def on_ready_bot(

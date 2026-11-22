@@ -1,6 +1,5 @@
 """Tests for long-term lending and central bank lending."""
 
-from types import SimpleNamespace
 import asyncio
 from datetime import timedelta
 
@@ -46,7 +45,6 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.casting import as_bot
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
@@ -55,6 +53,7 @@ from tests.helpers.economy import (
     backdate_proposal,
     open_personal_loan,
 )
+from tests.helpers.discord_mocks import stub_bot
 from tests.helpers.economy_invariants import assert_wallet_consistent
 
 OTHER_GUILD = 777
@@ -218,7 +217,7 @@ async def test_a_restart_rejects_the_requests_an_earlier_process_left_waiting() 
         borrower_id=3, borrower_name="carol", amount=500
     )
 
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = EconomyCogs(bot=stub_bot())
     cog._started_at = started_at
     await cog.on_ready()
     await asyncio.gather(*cog._startup_tasks)

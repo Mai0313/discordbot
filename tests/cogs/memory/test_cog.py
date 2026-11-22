@@ -44,7 +44,7 @@ from tests.helpers.user_memory import (
     _memory_text,
     _stored_fact,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, stub_bot
 from tests.helpers.server_memory import GUILD_ID, SERVER_SCOPE, _server_fact
 
 
@@ -387,7 +387,7 @@ def test_catchup_boundary_rejects_non_decimal_unicode_digits() -> None:
         title="📚 跟上進度", color=DISCORD_GREEN, url="https://discord.com/channels/1/2/²"
     )
     message = SimpleNamespace(id=12345, author=SimpleNamespace(id=999), embeds=[embed])
-    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999)))
+    bot = stub_bot()
     assert _catchup_boundary(message=as_message(fake=message), bot=bot) == 12345
 
 

@@ -21,17 +21,21 @@ from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import card, seat, lobby_button
-from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy import seed_balance, get_jackpot_pool
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import (
+    BOT_USER_ID,
+    FakeUser,
+    FakeInteraction,
+    FakeDiscordMessage,
+    stub_bot,
+)
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 
 def _cog() -> GamesCogs:
     """Builds the cog around a bot whose own account is user 999, the table's bot player."""
-    return GamesCogs(
-        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    )
+    return GamesCogs(bot=stub_bot(user=FakeUser(user_id=BOT_USER_ID, display_name="Dealer")))
 
 
 async def test_bot_blackjack_participant_spreads_bet_by_true_count() -> None:

@@ -16,6 +16,7 @@ from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploa
 
 from tests.helpers.casting import as_bot
 from tests.helpers.reply_fakes import FakeClient
+from tests.helpers.discord_mocks import stub_bot
 
 if TYPE_CHECKING:
     import pytest
@@ -34,7 +35,7 @@ def test_gemini_uploader_uploads_through_the_toolkit_client(
         "slow_model",
         property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
     )
-    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    bot = stub_bot()
     keyed = ReplyToolkit(
         bot=bot,
         openai_client=FakeClient(),
@@ -55,7 +56,7 @@ def test_gemini_uploader_uploads_through_the_toolkit_client(
 
 def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:
     """The note review leaves the bot out of the sharing gate's roster only if it knows its id."""
-    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    bot = stub_bot()
     toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), config=LLMConfig.model_construct())
     assert toolkit.memory_writer.bot_user_id == 999
 
@@ -96,7 +97,7 @@ async def test_gemini_client_pins_v1beta_api_version(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(target=genai_api_client, name="has_aiohttp", value=False)
     monkeypatch.setattr(target=httpx2.AsyncClient, name="send", value=fake_send)
-    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    bot = stub_bot()
     toolkit = ReplyToolkit(
         bot=bot,
         openai_client=FakeClient(),

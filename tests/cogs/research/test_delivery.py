@@ -19,9 +19,10 @@ from discordbot.cogs.research.delivery import (
     split_report_by_sections,
 )
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden
+from tests.helpers.casting import as_message, make_forbidden
 from tests.helpers.research import _THREAD_ID, _RunStatus, _RunThread
 from tests.helpers.link_sources import hosting_planner, hosting_off_planner
+from tests.helpers.discord_mocks import stub_bot
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
@@ -284,7 +285,7 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
     posted = [str(write["content"]) for write in thread.writes]
     assert footer in posted[-1]
     builder = MessageInputBuilder(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))),
+        bot=stub_bot(),
         runtime_models=RuntimeModelCatalog(),
         # Rendering a message's text never reaches its attachments.
         attachment_handler=cast("AttachmentRenderer", SimpleNamespace()),

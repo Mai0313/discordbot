@@ -95,7 +95,7 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
             level,
             {
                 "channel_id": 200,
-                "message_id": 1,
+                "message_id": message.id,
                 "code": failure.code,
                 "error_type": type(failure).__name__,
             },
