@@ -8,6 +8,7 @@ unpartitioned input cannot write into compartments:
 """
 
 from functools import partial
+from collections.abc import Callable
 
 import logfire
 
@@ -106,17 +107,26 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
     return True
 
 
-async def forget_tone(run: ConsolidationRun, forgets: str, evidence_only: bool = False) -> bool:
+async def forget_tone(
+    run: ConsolidationRun,
+    forgets: str,
+    evidence_only: bool = False,
+    pending_edits: list[Callable[[str], str]] | None = None,
+) -> bool:
     """Removes lines and evidence named by `forgets` from the per-user tone tier.
 
     Offers only evidence stamped before the newest forget request; the model replies with line
-    and entry indices only.
+    and entry indices only. When `pending_edits` is supplied, evidence-file rewrites are appended
+    to it instead of written to disk immediately, and prior entries in `pending_edits` are applied
+    in memory when scanning surviving tone evidence.
 
     Args:
         run (ConsolidationRun): Active consolidation or rebuild run context.
         forgets (str): Raw forget-request entries for this segment.
         evidence_only (bool): Whether to skip the note itself when a rebuild is about to
             rewrite it from the surviving evidence.
+        pending_edits (list[Callable[[str], str]] | None): Optional collector deferring
+            `rewrite_evidence` disk writes until the caller's commit point.
 
     Returns:
         True when the pass succeeded or had nothing to offer; False when the call failed or a
@@ -129,10 +139,11 @@ async def forget_tone(run: ConsolidationRun, forgets: str, evidence_only: bool =
     # Preserve text on the same line after TONE_HEADER so it is offered to the forget pass.
     body = note.removeprefix(TONE_HEADER).lstrip(" ：:") if note.startswith(TONE_HEADER) else ""
     note_lines = tuple(line for line in body.splitlines() if line.strip())
+    corpus = read_evidence(scope=run.scope)
+    for pending_edit in pending_edits or ():
+        corpus = pending_edit(corpus)
     evidence = [
-        observation
-        for observation in _tone_observations(text=read_evidence(scope=run.scope))
-        if observation[0] < cutoff
+        observation for observation in _tone_observations(text=corpus) if observation[0] < cutoff
     ]
     if not note_lines and not evidence:
         return True
@@ -158,7 +169,11 @@ async def forget_tone(run: ConsolidationRun, forgets: str, evidence_only: bool =
         if number in result.drop_evidence
     }
     if doomed:
-        rewrite_evidence(scope=run.scope, edit=partial(_drop_observations, doomed=doomed))
+        edit = partial(_drop_observations, doomed=doomed)
+        if pending_edits is not None:
+            pending_edits.append(edit)
+        else:
+            await rewrite_evidence(scope=run.scope, edit=edit, started_at=run.started_at)
     return True
 
 

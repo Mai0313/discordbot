@@ -336,7 +336,19 @@ class MemoryCogs(commands.Cog):
         if catchup_on_cooldown(scope=scope):
             await self._refuse_catchup(interaction=interaction, text="記過了啦 吵啥")
             return
-        writer = self.memory_writer
+        try:
+            writer = self.memory_writer
+        except OpenAIError as exc:
+            # OpenAI SDK raises if no API key is configured.
+            logfire.info("memory catchup needs the proxy key; none is configured", scope=scope)
+            embed = Embed(
+                title=_CATCHUP_TITLE,
+                description=f"```\n{extract_friendly_error(exc=exc)}\n```",
+                color=DISCORD_RED,
+            )
+            embed.set_footer(text=type(exc).__name__)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
         # Claim before the first await to prevent concurrent races; released on any early exit.
         start_catchup_cooldown(scope=scope)
         started = False
@@ -372,17 +384,19 @@ class MemoryCogs(commands.Cog):
         )
         await interaction.response.send_message(embed=start)
         if interaction.guild_id is not None:
-            _catchup_tasks.set(
-                key=interaction.guild_id,
-                value=asyncio.create_task(
-                    self._run_catchup(
-                        interaction=interaction,
-                        messages=history.messages,
-                        intro=intro,
-                        read_until=history.read_until,
-                        writer=writer,
-                    )
-                ),
+            guild_id = interaction.guild_id
+            task = asyncio.create_task(
+                self._run_catchup(
+                    interaction=interaction,
+                    messages=history.messages,
+                    intro=intro,
+                    read_until=history.read_until,
+                    writer=writer,
+                )
+            )
+            _catchup_tasks.set(key=guild_id, value=task)
+            task.add_done_callback(
+                lambda finished: _finish_memory_catchup(guild_id=guild_id, task=finished)
             )
         return True
 
@@ -415,8 +429,12 @@ class MemoryCogs(commands.Cog):
                     transcript=transcript,
                     writer=writer,
                 )
-        except TimeoutError:
-            logfire.warn("Memory catchup ran out of the interaction's time", guild_id=guild.id)
+        except TimeoutError as error:
+            logfire.warn(
+                "Memory catchup ran out of the interaction's time",
+                guild_id=guild.id,
+                _exc_info=error,
+            )
             observations = None
         except Exception as exc:
             # Broad on purpose: this is a detached task, and the start message must still be
@@ -541,6 +559,26 @@ class MemoryCogs(commands.Cog):
             embed=build_clear_confirm_embed(), view=view, ephemeral=True
         )
         view.bind_origin(interaction=interaction)
+
+
+def _finish_memory_catchup(guild_id: int, task: asyncio.Task[None]) -> None:
+    """Clears the in-flight slot and logs uncaught failures of a background catchup."""
+    if _catchup_tasks.get(key=guild_id) is task:
+        _catchup_tasks.pop(key=guild_id)
+    if task.cancelled():
+        # Cancelled tasks raise CancelledError from result(); skip logging on shutdown.
+        return
+    try:
+        task.result()
+    except Exception as exc:
+        # Broad on purpose: this is a done-callback boundary, so anything the
+        # catchup raised must be swallowed here or asyncio drops it silently.
+        logfire.error(
+            "Background memory catchup crashed",
+            guild_id=guild_id,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
 
 
 class _CatchupHistory(BaseModel):

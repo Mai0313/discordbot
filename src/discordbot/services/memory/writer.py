@@ -766,18 +766,20 @@ def _sanitize_observation(
         text=redact_secrets(text=observation.evidence_quote), max_chars=OBSERVATION_QUOTE_MAX_CHARS
     )
     # Deterministic sharing backstop: scan pre-trim text so truncated tokens cannot bypass the
-    # gate. Only tightens to `source_only`; never loosens a model-chosen `source_only` to `global`.
-    scanned = f"{observation.summary_zh}\n{observation.evidence_quote}"
+    # gate. Only tightens personal observations to `source_only`; server memory has no sharing
+    # compartments and never loosens a model-chosen `source_only` to `global`.
     sharing = observation.sharing
-    if (
-        category == "recent_context"
-        or observation.evidence_kind == "ongoing_situation"
-        or _mentions_other_person(
-            text=scanned, target_user_id=target_user_id, bot_user_id=bot_user_id
-        )
-        or _mentions_roster_name(text=scanned, roster=roster)
-    ):
-        sharing = "source_only"
+    if target_user_id is not None:
+        scanned = f"{observation.summary_zh}\n{observation.evidence_quote}"
+        if (
+            category == "recent_context"
+            or observation.evidence_kind == "ongoing_situation"
+            or _mentions_other_person(
+                text=scanned, target_user_id=target_user_id, bot_user_id=bot_user_id
+            )
+            or _mentions_roster_name(text=scanned, roster=roster)
+        ):
+            sharing = "source_only"
     return MemoryObservation(
         category=category,
         subject_is_target_user=observation.subject_is_target_user,

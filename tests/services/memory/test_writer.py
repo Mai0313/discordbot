@@ -783,3 +783,45 @@ def test_transcript_without_a_reply_has_no_assistant_block() -> None:
         message_list=[{"role": "user", "content": "小李 (lee) [id: 1]: 週五打瓦"}], full_reply=""
     )
     assert "[message 2 |" not in transcript
+
+
+async def test_server_observations_skip_personal_sharing_tightening() -> None:
+    """Server observations naming members or recent context stay `global`, never `source_only`."""
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="大家叫小李 [id: 55] 李董",
+                normalized_key="alias.55",
+                category="stable_fact",
+                evidence_kind="stable_fact",
+                sharing="global",
+                evidence_quote="李董 [id: 55] 來了",
+            ),
+            _observation(
+                summary="本週伺服器在辦比賽",
+                normalized_key="recent.event",
+                category="recent_context",
+                evidence_kind="ongoing_situation",
+                durability="recent",
+                promotion_eligible=False,
+                sharing="global",
+                ttl_days=14,
+                evidence_quote="這週六比賽",
+            ),
+        ),
+    )
+
+    draft = await writer.evaluate(
+        flavor="server",
+        subject=server_subject(server_id=500),
+        transcript="[message 1 | user]\n  小李 (lee) [id: 55]: 這週六比賽",
+        notes=("大家叫小李李董", "本週比賽"),
+    )
+
+    assert draft is not None
+    assert {obs.normalized_key: obs.sharing for obs in draft.observations} == {
+        "alias.55": "global",
+        "recent.event": "global",
+    }

@@ -973,3 +973,175 @@ async def test_regenerate_scope_memory_retires_a_server_raw_batch_with_no_tone_n
     assert "整理" in _memory_text(scope=scope, flavor="server")
     assert count_raw_entries(scope=scope) == 0
     assert not (memory_isolated_dir / scope / "tone.md").exists()
+
+
+async def test_regenerate_scope_memory_passes_rebuilt_global_facts_as_global_reference() -> None:
+    """Non-global rebuild passes see rebuilt global facts so guild compartments avoid duplicates."""
+    writer, fake_client = _writer()
+    append_detail(
+        scope=USER_SCOPE,
+        text="\n\n".join([
+            _entry(
+                "2026-06-01T00:00:00+00:00",
+                _observation(summary="住在台中", normalized_key="fact.city"),
+            ),
+            _entry(
+                "2026-06-02T00:00:00+00:00",
+                _observation(
+                    summary="本群每週打桌遊",
+                    normalized_key="fact.boardgame",
+                    sharing="source_only",
+                ),
+                source="guild 222",
+            ),
+        ]),
+    )
+    guild_bodies: list[str] = []
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        if "<tone_evidence>" in body:
+            return _no_change()
+        if "fact.boardgame" in body:
+            guild_bodies.append(body)
+            return _consolidated(summary="本群打桌遊", text="本群每週打桌遊", section="fact")
+        return _consolidated(summary="住在台中", text="使用者住在台中", section="fact")
+
+    fake_client.responses.answer = answer
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    assert len(guild_bodies) == 1
+    assert "<global_reference>" in guild_bodies[0]
+    assert "使用者住在台中" in guild_bodies[0]
+
+
+async def test_regenerate_scope_memory_preserves_evidence_on_rollback_after_first_forget() -> None:
+    """A failed later segment must roll back without losing evidence stripped by earlier forgets."""
+    writer, fake_client = _writer()
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, summary="舊記憶"))
+    original_detail = "\n\n".join([
+        _entry(
+            "2026-09-01T00:00:00+00:00",
+            _observation(summary="住在台中", normalized_key="fact.city"),
+            _ROAST,
+        ),
+        _forget_entry("2026-09-02T00:00:00+00:00"),
+        _entry(
+            "2026-09-03T00:00:00+00:00", _observation(summary="養了貓", normalized_key="fact.pet")
+        ),
+    ])
+    append_detail(scope=USER_SCOPE, text=original_detail)
+
+    replayed_forgets = 0
+    replayed_tone_forgets = 0
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        nonlocal replayed_forgets, replayed_tone_forgets
+        if text_format is ToneForget:
+            replayed_tone_forgets += 1
+            return ToneForget(drop_evidence=(1,))
+        if "forget_request" in body:
+            replayed_forgets += 1
+            stored = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+            return ConsolidatedMemory(
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in stored)
+            )
+        if "fact.pet" in body:
+            # Segment 1 fails after Segment 0's forget released `fact.city` and `_ROAST`.
+            return None
+        return ConsolidatedMemory(
+            deltas=(
+                make_delta(
+                    section="fact",
+                    summary="住在台中",
+                    text="使用者住在台中",
+                    from_keys=("fact.city",),
+                ),
+            )
+        )
+
+    fake_client.responses.answer = answer
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "failed"
+    assert replayed_forgets == 1
+    assert replayed_tone_forgets == 1
+    assert [
+        fact.summary for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    ] == ["舊記憶"]
+    detail_after = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "fact.city" in detail_after
+    assert _ROAST.summary_zh in detail_after
+    assert "fact.pet" in detail_after
+
+
+async def test_regenerate_scope_memory_flushes_deferred_forget_edits_at_commit_point() -> None:
+    """When all segments succeed, buffered forget evidence drops land on disk once committed."""
+    writer, fake_client = _writer()
+    append_detail(
+        scope=USER_SCOPE,
+        text="\n\n".join([
+            _entry(
+                "2026-09-01T00:00:00+00:00",
+                _observation(summary="住在台中", normalized_key="fact.city"),
+                _ROAST,
+            ),
+            _forget_entry("2026-09-02T00:00:00+00:00"),
+            _entry(
+                "2026-09-03T00:00:00+00:00",
+                _observation(summary="養了貓", normalized_key="fact.pet"),
+            ),
+            _forget_entry("2026-09-04T00:00:00+00:00", note="沒什麼要忘的"),
+        ]),
+    )
+    tone_forget_bodies: list[str] = []
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        if text_format is ToneForget:
+            tone_forget_bodies.append(body)
+            return ToneForget(drop_evidence=(1,) if len(tone_forget_bodies) == 1 else ())
+        if "forget_request" in body:
+            if "沒什麼要忘的" in body:
+                return _no_change()
+            stored = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+            return ConsolidatedMemory(
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in stored)
+            )
+        if "<tone_evidence>" in body:
+            return _no_change()
+        if "fact.pet" in body:
+            return ConsolidatedMemory(
+                deltas=(
+                    make_delta(
+                        section="fact",
+                        summary="養了貓",
+                        text="使用者養了貓",
+                        from_keys=("fact.pet",),
+                    ),
+                )
+            )
+        return ConsolidatedMemory(
+            deltas=(
+                make_delta(
+                    section="fact",
+                    summary="住在台中",
+                    text="使用者住在台中",
+                    from_keys=("fact.city",),
+                ),
+            )
+        )
+
+    fake_client.responses.answer = answer
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    # order-contract: forget segments replay in chronological order; the second pass must not re-see evidence deferred by the first.
+    assert [_ROAST.summary_zh in body for body in tone_forget_bodies] == [True, False]
+    detail_after = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "fact.city" not in detail_after
+    assert _ROAST.summary_zh not in detail_after
+    assert "fact.pet" in detail_after

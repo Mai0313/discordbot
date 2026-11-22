@@ -1,5 +1,6 @@
 """Tests for Threads URL parsing and media extraction."""
 
+from typing import Self
 from pathlib import Path
 
 import pytest
@@ -1145,20 +1146,61 @@ def test_resolving_a_clean_url_from_a_canonical_link_asks_threads_nothing(
     assert fetched == []
 
 
+def _stub_redirect(
+    monkeypatch: pytest.MonkeyPatch, final_url: str, status_code: int = 200
+) -> list[dict[str, object]]:
+    """Stubs `requests.get` for `resolve_clean_url` and records every call without reading body."""
+    calls: list[dict[str, object]] = []
+
+    class _StreamingResponse:
+        url = final_url
+        body_read = False
+
+        @property
+        def text(self) -> str:
+            self.body_read = True
+            raise AssertionError("resolve_clean_url must not download the HTML body")
+
+        @property
+        def content(self) -> bytes:
+            self.body_read = True
+            raise AssertionError("resolve_clean_url must not download the HTML body")
+
+        def raise_for_status(self) -> None:
+            if status_code >= 400:
+                response = requests.Response()
+                response.status_code = status_code
+                raise requests.HTTPError(f"{status_code}", response=response)
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_get(url: str, **kwargs: object) -> _StreamingResponse:
+        calls.append({"url": url, **kwargs})
+        return _StreamingResponse()
+
+    monkeypatch.setattr(target=requests, name="get", value=fake_get)
+    return calls
+
+
 def test_resolving_a_clean_url_from_a_share_link_reads_its_redirect(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The share form names its post nowhere but the redirect, which answers naming the sharer."""
-    fetched = _serve_pages(
-        monkeypatch,
-        share_lands_on=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
-        pages=[_thread_html_with_replies()],
+    calls = _stub_redirect(
+        monkeypatch=monkeypatch, final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt"
     )
 
     resolved = downloader.resolve_clean_url(url=_SHARE_URL)
 
     assert resolved == _REPLIES_TARGET_URL
-    assert fetched == [_SHARE_URL]
+    assert len(calls) == 1
+    assert calls[0]["url"] == _SHARE_URL
+    assert calls[0]["stream"] is True
+    assert calls[0]["timeout"] == threads_module.THREADS_PAGE_TIMEOUT_SECONDS
 
 
 def test_resolving_a_clean_url_never_depends_on_the_post_being_readable(
@@ -1166,26 +1208,32 @@ def test_resolving_a_clean_url_never_depends_on_the_post_being_readable(
 ) -> None:
     """The whole reason this does not go through the parse: the redirect already holds the answer.
 
-    A throttled page is served here, which `extract_post_data` retries and then gives up on. The
-    redirect had already named the post before that page was read at all, so letting the parse
-    decide would refuse an answer that was in hand from the first hop.
+    Streaming the headers avoids pulling down hundreds of KB of HTML body at all, so a throttled
+    or empty page body is never even read.
     """
-    _serve_pages(monkeypatch, share_lands_on=_REPLIES_TARGET_URL, pages=[_THROTTLED_PAGE])
+    calls = _stub_redirect(monkeypatch=monkeypatch, final_url=_REPLIES_TARGET_URL)
 
     assert downloader.resolve_clean_url(url=_SHARE_URL) == _REPLIES_TARGET_URL
+    assert calls[0]["stream"] is True
 
 
 def test_resolving_a_clean_url_gives_nothing_when_the_redirect_names_no_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Nothing may be handed back here but a post URL, since the pasted one names the sharer."""
-    _serve_pages(
-        monkeypatch,
-        share_lands_on="https://www.threads.com/login",
-        pages=[_thread_html_with_replies()],
-    )
+    _stub_redirect(monkeypatch=monkeypatch, final_url="https://www.threads.com/login")
 
     assert downloader.resolve_clean_url(url=_SHARE_URL) == ""
+
+
+def test_resolving_a_clean_url_classifies_http_errors(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP failures during share-link redirect resolution classify through `link_fetch_error`."""
+    _stub_redirect(monkeypatch=monkeypatch, final_url=_SHARE_URL, status_code=404)
+
+    with pytest.raises(LinkUnavailableError):
+        downloader.resolve_clean_url(url=_SHARE_URL)
 
 
 def test_a_malformed_post_costs_only_itself(

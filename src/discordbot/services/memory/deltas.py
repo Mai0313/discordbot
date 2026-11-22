@@ -9,7 +9,7 @@ between the `cleared_since` check and disk writes.
   compartment, and expires `recent`/non-permanent facts by UTC day TTL.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -280,11 +280,15 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     for delta in deltas:
         if deletes_only and delta.action != "delete":
             logfire.warn(
-                "Memory delta writes into a forget-only batch; dropping", action=delta.action
+                "Memory delta writes into a forget-only batch; dropping",
+                scope=scope,
+                compartment=compartment,
+                action=delta.action,
             )
             dropped += 1
             continue
         resolved = _resolve_delta(
+            scope=scope,
             delta=delta,
             compartment=compartment,
             existing=existing,
@@ -356,7 +360,8 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     )
 
 
-def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be dropped or re-aimed
+def _resolve_delta(  # noqa: PLR0911, PLR0913 -- scope/compartment for drop logs plus one return per drop/re-aim path
+    scope: str,
     delta: MemoryFactDelta,
     compartment: str,
     existing: dict[str, MemoryFact],
@@ -370,13 +375,27 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
         # Resolve deletes before the section gate; a delete's section is unused.
         return (known, True) if known else None
     if delta.section not in allowed:
-        logfire.warn("Memory delta names an unknown section; dropping", section=delta.section)
+        logfire.warn(
+            "Memory delta names an unknown section; dropping",
+            scope=scope,
+            compartment=compartment,
+            section=delta.section,
+        )
         return None
     if not delta.summary.strip() or not _delta_body(delta=delta):
-        logfire.warn("Memory delta carries no content; dropping", action=delta.action)
+        logfire.warn(
+            "Memory delta carries no content; dropping",
+            scope=scope,
+            compartment=compartment,
+            action=delta.action,
+        )
         return None
     if delta.section == "member_alias" and _subject_id_of(delta=delta) is None:
-        logfire.warn("Member-alias delta carries no member id; dropping")
+        logfire.warn(
+            "Member-alias delta carries no member id; dropping",
+            scope=scope,
+            compartment=compartment,
+        )
         return None
     if known:
         return known, False
@@ -489,7 +508,13 @@ def date_facts_from_evidence(scope: str, compartment: str, raw_text: str) -> int
     stamps: dict[str, list[datetime]] = {}
     every: list[datetime] = []
     for timestamp, block in iter_observations(text=raw_text):
-        stamp = datetime.fromisoformat(timestamp)
+        if not timestamp:
+            continue
+        try:
+            stamp = datetime.fromisoformat(timestamp)
+        except ValueError:
+            continue
+        stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
         every.append(stamp)
         key = fields_of(block=block).get("normalized_key")
         if key:

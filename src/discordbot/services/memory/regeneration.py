@@ -11,6 +11,8 @@ lock, so its closing `clear_raw` unlinks any entries appended to `raw.md` while 
 import time
 from typing import Literal
 import asyncio
+from functools import partial
+from collections.abc import Callable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -27,10 +29,12 @@ from discordbot.services.memory.store import (
     read_facts,
     scope_lock,
     write_fact,
+    trim_detail,
     append_detail,
     cleared_since,
     read_evidence,
     read_raw_entries,
+    rewrite_evidence,
     detail_file_bytes,
     list_compartments,
     prune_compartment,
@@ -145,15 +149,33 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         )
 
 
-async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report per way a rebuild stops short, a clear and a failed forget replay included
+class _RebuildState(BaseModel):
+    """Mutable rollback, deferred evidence edits, and accounting across rebuild segments."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    replaced: dict[str, list[MemoryFact]] = Field(
+        default_factory=dict,
+        description="Pre-rebuild facts per compartment for rollback before the commit point.",
+    )
+    pending_edits: list[Callable[[str], str]] = Field(
+        default_factory=list,
+        description="Deferred evidence-file edits flushed once all forget segments succeed.",
+    )
+    unreadable_removed: int = Field(
+        default=0, description="Unreadable fact files removed across rebuilt compartments."
+    )
+
+
+async def regenerate_scope_memory(
     scope: str, writer: MemoryWriterAI, identity: str
 ) -> RegenerationReport:
     """Rebuilds every compartment of `scope` from cold-tier evidence alone.
 
     Distills `detail.md` plus any unconsumed `raw.md` one forget segment at a time in recorded
-    order without showing existing facts. Restores replaced compartments if the run fails or
-    times out before the final forget replay applies; retires `raw.md` only after all
-    compartments and the tone note succeed.
+    order without showing existing facts. Buffers forget-driven evidence rewrites and restores
+    replaced compartments if the run fails or times out before the final forget replay applies;
+    retires `raw.md` only after all compartments and the tone note succeed.
 
     Args:
         scope (str): Memory scope key to rebuild.
@@ -165,92 +187,124 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
         fact files were removed.
     """
     started_at = time.monotonic()
-    unreadable_removed = 0
+    state = _RebuildState()
     async with scope_lock(scope=scope), memory_semaphore():
         if regeneration_on_cooldown(scope=scope):
             # Re-check under the lock because concurrent invocations can pass the command check.
             return RegenerationReport(result="cooldown")
         run = start_run(scope=scope, writer=writer, identity=identity, started_at=started_at)
-        raw_entries = read_raw_entries(scope=scope)
         evidence = read_evidence(scope=scope)
         if not evidence:
             return RegenerationReport(result="no_evidence")
         _last_regeneration[scope] = time.monotonic()
-        buckets = partition_raw_entries(raw_text=evidence, flavor=run.flavor)
-        compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
-        replaced: dict[str, list[MemoryFact]] = {}
+        compartments = _compartments_to_rebuild(
+            scope=scope, buckets=partition_raw_entries(raw_text=evidence, flavor=run.flavor)
+        )
+        succeeded = False
         try:
             # Single deadline across the compartment loop; client calls carry no tighter bound.
             async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-                # Replay segments in recorded order so forgets reach earlier facts, not later ones.
-                for index, (observations, forgets) in enumerate(
-                    forget_segments(raw_text=evidence)
-                ):
-                    segment = partition_raw_entries(raw_text=observations, flavor=run.flavor)
-                    # First segment visits every compartment to empty obsolete ones; later ones
-                    # only visit active buckets.
-                    for compartment in (
-                        compartments if index == 0 else global_first(compartments=set(segment))
-                    ):
-                        raw_bucket = segment.get(compartment, "")
-                        if not raw_bucket:
-                            # No pre-forget evidence: prune directly instead of an empty LLM call.
-                            replaced[compartment] = read_facts(
-                                scope=scope, compartment=compartment
-                            )
-                            unreadable_removed += _prune_rebuilt_compartment(
-                                scope=scope, compartment=compartment, keep=set()
-                            )
-                            continue
-                        removed = await _rebuild_compartment(
-                            run=run,
-                            compartment=compartment,
-                            raw_bucket=raw_bucket,
-                            replaced=replaced,
-                        )
-                        if removed is None:
-                            return RegenerationReport(
-                                result="failed", unreadable_removed=unreadable_removed
-                            )
-                        unreadable_removed += removed
-                    if not await _reapply_forgets(run=run, forgets=forgets):
-                        return RegenerationReport(
-                            result="failed", unreadable_removed=unreadable_removed
-                        )
-                # All forget replays applied; commit point (skip restore on later exit).
-                replaced.clear()
-                # Re-read evidence after forget replays stripped released entries from both files.
-                raw_entries = read_raw_entries(scope=scope)
-                evidence = read_evidence(scope=scope)
-                if cleared_since(scope=scope, started_at=started_at):
-                    return RegenerationReport(
-                        result="failed", unreadable_removed=unreadable_removed
-                    )
-                _date_rebuilt_facts(run=run, evidence=evidence)
-                tone_rebuilt = await rebuild_tone_note(run=run, evidence=evidence)
-        except TimeoutError:
+                succeeded = await _replay_rebuild_segments(
+                    run=run, evidence=evidence, compartments=compartments, state=state
+                ) and await _finalize_rebuild(run=run, state=state)
+        except TimeoutError as error:
             logfire.warn(
-                "Memory regeneration timed out", scope=scope, compartments=len(compartments)
+                "Memory regeneration timed out",
+                scope=scope,
+                compartments=len(compartments),
+                _exc_info=error,
             )
-            return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         finally:
-            _restore_compartments(run=run, replaced=replaced)
-        if not tone_rebuilt or cleared_since(scope=scope, started_at=started_at):
-            return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
+            _restore_compartments(run=run, replaced=state.replaced)
+        if not succeeded or cleared_since(scope=scope, started_at=started_at):
+            return RegenerationReport(result="failed", unreadable_removed=state.unreadable_removed)
         report_injection_size(scope=scope, flavor=run.flavor)
+        raw_entries = read_raw_entries(scope=scope)
         if raw_entries:
             # Retire consumed raw entries into detail.md so they are not re-ingested.
             append_detail(scope=scope, text=raw_entries)
             clear_raw(scope=scope)
+            await trim_detail(scope=scope, started_at=started_at)
         memory_git.enqueue(scope=scope, reason="rebuild")
-        return RegenerationReport(result="regenerated", unreadable_removed=unreadable_removed)
+        return RegenerationReport(
+            result="regenerated", unreadable_removed=state.unreadable_removed
+        )
+
+
+async def _replay_rebuild_segments(
+    run: ConsolidationRun, evidence: str, compartments: list[str], state: _RebuildState
+) -> bool:
+    """Replays each forget segment in recorded order so forgets reach earlier facts only."""
+    for index, (observations, forgets) in enumerate(forget_segments(raw_text=evidence)):
+        segment = partition_raw_entries(raw_text=observations, flavor=run.flavor)
+        # First segment visits every compartment to empty obsolete ones; later ones only active buckets.
+        targets = compartments if index == 0 else global_first(compartments=set(segment))
+        global_reference = ""
+        for compartment in targets:
+            if compartment != GLOBAL_COMPARTMENT and not global_reference:
+                global_reference = render_existing_facts(
+                    facts=read_facts(scope=run.scope, compartment=GLOBAL_COMPARTMENT)
+                )
+            ok = await _rebuild_compartment(
+                run=run,
+                compartment=compartment,
+                raw_bucket=segment.get(compartment, ""),
+                state=state,
+                global_reference=global_reference,
+            )
+            if not ok:
+                return False
+            if compartment == GLOBAL_COMPARTMENT:
+                global_reference = render_existing_facts(
+                    facts=read_facts(scope=run.scope, compartment=compartment)
+                )
+        if not await _reapply_forgets(run=run, forgets=forgets, pending_edits=state.pending_edits):
+            return False
+    return True
+
+
+async def _finalize_rebuild(run: ConsolidationRun, state: _RebuildState) -> bool:
+    """Flushes deferred forget evidence rewrites, commits replaced compartments, dates facts, and rebuilds tone."""
+    if state.pending_edits:
+        await rewrite_evidence(
+            scope=run.scope,
+            edit=partial(_apply_evidence_edits, edits=state.pending_edits),
+            started_at=run.started_at,
+        )
+    if cleared_since(scope=run.scope, started_at=run.started_at):
+        return False
+    # All forget replays and evidence rewrites landed; commit point (skip restore on later exit).
+    state.replaced.clear()
+    # Re-read evidence after forget replays stripped released entries from both files.
+    evidence = read_evidence(scope=run.scope)
+    _date_rebuilt_facts(run=run, evidence=evidence)
+    return await rebuild_tone_note(run=run, evidence=evidence)
+
+
+def _apply_evidence_edits(text: str, edits: list[Callable[[str], str]]) -> str:
+    """Applies buffered evidence rewrites in recorded segment order."""
+    for edit in edits:
+        text = edit(text)
+    return text
 
 
 async def _rebuild_compartment(
-    run: ConsolidationRun, compartment: str, raw_bucket: str, replaced: dict[str, list[MemoryFact]]
-) -> int | None:
-    """Rebuilds or merges one segment into `compartment`, returning unreadable count or None."""
-    rebuilt = compartment in replaced
+    run: ConsolidationRun,
+    compartment: str,
+    raw_bucket: str,
+    state: _RebuildState,
+    global_reference: str,
+) -> bool:
+    """Rebuilds, merges, or prunes one segment into `compartment`, returning whether it succeeded."""
+    rebuilt = compartment in state.replaced
+    if not raw_bucket:
+        # No pre-forget evidence: prune directly instead of an empty LLM call.
+        if not rebuilt:
+            state.replaced[compartment] = read_facts(scope=run.scope, compartment=compartment)
+        state.unreadable_removed += _prune_rebuilt_compartment(
+            scope=run.scope, compartment=compartment, keep=set()
+        )
+        return True
     existing = read_facts(scope=run.scope, compartment=compartment) if rebuilt else []
     result = await run.writer.consolidate(
         flavor=run.flavor,
@@ -258,7 +312,9 @@ async def _rebuild_compartment(
             run=run,
             compartment=compartment,
             existing_facts=render_existing_facts(facts=existing),
-            parts=CompartmentInput(raw_entries=raw_bucket, recent_detail="", global_reference=""),
+            parts=CompartmentInput(
+                raw_entries=raw_bucket, recent_detail="", global_reference=global_reference
+            ),
             compact=not existing,
         ),
     )
@@ -268,12 +324,15 @@ async def _rebuild_compartment(
             scope=run.scope,
             compartment=compartment,
         )
-        return None
+        return False
     if cleared_since(scope=run.scope, started_at=run.started_at):
-        return None
+        return False
     if not rebuilt:
-        replaced[compartment] = read_facts(scope=run.scope, compartment=compartment)
-        return _replace_compartment(run=run, compartment=compartment, result=result)
+        state.replaced[compartment] = read_facts(scope=run.scope, compartment=compartment)
+        state.unreadable_removed += _replace_compartment(
+            run=run, compartment=compartment, result=result
+        )
+        return True
     outcome = apply_deltas(
         scope=run.scope,
         compartment=compartment,
@@ -289,8 +348,8 @@ async def _rebuild_compartment(
             compartment=compartment,
             reason=outcome.rejected,
         )
-        return None
-    return 0
+        return False
+    return True
 
 
 def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[MemoryFact]]) -> None:
@@ -311,10 +370,14 @@ def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[Memory
     )
 
 
-async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
+async def _reapply_forgets(
+    run: ConsolidationRun, forgets: str, pending_edits: list[Callable[[str], str]]
+) -> bool:
     """Replays one segment's forget requests against rebuilt facts and tone evidence."""
-    return await apply_forget_buckets(run=run, forgets=forgets) and await forget_tone(
-        run=run, forgets=forgets, evidence_only=True
+    return await apply_forget_buckets(
+        run=run, forgets=forgets, pending_edits=pending_edits
+    ) and await forget_tone(
+        run=run, forgets=forgets, evidence_only=True, pending_edits=pending_edits
     )
 
 

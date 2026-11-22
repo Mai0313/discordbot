@@ -11,7 +11,12 @@ empty result, as its result message anchors the next catchup's read point.
 
 import time
 
-from discordbot.services.memory.store import scope_lock, cleared_since, append_raw_entry
+from discordbot.services.memory.store import (
+    scope_lock,
+    trim_detail,
+    cleared_since,
+    append_raw_entry,
+)
 from discordbot.services.memory.writer import MemoryWriterAI, MemoryObservation
 from discordbot.services.memory.inflight import memory_semaphore
 from discordbot.services.memory.constants import MEMORY_CATCHUP_COOLDOWN_SECONDS
@@ -86,4 +91,5 @@ async def review_catchup_notes(
             scope=scope,
             entry_text=render_memory_observations(observations=draft.observations, source=None),
         )
+        await trim_detail(scope=scope, started_at=started_at)
     return draft.observations

@@ -8,6 +8,7 @@ current global facts as read-only reference.
 import time
 import asyncio
 from functools import partial
+from collections.abc import Callable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -23,6 +24,7 @@ from discordbot.services.memory.store import (
     read_facts,
     scope_lock,
     replace_raw,
+    trim_detail,
     append_detail,
     cleared_since,
     raw_file_bytes,
@@ -197,15 +199,23 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
                 # Compact only after all forgets finish, and even after a failed observation pass
                 # to shrink oversized compartments before retry.
                 await _compact_oversized(run=run)
-    except TimeoutError:
+    except TimeoutError as error:
         logfire.warn(
             "Memory consolidation fan-out timed out; keeping the unfinished part of the raw batch",
             scope=run.scope,
             segments=len(segments),
             completed_segments=completed,
+            _exc_info=error,
         )
     if not completed or cleared_since(scope=run.scope, started_at=run.started_at):
         return
+    await _retire_completed_segments(run=run, segments=segments, completed=completed)
+
+
+async def _retire_completed_segments(
+    run: ConsolidationRun, segments: list[tuple[str, str]], completed: int
+) -> None:
+    """Updates tone, sweeps stale facts, and moves completed raw segments into `detail.md`."""
     # Re-read raw.md after forgets strip released evidence; forget entries remain as boundaries.
     boundary = (
         iter_observations(text=segments[completed - 1][1])[-1]
@@ -222,7 +232,14 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
             segments=len(segments),
             completed_segments=completed,
         )
-    tone_updated = await update_tone_note(run=run, raw_entries=raw_entries)
+    try:
+        async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
+            tone_updated = await update_tone_note(run=run, raw_entries=raw_entries)
+    except TimeoutError as error:
+        logfire.warn(
+            "Memory tone update timed out; keeping the raw batch", scope=run.scope, _exc_info=error
+        )
+        return
     if not tone_updated or cleared_since(scope=run.scope, started_at=run.started_at):
         return
     # Sweep every compartment (not only touched ones) so idle guilds still age out expired facts.
@@ -232,6 +249,7 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
     # Every failure path returns earlier, so retiring into detail.md never drops unread entries.
     append_detail(scope=run.scope, text=raw_entries)
     replace_raw(scope=run.scope, text=remaining)
+    await trim_detail(scope=run.scope, started_at=run.started_at)
     # Worker acquires the same scope lock, so the commit runs after this call releases it.
     memory_git.enqueue(scope=run.scope, reason="update")
 
@@ -291,15 +309,20 @@ async def _consolidate_observations(run: ConsolidationRun, raw_text: str) -> boo
     return True
 
 
-async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
+async def apply_forget_buckets(
+    run: ConsolidationRun, forgets: str, pending_edits: list[Callable[[str], str]] | None = None
+) -> bool:
     """Runs one deletion-only pass per compartment reachable by `forgets`.
 
-    Removes released evidence keys from `raw.md` and `detail.md` after each applied compartment;
-    callers holding earlier file contents must re-read.
+    Removes released evidence keys from `raw.md` and `detail.md` after each applied compartment
+    unless `pending_edits` is supplied to defer those rewrites until a commit point. Callers
+    holding earlier file contents must re-read once edits land.
 
     Args:
         run (ConsolidationRun): Active consolidation or rebuild run context.
         forgets (str): Raw forget-request entries for this segment.
+        pending_edits (list[Callable[[str], str]] | None): Optional collector deferring
+            `rewrite_evidence` disk writes until the caller's commit point.
 
     Returns:
         True when every compartment's forget pass applied; False when the caller must keep the
@@ -324,14 +347,15 @@ async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
         if outcome.released_keys:
             if cleared_since(scope=run.scope, started_at=run.started_at):
                 return False
-            rewrite_evidence(
-                scope=run.scope,
-                edit=partial(
-                    drop_released_evidence,
-                    released={compartment: outcome.released_keys},
-                    forgets=buckets,
-                ),
+            edit = partial(
+                drop_released_evidence,
+                released={compartment: outcome.released_keys},
+                forgets=buckets,
             )
+            if pending_edits is not None:
+                pending_edits.append(edit)
+            else:
+                await rewrite_evidence(scope=run.scope, edit=edit, started_at=run.started_at)
     return True
 
 
@@ -542,9 +566,9 @@ def _newest_entries(text: str, max_chars: int) -> str:
 
 
 def _split_after(raw_text: str, boundary: tuple[str, str] | None) -> tuple[str, str]:
-    """Returns `raw_text` split right after the `boundary` entry, or whole when it is None."""
+    """Returns `raw_text` split right after the last `boundary` entry, or whole when None."""
     pairs = iter_observations(text=raw_text)
-    cut = len(pairs) if boundary is None else pairs.index(boundary) + 1
+    cut = len(pairs) if boundary is None else len(pairs) - pairs[::-1].index(boundary)
     return render_file_entries(pairs=pairs[:cut]), render_file_entries(pairs=pairs[cut:])
 
 

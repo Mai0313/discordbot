@@ -241,22 +241,34 @@ def context_card_budget(card: Embed) -> int:
     return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
 
 
-def fetch_card_image(url: str) -> LoadedMedia:
+def fetch_card_image(url: str, max_bytes: int = 25 * 1024 * 1024) -> LoadedMedia:
     """Returns the image at `url` as served, for a card to upload rather than link.
 
     Args:
         url (str): The image URL the card would otherwise link.
+        max_bytes (int): Maximum allowed size in bytes before refusing and keeping the link;
+            defaults to 25 MiB so oversized `image/*` payloads stay linked instead of spiking RAM.
 
     Raises:
         requests.RequestException: The fetch failed or answered an error status.
-        ValueError: What came back is not an image.
+        ValueError: What came back is not an image or exceeds `max_bytes`.
     """
-    response = requests.get(url=url, timeout=CARD_IMAGE_FETCH_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    mime_type = response.headers.get("Content-Type", "").partition(";")[0].strip()
-    if not mime_type.startswith("image/"):
-        raise ValueError(f"{url} served {mime_type or 'no type'}, not an image")
-    return LoadedMedia(data=response.content, mime_type=mime_type)
+    with requests.get(url=url, timeout=CARD_IMAGE_FETCH_TIMEOUT_SECONDS, stream=True) as response:
+        response.raise_for_status()
+        mime_type = response.headers.get("Content-Type", "").partition(";")[0].strip()
+        if not mime_type.startswith("image/"):
+            raise ValueError(f"{url} served {mime_type or 'no type'}, not an image")
+        declared = response.headers.get("Content-Length")
+        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+            raise ValueError(f"{url} declares {declared} bytes, over the {max_bytes} byte cap")
+        buffer = bytearray()
+        for chunk in response.iter_content(chunk_size=_VIDEO_STREAM_CHUNK_BYTES):
+            if not chunk:
+                continue
+            if len(buffer) + len(chunk) > max_bytes:
+                raise ValueError(f"{url} exceeds {max_bytes} bytes")
+            buffer.extend(chunk)
+    return LoadedMedia(data=bytes(buffer), mime_type=mime_type)
 
 
 async def _download_card_image(image_url: str, url: str, message_id: int) -> LoadedMedia | None:
@@ -719,6 +731,12 @@ class ExpansionCog[ParsedT](commands.Cog):
         )
         if not image_urls or not target_allows_file_uploads(target=message):
             return
+        remaining_slots = DISCORD_ATTACHMENT_LIMIT - len(delivery.media)
+        remaining_upload_limit = upload_limit_for(guild=message.guild) - sum(
+            item.size for item in delivery.media
+        )
+        if remaining_slots <= 0 or remaining_upload_limit <= MEDIA_ENVELOPE_MARGIN:
+            return
 
         tasks: list[Coroutine[Any, Any, LoadedMedia | None]] = []
         for image_url in image_urls:
@@ -734,10 +752,9 @@ class ExpansionCog[ParsedT](commands.Cog):
         }
         plan = await self.card_image_planner.plan(
             items=list(items.values()),
-            upload_limit=upload_limit_for(guild=message.guild)
-            - sum(item.size for item in delivery.media),
+            upload_limit=remaining_upload_limit,
             envelope_margin=MEDIA_ENVELOPE_MARGIN,
-            attachment_limit=DISCORD_ATTACHMENT_LIMIT - len(delivery.media),
+            attachment_limit=remaining_slots,
         )
         attached = {id(item) for item in plan.native}
         uploaded = {

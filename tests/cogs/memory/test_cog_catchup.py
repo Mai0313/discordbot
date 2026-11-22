@@ -6,6 +6,7 @@ import asyncio
 from datetime import timedelta
 from unittest.mock import MagicMock
 
+from openai import OpenAIError
 import pytest
 from nextcord import Embed, TextChannel
 from pydantic import BaseModel
@@ -28,6 +29,7 @@ from discordbot.services.memory.catchup import catchup_on_cooldown, review_catch
 from tests.helpers.memory import FakeMemoryClient, make_memory_cog
 from tests.helpers.casting import as_interaction
 from tests.helpers.discord_mocks import DiscordPayload, FakeInteraction
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -364,3 +366,51 @@ async def test_propose_server_notes_keeps_at_most_five() -> None:
     )
     notes = await writer.propose_server_notes(subject=SUBJECT, transcript="x")
     assert notes == tuple(f"第 {n} 件事" for n in range(MAX_MEMORY_NOTES))
+
+
+async def test_catchup_without_proxy_key_replies_ephemerally_and_skips_cooldown() -> None:
+    """Missing OpenAI credentials reply with an error embed instead of crashing the command."""
+    cog = make_memory_cog()
+    interaction = _CatchupInteraction(channel=_channel(messages=[_member_message("週五打瓦")]))
+
+    await MemoryCogs.memory_server_catchup.callback(cog, as_interaction(fake=interaction))
+
+    sent = interaction.response.sent[-1]
+    assert sent["ephemeral"] is True
+    embed = sent["embed"]
+    assert isinstance(embed, Embed)
+    assert embed.colour is not None
+    assert embed.colour.value == DISCORD_RED
+    assert embed.footer.text == OpenAIError.__name__
+    assert not catchup_on_cooldown(scope=SCOPE)
+
+
+async def test_catchup_task_done_callback_pops_slot_and_logs_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finished catchup tasks leave `_catchup_tasks` and uncaught crashes reach logfire."""
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    writer, _ = _writer(notes=(), draft=None)
+    cog = _cog(writer=writer)
+
+    async def crashing_run(**kwargs: object) -> None:
+        del kwargs
+        raise RuntimeError("unexpected catchup crash")
+
+    monkeypatch.setattr(cog, "_run_catchup", crashing_run)
+    interaction = _CatchupInteraction(channel=_channel(messages=[_member_message("週五打瓦")]))
+    await MemoryCogs.memory_server_catchup.callback(cog, as_interaction(fake=interaction))
+    task = _catchup_tasks.get(key=GUILD_ID)
+    assert task is not None
+    with pytest.raises(RuntimeError, match="unexpected catchup crash"):
+        await task
+    # Allow the done-callback scheduled on the loop to run.
+    await asyncio.sleep(0)
+
+    assert _catchup_tasks.get(key=GUILD_ID) is None
+    assert any(
+        fields.get("guild_id") == GUILD_ID
+        and fields.get("error_type") == "RuntimeError"
+        and isinstance(fields.get("_exc_info"), RuntimeError)
+        for _message, fields in errors
+    )

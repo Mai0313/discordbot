@@ -16,6 +16,7 @@ from discordbot.services.platforms.ytdlp import (
     download_with_stop_signal,
 )
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
+from discordbot.services.platforms.page_json import BROWSER_HEADERS
 from discordbot.services.platforms.file_downloads import DownloadTooLargeError
 
 from tests.helpers.logfire_capture import capture_logs
@@ -287,6 +288,48 @@ def test_facebook_share_resolution_never_downloads_the_page(
     assert [request["method"] for request in requests_made] == ["head", "get"]
     assert all(request["stream"] for request in requests_made)
     assert all(request["allow_redirects"] for request in requests_made)
+
+
+def test_facebook_share_resolution_sends_browser_headers_and_ignores_login_walls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Share resolution sends `BROWSER_HEADERS` and falls through or reverts on login redirects."""
+    requests_made: list[dict[str, object]] = []
+    responses = iter([
+        _LandedResponse(url="https://www.facebook.com/login/?next=foo"),
+        _LandedResponse(url=_SHARE_TARGET),
+    ])
+
+    class _LoginWallSession:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def head(self, url: str, **kwargs: object) -> _LandedResponse:
+            requests_made.append({"method": "head", "url": url, **kwargs})
+            return next(responses)
+
+        def get(self, url: str, **kwargs: object) -> _LandedResponse:
+            requests_made.append({"method": "get", "url": url, **kwargs})
+            return next(responses)
+
+    monkeypatch.setattr("discordbot.services.platforms.ytdlp.Session", _LoginWallSession)
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    resolved = downloader._resolve_facebook_share_url(url=_SHARE_URL)
+
+    assert resolved == _SHARE_TARGET
+    assert [request["method"] for request in requests_made] == ["head", "get"]
+    assert all(request["headers"] == BROWSER_HEADERS for request in requests_made)
+
+    # When both HEAD and GET land on login/checkpoint/recover, return the original URL unchanged.
+    responses = iter([
+        _LandedResponse(url="https://www.facebook.com/checkpoint/123"),
+        _LandedResponse(url="https://www.facebook.com/recover/initiate"),
+    ])
+    assert downloader._resolve_facebook_share_url(url=_SHARE_URL) == _SHARE_URL
 
 
 def test_parse_metadata_reads_info_without_downloading(

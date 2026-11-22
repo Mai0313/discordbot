@@ -200,3 +200,67 @@ async def test_commits_carry_their_own_committer_identity(
     await service.stop()
     assert service.enabled
     assert "discordbot" in _git(memory_repository, "log", "-1", "--format=%an")
+
+
+async def test_commit_is_scoped_and_leaves_other_staged_paths_alone(
+    memory_repository: Path, handled: asyncio.Queue[str]
+) -> None:
+    """Committing one scope must not swallow changes left staged in another scope."""
+    scope_a = user_scope(user_id=111)
+    scope_b = user_scope(user_id=222)
+    (memory_repository / scope_a / "global").mkdir(parents=True)
+    (memory_repository / scope_a / "global" / "a.md").write_text("fact a", encoding="utf-8")
+    (memory_repository / scope_b / "global").mkdir(parents=True)
+    (memory_repository / scope_b / "global" / "b.md").write_text("fact b", encoding="utf-8")
+    _git(memory_repository, "add", "-A", "--", scope_b)
+
+    service = MemoryGitService()
+    service.start()
+    service.enqueue(scope=scope_a, reason="update")
+    await _wait_for(handled=handled)
+    await service.stop()
+
+    committed = _git(memory_repository, "show", "--name-only", "--format=", "HEAD").splitlines()
+    assert committed == [f"{scope_a}/global/a.md"]
+    assert f"A  {scope_b}/global/b.md" in _git(memory_repository, "status", "--porcelain")
+
+
+async def test_hung_git_command_times_out_and_kills_child_process(
+    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stalled git subprocess times out, kills the child, and releases the scope lock."""
+    monkeypatch.setattr(
+        "discordbot.services.memory.git_history._GIT_COMMAND_TIMEOUT_SECONDS", 0.05
+    )
+    killed = False
+    waited = False
+
+    class _HangingProcess:
+        returncode: int | None = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(5)
+            return b"", b""
+
+        def kill(self) -> None:
+            nonlocal killed
+            killed = True
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            nonlocal waited
+            waited = True
+            return -9
+
+    async def spawn_hanging(*args: object, **kwargs: object) -> _HangingProcess:
+        del args, kwargs
+        return _HangingProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_hanging)
+    service = MemoryGitService()
+
+    with pytest.raises(TimeoutError):
+        await service._git("status")
+
+    assert killed is True
+    assert waited is True

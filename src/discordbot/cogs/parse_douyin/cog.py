@@ -14,8 +14,13 @@ from nextcord.ext import commands
 
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
-from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
+from discordbot.utils.expansion_cog import TRUNCATION_NOTICE, ExpansionCog, ExpansionDelivery
+from discordbot.utils.discord_embeds import (
+    DISCORD_ATTACHMENT_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    clip_to_utf16_limit,
+    target_allows_file_uploads,
+)
 from discordbot.utils.media_delivery import upload_limit_for, build_media_delivery_planner
 from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
 from discordbot.services.platforms.douyin import (
@@ -99,7 +104,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         download_dir = stack.enter_context(scratch_directory(prefix="parse-douyin-"))
         downloader = self.downloader_factory(output_folder=download_dir)
         async with (
-            douyin_url_locks.hold(url),
+            douyin_url_locks.hold(key=url),
             douyin_fetch_semaphore.get(),
             asyncio.timeout(delay=DOUYIN_EXPAND_TIMEOUT_SECONDS),
         ):
@@ -119,10 +124,13 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
             url (str): The post URL that was read.
             parsed (DouyinPost): The post metadata and downloaded media.
         """
+        upload_limit = (
+            upload_limit_for(guild=message.guild)
+            if target_allows_file_uploads(target=message)
+            else 0
+        )
         delivery = await plan_douyin_delivery(
-            planner=self.media_delivery,
-            result=parsed.download,
-            upload_limit=upload_limit_for(guild=message.guild),
+            planner=self.media_delivery, result=parsed.download, upload_limit=upload_limit
         )
         plan = delivery.plan
         if not plan.native and not plan.hosted_urls:
@@ -151,7 +159,10 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
     @staticmethod
     def _build_embed(post: DouyinMetadata, url: str) -> Embed:
         """Builds the caption card that accompanies the expanded media."""
-        embed = Embed(description=post.title, url=url, color=_EMBED_COLOR)
+        description = clip_to_utf16_limit(
+            text=post.title, limit=DISCORD_EMBED_DESCRIPTION_LIMIT, notice=TRUNCATION_NOTICE
+        )
+        embed = Embed(description=description, url=url, color=_EMBED_COLOR)
         if post.author_name:
             embed.set_author(name=post.author_name, url=url)
         return embed

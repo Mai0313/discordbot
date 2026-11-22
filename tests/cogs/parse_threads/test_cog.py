@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
+import threading
 
 from discordbot.cogs.parse_threads import cog as parse_threads
 from discordbot.utils.expansion_cog import VIDEO_HINT, omitted_images_note
@@ -741,3 +742,97 @@ async def test_threads_card_past_the_attachment_cap_leaves_the_root_linked(
     assert len(embeds) == 10
     assert embeds[0].image.url == "https://example.test/0.png"
     assert all((embed.image.url or "").startswith("attachment://") for embed in embeds[1:])
+
+
+async def test_threads_cog_honors_attach_files_permission_for_videos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `Attach Files` is denied, videos host if enabled or refuse cleanly without uploading."""
+    monkeypatch.setattr(
+        "discordbot.cogs.parse_threads.cog.target_allows_file_uploads", lambda target: False
+    )
+    clip_off = tmp_path / "clip_off.mp4"
+    clip_off.write_bytes(data=b"123")
+    cog_off = _cog()
+    _wire_threads(
+        cog=cog_off,
+        downloader=ThreadsDownloaderStub(results=[_thread_output(video_paths=[clip_off])]),
+    )
+    denied_off = guild_message(content=_URL)
+    await cog_off.on_message(message=as_message(fake=denied_off))
+    assert denied_off.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
+    assert placeholder_withdrawn(message=denied_off)
+
+    clip_on = tmp_path / "clip_on.mp4"
+    clip_on.write_bytes(data=b"123")
+    cog_on = _cog()
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    cog_on.media_delivery = hosting_planner(serve_dir=serve)
+    _wire_threads(
+        cog=cog_on,
+        downloader=ThreadsDownloaderStub(results=[_thread_output(video_paths=[clip_on])]),
+    )
+    denied_on = guild_message(content=_URL)
+    await cog_on.on_message(message=as_message(fake=denied_on))
+    delivered = expansion_payload(message=denied_on)
+    content = delivered.get("content") or ""
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
+    assert "clip_on.mp4" not in [file.filename for file in delivered.get("files", [])]
+    assert denied_on.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
+async def test_clean_threads_url_strips_tracking_token_from_failure_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failure logs strip `?xmt=` so share-tracking parameters never enter `./data/logs`."""
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
+    cog = _cog()
+
+    def failing_resolve(url: str) -> str:
+        del url
+        raise RuntimeError("boom")
+
+    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
+        resolve_clean_url=failing_resolve
+    )
+    interaction = FakeInteraction()
+    share_url = "https://www.threads.com/share/D1CytHQmC/?xmt=SECRET_TRACKING_TOKEN"
+
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=interaction), url=share_url
+    )
+
+    assert interaction.followup.sent[-1]["ephemeral"] is True
+    assert warned
+    logged_url = str(warned[0][1].get("url", ""))
+    assert "SECRET_TRACKING_TOKEN" not in logged_url
+    assert logged_url == "https://www.threads.com/share/D1CytHQmC"
+
+
+async def test_clean_threads_url_bounds_stalled_redirect_with_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled share-link resolve times out cleanly and answers the caller ephemerally."""
+    monkeypatch.setattr(target=parse_threads, name="THREADS_PAGE_TIMEOUT_SECONDS", value=0.05)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
+    cog = _cog()
+    release = threading.Event()
+
+    def stalled_resolve(url: str) -> str:
+        del url
+        release.wait(timeout=5.0)
+        return ""
+
+    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
+        resolve_clean_url=stalled_resolve
+    )
+    interaction = FakeInteraction()
+
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=interaction), url="https://www.threads.com/share/D1CytHQmC/"
+    )
+    release.set()
+
+    assert interaction.followup.sent[-1]["ephemeral"] is True
+    assert any(fields.get("error_type") == "TimeoutError" for _msg, fields in warned)

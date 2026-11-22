@@ -1,6 +1,7 @@
 """Tests for the memory store: scopes, compartments, fact files and the evidence tiers."""
 
 import re
+import time
 from types import SimpleNamespace
 from pathlib import Path
 from datetime import timedelta
@@ -25,6 +26,7 @@ from discordbot.services.memory.store import (
     write_tone,
     delete_fact,
     iter_scopes,
+    trim_detail,
     mark_cleared,
     server_scope,
     append_detail,
@@ -36,12 +38,14 @@ from discordbot.services.memory.store import (
     append_raw_entry,
     read_detail_tail,
     read_raw_entries,
+    rewrite_evidence,
     count_raw_entries,
     guild_compartment,
     list_compartments,
     prune_compartment,
     unaccounted_files,
     delete_memory_files,
+    _trimmed_detail_text,
     read_memory_document,
 )
 from discordbot.services.memory.constants import RECENT_CONTEXT_TTL_DAYS
@@ -265,16 +269,18 @@ def test_read_evidence_puts_the_detail_tail_ahead_of_raw() -> None:
     assert read_evidence(scope=USER_SCOPE) == f"{detail}\n\n{raw}"
 
 
-def test_append_detail_trims_oldest_past_cap(
+async def test_append_detail_trims_oldest_past_cap(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.store.DETAIL_FILE_MAX_BYTES", 300)
     monkeypatch.setattr("discordbot.services.memory.store.DETAIL_FILE_TRIM_TARGET_BYTES", 200)
+    started_at = time.monotonic()
     for index in range(6):
         append_detail(
             scope=USER_SCOPE,
             text=f"## 2026-01-0{index + 1}T00:00:00+00:00 | x\nentry {index} " + "a" * 80,
         )
+        await trim_detail(scope=USER_SCOPE, started_at=started_at)
     detail_path = memory_isolated_dir / str(USER_ID) / "detail.md"
     text = detail_path.read_text(encoding="utf-8")
     # The newest entry always survives, the oldest entries are gone for good,
@@ -283,6 +289,63 @@ def test_append_detail_trims_oldest_past_cap(
     assert "entry 0" not in text
     assert len(text.encode("utf-8")) <= 300 + 1
     assert not detail_path.with_suffix(".md.tmp").exists()
+
+
+async def test_trim_detail_and_rewrite_evidence_abort_when_cleared_mid_offload(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offloading `detail.md` parsing to a worker thread must never resurrect cleared files."""
+    monkeypatch.setattr("discordbot.services.memory.store.DETAIL_FILE_MAX_BYTES", 50)
+    monkeypatch.setattr("discordbot.services.memory.store.DETAIL_FILE_TRIM_TARGET_BYTES", 20)
+    started_at = time.monotonic()
+    detail_path = memory_isolated_dir / str(USER_ID) / "detail.md"
+    append_detail(
+        scope=USER_SCOPE,
+        text=(
+            "## 2026-01-01T00:00:00+00:00\nentry 0 " + "a" * 80 + "\n\n"
+            "## 2026-01-02T00:00:00+00:00\nentry 1 " + "b" * 80
+        ),
+    )
+
+    def clear_while_rewriting(text: str) -> str:
+        if not text:
+            return text
+        delete_memory_files(scope=USER_SCOPE)
+        mark_cleared(scope=USER_SCOPE)
+        return text.replace("entry 0", "rewritten")
+
+    await rewrite_evidence(scope=USER_SCOPE, edit=clear_while_rewriting, started_at=started_at)
+    assert not detail_path.exists()
+
+    started_at = time.monotonic()
+    append_detail(
+        scope=USER_SCOPE,
+        text=(
+            "## 2026-01-01T00:00:00+00:00\nentry 0 " + "a" * 80 + "\n\n"
+            "## 2026-01-02T00:00:00+00:00\nentry 1 " + "b" * 80
+        ),
+    )
+    real_trim = _trimmed_detail_text
+
+    def clear_while_trimming(path: Path) -> str | None:
+        result = real_trim(path=path)
+        delete_memory_files(scope=USER_SCOPE)
+        mark_cleared(scope=USER_SCOPE)
+        return result
+
+    monkeypatch.setattr(
+        "discordbot.services.memory.store._trimmed_detail_text", clear_while_trimming
+    )
+    await trim_detail(scope=USER_SCOPE, started_at=started_at)
+    assert not detail_path.exists()
+
+
+def test_raw_file_bytes_reads_stat_size_without_decoding(memory_isolated_dir: Path) -> None:
+    """`raw_file_bytes` uses `stat` rather than reading and re-encoding UTF-8."""
+    raw_path = memory_isolated_dir / str(USER_ID) / "raw.md"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(_BIG5)
+    assert raw_file_bytes(scope=USER_SCOPE) == len(_BIG5)
 
 
 def test_iter_scopes_only_descends_into_the_bot_memory_directory(

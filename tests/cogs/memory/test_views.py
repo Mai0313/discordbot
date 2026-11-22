@@ -223,6 +223,21 @@ async def test_memory_clear_second_click_does_not_overwrite_the_outcome() -> Non
     assert embed.description == build_clear_result_embed(removed=True).description
 
 
+async def test_memory_clear_cancel_after_confirm_does_not_overwrite_outcome() -> None:
+    """Clicking Cancel after Confirm stops the view must not replace the clear result with '已取消'."""
+    _populate_every_tier()
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    confirm = FakeInteraction()
+    await _confirm_button(view=view).callback(as_interaction(fake=confirm))
+
+    cancel = FakeInteraction()
+    await cast("Button[Any]", view.cancel_clear).callback(as_interaction(fake=cancel))
+
+    assert cancel.response.deferred is True
+    assert cancel.response.edited == []
+    assert _memory_text() == ""
+
+
 async def test_memory_clear_failure_keeps_memory_and_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

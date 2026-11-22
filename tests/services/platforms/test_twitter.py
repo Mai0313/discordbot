@@ -755,6 +755,77 @@ def test_a_quoted_post_takes_its_text_from_fxtwitter_when_it_is_long(
     assert target.quoted.text == expected
 
 
+def test_quoted_note_tweet_clears_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replacing a truncated quoted tweet's body from FxTwitter must also clear `is_truncated`."""
+    thread = [
+        _fx_status(
+            status_id=_STATUS_ID,
+            extra={
+                "quote": _fx_status(
+                    status_id="77", text="full quoted body", extra={"is_note_tweet": True}
+                )
+            },
+        )
+    ]
+    conversation = _parse(
+        monkeypatch,
+        payload=_tweet(
+            extra={
+                "quoted_tweet": _tweet(
+                    text="cut quoted", extra={"note_tweet": {"id": "Tm90ZVR3ZWV0UmVzdWx0czoy"}}
+                )
+            }
+        ),
+        conversation=_fx_page(thread=thread),
+    )
+    target = conversation.target
+
+    assert target is not None
+    assert target.quoted is not None
+    assert target.quoted.text == "full quoted body"
+    assert target.quoted.is_truncated is False
+
+
+def test_video_poster_urls_keeps_index_alignment_when_poster_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clip without a poster appends `""` so later clips keep matching their index in `video_urls`."""
+    no_poster_clip = {**_video(poster="ignored"), "media_url_https": ""}
+    second_clip = _video(poster="second")
+    fx_ancestor = _fx_status(
+        status_id="1",
+        text="ancestor with two clips",
+        extra={
+            "media": {
+                "all": [
+                    {"type": "video", "url": "https://v.tw/fx1.mp4", "thumbnail_url": ""},
+                    {
+                        "type": "video",
+                        "url": "https://v.tw/fx2.mp4",
+                        "thumbnail_url": "https://pbs.twimg.com/fx2.jpg",
+                    },
+                ]
+            }
+        },
+    )
+    thread = [fx_ancestor, _fx_status(status_id=_STATUS_ID, replying_to="1")]
+    conversation = _parse(
+        monkeypatch,
+        payload=_tweet(media=[no_poster_clip, second_clip]),
+        conversation=_fx_page(thread=thread),
+    )
+
+    assert conversation.target is not None
+    assert len(conversation.target.video_urls) == 2
+    assert conversation.target.video_poster_urls == [
+        "",
+        "https://pbs.twimg.com/amplify_video_thumb/second.jpg",
+    ]
+    assert conversation.parent is not None
+    assert len(conversation.parent.video_urls) == 2
+    assert conversation.parent.video_poster_urls == ["", "https://pbs.twimg.com/fx2.jpg"]
+
+
 def test_an_ordinary_post_is_not_marked_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
     """The flag rides on a key's presence, so its absence has to mean what it says."""
     conversation = _parse(monkeypatch, payload=_tweet())

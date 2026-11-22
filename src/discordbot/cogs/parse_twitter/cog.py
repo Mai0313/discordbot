@@ -75,7 +75,11 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         self, post: TwitterOutput, header: str, budget: int, show_media: bool
     ) -> Embed:
         """Returns a grey context embed for an ancestor or quoted post, using its own URL."""
-        image = next(iter([*post.image_urls, *post.video_poster_urls]), "") if show_media else ""
+        image = (
+            next((url for url in (*post.image_urls, *post.video_poster_urls) if url), "")
+            if show_media
+            else ""
+        )
         hint = (
             VIDEO_HINT.format(url=self._video_link(post=post))
             if show_media and post.video_urls

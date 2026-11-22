@@ -261,6 +261,10 @@ class MemoryClearConfirmView(_OriginBoundView):
             _button (Button["MemoryClearConfirmView"]): Pressed cancel button.
             interaction (Interaction[commands.Bot]): Discord button interaction.
         """
+        if self.is_finished():
+            # Ignore duplicate clicks in flight so a cancel cannot overwrite a confirmed clear.
+            await interaction.response.defer()
+            return
         self.stop()
         await interaction.response.edit_message(embed=build_clear_cancelled_embed(), view=None)
 
