@@ -10,6 +10,7 @@ import pytest
 from requests.exceptions import RequestException
 
 from discordbot.services.platforms import ytdlp as downloader_module
+from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.services.platforms.ytdlp import (
     VideoDownloader,
     DownloadStoppedError,
@@ -17,7 +18,6 @@ from discordbot.services.platforms.ytdlp import (
 )
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.services.platforms.page_json import BROWSER_HEADERS
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError
 
 from tests.helpers.logfire_capture import capture_logs
 

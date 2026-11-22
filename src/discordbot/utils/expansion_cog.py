@@ -8,7 +8,6 @@ Failures leave no message in the channel; the reaction on the source message is 
 There is deliberately no kill-switch; disabling an expansion means removing its cog.
 """
 
-import os
 import re
 from typing import Any, ClassVar, Protocol
 import asyncio
@@ -50,6 +49,7 @@ from discordbot.utils.discord_embeds import (
     clip_to_utf16_limit,
     target_allows_file_uploads,
 )
+from discordbot.utils.file_downloads import DownloadTooLargeError, stream_to_file
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -91,13 +91,8 @@ _COMMENT_HEADER = "💬 **指定的留言**"
 # parse code spans or escapes.
 _HIDDEN_LINK_RE = re.compile(pattern=r"\|\|.+?\|\||<[^\s<>]+>", flags=re.DOTALL)
 
-_VIDEO_STREAM_CHUNK_BYTES = 1 << 16
 _DEFAULT_VIDEO_HEADERS = {"User-Agent": "Mozilla/5.0"}
 _VIDEO_FILE_INDEX_RE = re.compile(pattern=r"^video_(\d+)\.mp4$")
-
-
-class VideoTooLargeError(RuntimeError):
-    """The video exceeds the expansion's byte cap; deterministic and not retryable."""
 
 
 class CardPost(Protocol):
@@ -262,7 +257,7 @@ def fetch_card_image(url: str, max_bytes: int = 25 * 1024 * 1024) -> LoadedMedia
         if declared is not None and declared.isdigit() and int(declared) > max_bytes:
             raise ValueError(f"{url} declares {declared} bytes, over the {max_bytes} byte cap")
         buffer = bytearray()
-        for chunk in response.iter_content(chunk_size=_VIDEO_STREAM_CHUNK_BYTES):
+        for chunk in response.iter_content(chunk_size=1 << 16):
             if not chunk:
                 continue
             if len(buffer) + len(chunk) > max_bytes:
@@ -297,60 +292,6 @@ async def _download_card_image(image_url: str, url: str, message_id: int) -> Loa
             _exc_info=error,
         )
     return None
-
-
-def fetch_card_video(
-    url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int
-) -> Path:
-    """Streams one expansion video into `filepath`, enforcing `max_bytes`.
-
-    Checks `Content-Length` before reading and again while streaming, unlinking any partial file
-    on failure. Does not create the parent directory so removing the scratch directory aborts an
-    abandoned worker thread on its next write.
-
-    Args:
-        url (str): The video URL to download.
-        filepath (Path): Destination path inside an existing scratch directory.
-        headers (dict[str, str]): Request headers the CDN expects.
-        timeout (float): Per-socket read timeout in seconds.
-        max_bytes (int): Maximum allowed size in bytes.
-
-    Raises:
-        VideoTooLargeError: If the video exceeds `max_bytes`.
-        requests.RequestException: If the transfer fails or answers an error status.
-        ValueError: If the server returns an empty body.
-        OSError: If the file cannot be written or its directory was removed mid-download.
-    """
-    try:
-        with (
-            requests.Session() as session,
-            session.get(url=url, headers=headers, timeout=timeout, stream=True) as response,
-        ):
-            response.raise_for_status()
-            declared = response.headers.get("Content-Length")
-            if declared is not None and declared.isdigit() and int(declared) > max_bytes:
-                raise VideoTooLargeError(
-                    f"Video at {url} declares {declared} bytes, over the {max_bytes} byte cap"
-                )
-            written = 0
-            with filepath.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=_VIDEO_STREAM_CHUNK_BYTES):
-                    if not chunk:
-                        continue
-                    # A removed scratch dir unlinks this file without failing its writes.
-                    if os.fstat(fd=handle.fileno()).st_nlink == 0:
-                        raise FileNotFoundError(f"{filepath} was removed mid-download")
-                    written += len(chunk)
-                    if written > max_bytes:
-                        raise VideoTooLargeError(f"Video at {url} exceeds {max_bytes} bytes")
-                    handle.write(chunk)
-        if written == 0:
-            filepath.unlink(missing_ok=True)
-            raise ValueError(f"Video at {url} returned an empty body")
-        return filepath
-    except Exception:
-        filepath.unlink(missing_ok=True)
-        raise
 
 
 def omitted_images_note(count: int) -> str:
@@ -956,14 +897,15 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         """Downloads one target video into `filepath`, returning None on oversize or fetch failure."""
         try:
             return await asyncio.to_thread(
-                fetch_card_video,
+                stream_to_file,
                 url=video_url,
                 filepath=filepath,
                 headers=headers,
                 timeout=self.VIDEO_READ_TIMEOUT_SECONDS,
                 max_bytes=max_bytes,
+                allow_empty=False,
             )
-        except VideoTooLargeError as error:
+        except DownloadTooLargeError as error:
             logfire.info(
                 f"{self.PLATFORM} video exceeds the byte cap; falling back to link",
                 url=url,

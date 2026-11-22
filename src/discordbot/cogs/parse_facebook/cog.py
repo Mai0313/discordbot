@@ -17,7 +17,7 @@ from discordbot.services.platforms.facebook import (
     FacebookConversation,
     is_facebook_post_url,
 )
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError
+from discordbot.utils.file_downloads import DownloadTooLargeError
 
 
 class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation]):

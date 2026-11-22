@@ -24,6 +24,7 @@ from discordbot.typings.timeouts import (
     YTDLP_SOCKET_TIMEOUT_SECONDS,
     SHARE_RESOLVE_TIMEOUT_SECONDS,
 )
+from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.services.platforms.base import PlatformDownloader
 from discordbot.services.platforms.facebook import (
     _LOGIN_WALL_PATHS,
@@ -31,7 +32,6 @@ from discordbot.services.platforms.facebook import (
     is_facebook_post_url,
 )
 from discordbot.services.platforms.page_json import BROWSER_HEADERS
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError
 
 
 class DownloadStoppedError(Exception):

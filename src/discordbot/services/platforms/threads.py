@@ -33,13 +33,13 @@ from discordbot.utils.link_errors import (
     link_fetch_error,
     is_retryable_fetch_failure,
 )
+from discordbot.utils.file_downloads import stream_to_file
 from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
     PlatformConversation,
 )
 from discordbot.services.platforms.page_json import FetchedPage, walk, fetch_page
-from discordbot.services.platforms.file_downloads import stream_to_file
 
 # Matches `/@user/post/<code>` and `/share/<code>` on threads.net/com; ASCII tail stops at CJK.
 THREADS_URL_RE = re.compile(

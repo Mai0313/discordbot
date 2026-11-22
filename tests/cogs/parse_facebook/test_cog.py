@@ -17,11 +17,11 @@ from yt_dlp.utils import DownloadError
 
 from discordbot.utils.expansion_cog import VIDEO_HINT, omitted_videos_note
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME
+from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.ytdlp import DownloadResult, DownloadStoppedError
 from discordbot.services.platforms.facebook import FacebookOutput
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError
 
 from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (

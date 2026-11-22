@@ -2,7 +2,7 @@
 
 Used around blocking download workers run in `asyncio.to_thread`, which cannot be cancelled
 directly and may keep writing past a caller timeout. Isolating each invocation prevents
-concurrent overwrites and system temp leaks: `services/platforms/file_downloads.py::stream_to_file`
+concurrent overwrites and system temp leaks: `utils/file_downloads.py::stream_to_file`
 stops when its folder is removed, whereas `services/platforms/ytdlp.py::download_with_stop_signal`
 stops via a `threading.Event` and bounded join because yt-dlp recreates output directories.
 
