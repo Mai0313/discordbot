@@ -5,16 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 import asyncio
 
-import logfire
 import nextcord
 from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interaction
 
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.cogs.games.seats import claim_seat, release_seats, seated_elsewhere
-from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
+from discordbot.utils.discord_errors import report_discord_failure
+from discordbot.utils.message_cleanup import edit_or_report
 from discordbot.services.economy.holds import wait_for_spending
-from discordbot.cogs.games.interactions import GameView
+from discordbot.cogs.games.interactions import GameView, table_edit_kwargs
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
 
 if TYPE_CHECKING:
@@ -90,9 +89,6 @@ class BaseGameLobbyView(GameView):
         self.rng = rng
         self.prepare_participant = prepare_participant
         self.refresh_participants = refresh_participants
-        self.message: Message | None = None
-        # The last press acknowledged on the lobby; the timeout's edit and delete ride its token.
-        self.last_press: Interaction[commands.Bot] | None = None
         self._participants: dict[int, GameParticipant] = {owner.user_id: owner}
         for extra in extra_initial_participants or ():
             if extra.user_id != owner.user_id:
@@ -117,39 +113,17 @@ class BaseGameLobbyView(GameView):
             embed = self.lobby_embed(status="Lobby 已逾時")
             message = self.message
             last_press = self.last_press
-        try:
-            await edit_public_message(
-                message=message,
-                interaction=last_press,
-                payload={
-                    "embed": embed,
-                    "view": self,
-                    **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
-                },
-            )
-        except NotFound:
-            logfire.info(
-                "Lobby message gone before its timeout edit",
-                channel_id=message.channel.id,
-                message_id=message.id,
-            )
-        except Forbidden:
-            # Only an edit without a live press token hits channel REST, which can return 403.
-            logfire.warn(
-                "Discord refused the lobby's timeout edit",
-                channel_id=message.channel.id,
-                message_id=message.id,
-            )
-        # Broad on purpose: the cleanup below must still be scheduled.
-        except Exception as exc:
-            logfire.warn(
-                "Lobby timeout edit failed",
-                channel_id=message.channel.id,
-                message_id=message.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-        schedule_public_message_delete(
+        await edit_or_report(
+            message=message,
+            interaction=last_press,
+            payload=table_edit_kwargs(embeds=[embed], view=self, target=message),
+            not_found_message="Lobby message gone before its timeout edit",
+            forbidden_message="Discord refused the lobby's timeout edit",
+            other_message="Lobby timeout edit failed",
+            channel_id=message.channel.id,
+            message_id=message.id,
+        )
+        self.schedule_delete(
             message=message, user_name=self.owner.account_name, interaction=last_press
         )
 
@@ -166,7 +140,7 @@ class BaseGameLobbyView(GameView):
         if interaction.user is None:
             return
         await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
@@ -201,7 +175,7 @@ class BaseGameLobbyView(GameView):
         if interaction.user is None:
             return
         await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
@@ -236,7 +210,7 @@ class BaseGameLobbyView(GameView):
             await self._send_notice(interaction=interaction, content="只有房主可以開始")
             return
         await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         # The seats this press claims, kept to the press so a second press that finds the table
         # already starting gives back nothing of the first one's.
         claimed: list[int] = []
@@ -297,21 +271,14 @@ class BaseGameLobbyView(GameView):
             # Still started means the table is up and the refusal came from playing it.
             if self._started:
                 raise
-            # Expected failures: log code and ids without a traceback (NotFound is routine).
-            if isinstance(error, NotFound):
-                logfire.info(
-                    "Lobby message gone before its start edit; lobby reopened",
-                    channel_id=interaction.channel_id,
-                    message_id=getattr(interaction.message, "id", None),
-                    code=error.code,
-                )
-            else:
-                logfire.warn(
-                    "Discord refused the lobby's start edit; lobby reopened",
-                    channel_id=interaction.channel_id,
-                    message_id=getattr(interaction.message, "id", None),
-                    code=error.code,
-                )
+            report_discord_failure(
+                error=error,
+                not_found_message="Lobby message gone before its start edit; lobby reopened",
+                forbidden_message="Discord refused the lobby's start edit; lobby reopened",
+                other_message="Discord refused the lobby's start edit; lobby reopened",
+                channel_id=interaction.channel_id,
+                message_id=getattr(interaction.message, "id", None),
+            )
             await self._send_notice(
                 interaction=interaction, content="開桌失敗, 機器人無法更新這則訊息"
             )
@@ -340,13 +307,10 @@ class BaseGameLobbyView(GameView):
         message = interaction.message
         if message is None:
             return
-        self.message = message
-        self.last_press = interaction
+        self.keep_press(interaction=interaction)
         embed = self.lobby_embed(status=status)
         await interaction.edit_original_message(
-            embed=embed,
-            view=self,
-            **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
+            **table_edit_kwargs(embeds=[embed], view=self, target=message)
         )
 
     async def _show_table(

@@ -1,17 +1,18 @@
 """Shared helpers for game view interactions."""
 
 from typing import Any, Unpack, ClassVar, TypedDict
-import asyncio
 
-import logfire
-from nextcord import Embed, Message, NotFound, Forbidden, Interaction
+from nextcord import Embed, Message, Interaction
 from nextcord.ui import Item, View, Button
 from nextcord.ext import commands
 
-from discordbot.utils.logged_ui import LoggedView
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
+from discordbot.utils.message_cleanup import (
+    PressBoundView,
+    edit_or_report,
+    schedule_public_message_delete,
+)
 from discordbot.utils.interaction_responses import send_ephemeral_notice
 
 
@@ -24,32 +25,22 @@ class _FinalRenderFailureFields(TypedDict, total=False):
     reason: str
 
 
-class GameView(LoggedView):
+class GameView(PressBoundView):
     """Failure logging, private notices, and button disabling shared by every game view.
 
     Attributes:
         interaction_failure_log (ClassVar[str]): Log message when a control callback raises.
         notice_failure_log (ClassVar[str]): Log message when Discord refuses a private notice.
-        message (Message | None): The game's public message.
-        last_press (Interaction[commands.Bot] | None): Most recent press acknowledged on the
-            message, whose token drives timeout edits and deletion while alive.
     """
 
     interaction_failure_log: ClassVar[str]
     notice_failure_log: ClassVar[str]
-    message: Message | None
-    last_press: Interaction[commands.Bot] | None
-
-    def _keep_press(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records `interaction` as the press a timeout will edit and delete the table through."""
-        self.message = interaction.message or self.message
-        self.last_press = interaction
 
     async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
         """Defers `interaction` if needed, records it, and sends an ephemeral notice."""
         if not interaction.response.is_done():
             await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         await send_ephemeral_notice(
             interaction=interaction, content=content, log_message=self.notice_failure_log
         )
@@ -104,8 +95,8 @@ async def publish_final_table(
 
     `interaction` is the press that settled the table or, on a timeout, the last press
     acknowledged on it; the render and the deletion both go through it while its token lives
-    (`edit_public_message`). Never raises: render failures are logged with `failure_fields`
-    and deletion is scheduled regardless.
+    (`edit_or_report`). Never raises: render failures are logged with `failure_fields` and
+    deletion is scheduled regardless.
 
     Args:
         message (Message): Public table message to edit and schedule for deletion.
@@ -117,37 +108,18 @@ async def publish_final_table(
         **failure_fields (Unpack[_FinalRenderFailureFields]): Structured fields attached to
             render-failure warnings.
     """
-    try:
-        await asyncio.wait_for(
-            edit_public_message(
-                message=message,
-                interaction=interaction,
-                payload=table_edit_kwargs(embeds=embeds, view=None, target=message),
-            ),
-            timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-        )
-    except NotFound:
-        # Opener deleted the public table before the round finished; nothing to render.
-        logfire.info(f"{game_name} table message gone before final edit", message_id=message.id)
-        landed = False
-    except Forbidden:
-        # Only a render without a live press token hits channel REST, which can return 403.
-        logfire.warn(
-            f"Discord refused the {game_name} final table edit; settled round never rendered",
-            **failure_fields,
-        )
-        landed = False
-    # Broad on purpose: settlement is already committed, so this render must never raise back
-    # into the round and skip the cleanup scheduling below.
-    except Exception as exc:
-        logfire.warn(
-            f"{game_name} final table edit failed; settled round never rendered",
-            **failure_fields,
-            error_type=type(exc).__name__,
-            _exc_info=exc,
-        )
-        landed = False
-    else:
-        landed = True
+    fields: dict[str, object] = {"message_id": message.id, **failure_fields}
+    landed = await edit_or_report(
+        message=message,
+        interaction=interaction,
+        payload=table_edit_kwargs(embeds=embeds, view=None, target=message),
+        not_found_message=f"{game_name} table message gone before final edit",
+        forbidden_message=(
+            f"Discord refused the {game_name} final table edit; settled round never rendered"
+        ),
+        other_message=f"{game_name} final table edit failed; settled round never rendered",
+        timeout_seconds=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
+        **fields,
+    )
     schedule_public_message_delete(message=message, user_name=user_name, interaction=interaction)
     return landed

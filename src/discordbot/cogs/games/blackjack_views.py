@@ -9,7 +9,7 @@ import contextlib
 
 import logfire
 import nextcord
-from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interaction
+from nextcord import Embed, Message, ButtonStyle, Interaction
 
 from discordbot.typings.games import (
     Card,
@@ -21,7 +21,6 @@ from discordbot.typings.games import (
 )
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.cogs.games.seats import release_seats, hand_over_seats
-from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.cogs.games.blackjack import (
@@ -35,9 +34,10 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
+from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.cogs.games.bot_player import choose_bot_action, bot_takes_insurance
 from discordbot.cogs.games.settlement import settle_blackjack_player
-from discordbot.utils.message_cleanup import edit_public_message
+from discordbot.utils.message_cleanup import edit_or_report
 from discordbot.cogs.games.interactions import (
     GameView,
     table_edit_kwargs,
@@ -567,7 +567,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
                 shoe_generation=shoe_generation,
             )
             view.message = message
-            view.last_press = interaction
+            view.keep_press(interaction=interaction)
             if not round_state.finished:
                 view.sync_buttons()
                 seat_embeds = build_in_progress_embeds(round_state=round_state)
@@ -638,9 +638,6 @@ class BlackjackView(GameView):
         self._channel_id = channel_id
         self._guild_id = guild_id
         self._shoe_generation = shoe_generation
-        self.message: Message | None = None
-        # The last press acknowledged on the table; the timeout's edits and delete ride its token.
-        self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
         # Set once every seat's settlement has been attempted: until then the players stay seated.
@@ -706,6 +703,7 @@ class BlackjackView(GameView):
     ) -> None:
         """Runs one active-player action under `self._round_lock`, then refreshes the table."""
         await interaction.response.defer()
+        self.keep_press(interaction=interaction)
         if interaction.message is None or interaction.user is None:
             return
         async with self._round_lock:
@@ -813,6 +811,7 @@ class BlackjackView(GameView):
     ) -> None:
         """Runs one insurance decision under `self._round_lock`, then refreshes the table."""
         await interaction.response.defer()
+        self.keep_press(interaction=interaction)
         if interaction.message is None:
             return
         async with self._round_lock:
@@ -1110,34 +1109,22 @@ class BlackjackView(GameView):
         Non-fatal edit failures are logged rather than raised so a transient Discord error
         cannot strand a bot turn or later action.
         """
-        self.last_press = interaction
+        self.keep_press(interaction=interaction)
         self.sync_buttons()
         seat_embeds = build_in_progress_embeds(round_state=self.round_state)
         try:
             await interaction.edit_original_message(
                 **table_edit_kwargs(embeds=seat_embeds, view=self, target=message)
             )
-        except NotFound:
-            logfire.info(
-                "Blackjack table message gone before an in-progress edit",
-                channel_id=self._channel_id,
-                message_id=message.id,
-            )
-        except Forbidden:
-            # Expected if the interaction token expired or channel permissions changed; ids suffice.
-            logfire.warn(
-                "Discord refused an in-progress Blackjack table edit",
-                channel_id=self._channel_id,
-                message_id=message.id,
-            )
         # Broad on purpose: a failed intermediate refresh must not strand bot turns or later moves.
         except Exception as exc:
-            logfire.warn(
-                "In-progress Blackjack table edit failed",
+            report_discord_failure(
+                error=exc,
+                not_found_message="Blackjack table message gone before an in-progress edit",
+                forbidden_message="Discord refused an in-progress Blackjack table edit",
+                other_message="In-progress Blackjack table edit failed",
                 channel_id=self._channel_id,
                 message_id=message.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
 
     async def _reject_stale_action_locked(
@@ -1281,38 +1268,17 @@ class BlackjackView(GameView):
         step: str,
     ) -> None:
         """Edits the table on the way to settling; a failed edit is logged, never raised."""
-        try:
-            await asyncio.wait_for(
-                edit_public_message(message=message, interaction=interaction, payload=payload),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
-        except NotFound:
-            logfire.info(
-                "Blackjack table message gone before an edit",
-                step=step,
-                channel_id=self._channel_id,
-                message_id=message.id,
-            )
-        except Forbidden:
-            # Only an edit with no working press behind it goes through the channel, which
-            # the server can shut the bot out of; the ids are the whole finding.
-            logfire.warn(
-                "Discord refused a Blackjack table edit",
-                step=step,
-                channel_id=self._channel_id,
-                message_id=message.id,
-            )
-        # Broad on purpose: these edits only show the round moving, so no failure of theirs may
-        # stop it from settling.
-        except Exception as exc:
-            logfire.warn(
-                "Blackjack table edit failed",
-                step=step,
-                channel_id=self._channel_id,
-                message_id=message.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+        await edit_or_report(
+            message=message,
+            interaction=interaction,
+            payload=payload,
+            not_found_message="Blackjack table message gone before an edit",
+            forbidden_message="Discord refused a Blackjack table edit",
+            other_message="Blackjack table edit failed",
+            step=step,
+            channel_id=self._channel_id,
+            message_id=message.id,
+        )
 
     async def _safe_edit_view_locked(
         self, message: Message, interaction: Interaction[commands.Bot] | None

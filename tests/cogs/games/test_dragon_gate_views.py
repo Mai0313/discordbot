@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import asyncio
 
 import pytest
 
@@ -647,3 +648,43 @@ def test_dragon_gate_in_progress_embed_warns_when_active_balance_is_below_min_be
         round_state=round_state, jackpot=500, insufficient_balance=True
     )
     assert "不足最低下注" in str(embed.description)
+
+
+async def test_dragon_gate_keeps_newest_press_before_bet_write_so_timeout_rides_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`keep_press` runs right after `defer()` so even a cancelled bet updates `last_press`."""
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    owner = await funded_dragon_gate_seat(user_id=1, display_name="Alice")
+    message = FakeDiscordMessage()
+    message.edit_failure = make_forbidden(message="Missing Access")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
+    )
+    table = DragonGateView(
+        round_state=round_state,
+        owner=owner,
+        jackpot_snapshot=500,
+        final_balances={owner.user_id: owner.balance_at_start},
+    )
+    stale_press = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    stale_press.expired = True
+    table.message = as_message(fake=message)
+    table.keep_press(interaction=as_interaction(fake=stale_press))
+
+    seen_press_at_read: list[object] = []
+
+    async def abort_balance_read(user_id: int) -> int:
+        del user_id
+        seen_press_at_read.append(table.last_press)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", abort_balance_read)
+    bet_press = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+    with pytest.raises(asyncio.CancelledError):
+        await table._handle_bet_choice(choice="min", interaction=as_interaction(fake=bet_press))
+
+    assert seen_press_at_read == [bet_press]
+    await table.on_timeout()
+    assert bet_press.edits[-1]["view"] is None
+    assert (scheduled.messages, scheduled.interactions) == ([message], [bet_press])

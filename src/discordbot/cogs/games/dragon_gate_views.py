@@ -494,7 +494,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             final_balances=final_balances,
         )
         view.message = message
-        view.last_press = interaction
+        view.keep_press(interaction=interaction)
         embeds = view.in_progress_embeds()
         await self._show_table(
             interaction=interaction,
@@ -534,9 +534,6 @@ class DragonGateView(GameView):
         super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
         self.round_state = round_state
         self.owner = owner
-        self.message: Message | None = None
-        # The last press acknowledged on the table; the timeout's edit and delete ride its token.
-        self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
         self._history: list[DragonGateTurnResult] = []
@@ -694,6 +691,7 @@ class DragonGateView(GameView):
             await self._send_notice(interaction=interaction, content="下注金額要是整數")
             return
         await interaction.response.defer()
+        self.keep_press(interaction=interaction)
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     def sync_controls(self) -> None:
@@ -750,7 +748,9 @@ class DragonGateView(GameView):
     ) -> None:
         """Stores a high or low choice for the active pair gate."""
         await interaction.response.defer()
-        if interaction.user is None or interaction.message is None:
+        self.keep_press(interaction=interaction)
+        message = self.message
+        if interaction.user is None or message is None:
             return
         async with self._round_lock:
             if self._settled:
@@ -767,13 +767,7 @@ class DragonGateView(GameView):
                     interaction=interaction, content=self._rule_error_notice(error=error)
                 )
                 return
-            self.sync_controls()
-            self.last_press = interaction
-            await interaction.edit_original_message(
-                **table_edit_kwargs(
-                    embeds=self.in_progress_embeds(), view=self, target=interaction.message
-                )
-            )
+            await self._edit_in_progress_locked(interaction=interaction, message=message)
 
     def _max_bet_for(self, user_id: int | None) -> int:
         """Returns the max legal bet bounded by the pool, the single-bet cap, and player balance."""
@@ -791,6 +785,7 @@ class DragonGateView(GameView):
     async def _place_select_bet(self, interaction: Interaction[commands.Bot], amount: int) -> None:
         """Defers a select interaction and places the chosen fixed bet."""
         await interaction.response.defer()
+        self.keep_press(interaction=interaction)
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     @staticmethod
@@ -807,12 +802,11 @@ class DragonGateView(GameView):
             and settlement.jackpot_generation != prev_generation
         )
 
-    async def _refresh_table_locked(
+    async def _edit_in_progress_locked(
         self, interaction: Interaction[commands.Bot], message: Message
     ) -> None:
         """Rebuilds controls and renders the current in-progress embeds onto `message`."""
         self.sync_controls()
-        self.last_press = interaction
         await interaction.edit_original_message(
             **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
         )
@@ -928,7 +922,7 @@ class DragonGateView(GameView):
                     message=message, reason="彩金池清空", interaction=interaction
                 )
                 return
-            await self._refresh_table_locked(interaction=interaction, message=message)
+            await self._edit_in_progress_locked(interaction=interaction, message=message)
             return
 
         if settlement.jackpot_depleted or settlement.jackpot_balance <= 0:
@@ -945,7 +939,7 @@ class DragonGateView(GameView):
         ):
             return
 
-        await self._refresh_table_locked(interaction=interaction, message=message)
+        await self._edit_in_progress_locked(interaction=interaction, message=message)
 
     async def _place_bet_locked_by_interaction(
         self, interaction: Interaction[commands.Bot], amount: int
@@ -997,7 +991,8 @@ class DragonGateView(GameView):
         if interaction.user is None:
             return
         await interaction.response.defer()
-        message = interaction.message or self.message
+        self.keep_press(interaction=interaction)
+        message = self.message
         if message is None:
             return
         async with self._round_lock:
@@ -1032,11 +1027,7 @@ class DragonGateView(GameView):
                     message=message, reason="所有玩家已離桌", interaction=interaction
                 )
                 return
-            self.sync_controls()
-            self.last_press = interaction
-            await interaction.edit_original_message(
-                **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
-            )
+            await self._edit_in_progress_locked(interaction=interaction, message=message)
 
     def in_progress_embeds(self) -> list[Embed]:
         """Returns the current table embed and optional history embed."""
