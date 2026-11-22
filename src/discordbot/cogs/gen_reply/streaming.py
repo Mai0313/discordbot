@@ -21,6 +21,7 @@ from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
+from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
 from discordbot.utils.preview_editor import CadencePreviewEditor
@@ -467,21 +468,16 @@ class ResponseStreamer(BaseModel):
                 embed=embed,
                 **embed_spacer_payload(embeds=[embed], is_edit=True, target=target),
             )
-        except NotFound:
-            # Half-written reply was deleted; caller posts a fresh failure message.
-            logfire.info(
-                "The streamed reply is gone; posting the failure fresh",
-                message_id=self.message.id,
-                reply_id=self.reply.id,
-            )
-            return False
         except HTTPException as exc:
-            logfire.warn(
-                "Could not land the failure on the streamed reply; posting it fresh",
+            report_discord_failure(
+                error=exc,
+                not_found_message="The streamed reply is gone; posting the failure fresh",
+                forbidden_message=(
+                    "Could not land the failure on the streamed reply; posting it fresh"
+                ),
+                other_message="Could not land the failure on the streamed reply; posting it fresh",
                 message_id=self.message.id,
                 reply_id=self.reply.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
             return False
         return True
@@ -687,8 +683,14 @@ class ResponseStreamer(BaseModel):
             await reply.edit(content=content, allowed_mentions=AllowedMentions.none())
         except Exception as exc:
             # Broad: reply may be deleted; footnote edits never surface failures.
-            logfire.warn(
-                failure, message_id=self.message.id, error_type=type(exc).__name__, _exc_info=exc
+            report_discord_failure(
+                error=exc,
+                not_found_message=failure,
+                not_found_level="warn",
+                not_found_exc_info=True,
+                forbidden_message=failure,
+                other_message=failure,
+                message_id=self.message.id,
             )
             return False
         self.stored_content = content

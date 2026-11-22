@@ -31,7 +31,6 @@ from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.link_sources import (
     THREADS_STUB_COMMENT_TEXT,
     ThreadsDownloaderStub,
-    stub_bot,
     guild_message,
     hosting_planner,
     serve_card_images,
@@ -39,6 +38,7 @@ from tests.helpers.link_sources import (
 from tests.helpers.discord_mocks import (
     FakeInteraction,
     FakeDiscordMessage,
+    stub_bot,
     expansion_payload,
     placeholder_withdrawn,
 )

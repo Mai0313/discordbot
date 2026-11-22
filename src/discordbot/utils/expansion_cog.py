@@ -18,7 +18,7 @@ import contextlib
 from collections.abc import Callable, Coroutine
 
 import logfire
-from nextcord import Color, Embed, Message, NotFound, Forbidden
+from nextcord import Color, Embed, Message, NotFound
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 import requests
 from nextcord.ext import commands
@@ -51,6 +51,7 @@ from discordbot.utils.discord_embeds import (
     clip_to_utf16_limit,
     target_allows_file_uploads,
 )
+from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.utils.file_downloads import DownloadTooLargeError, stream_to_file
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -394,32 +395,16 @@ def report_expansion_delivery_failure(
         message_id (int): The source message carrying the link.
         channel_id (int): The channel it was posted in.
     """
-    if isinstance(error, NotFound):
-        logfire.info(
-            f"The {platform} expansion placeholder is gone",
-            url=url,
-            message_id=message_id,
-            channel_id=channel_id,
-        )
-    elif isinstance(error, Forbidden):
-        # Omit traceback: stack is identical on every refusal; error.code identifies which refusal.
-        logfire.warn(
-            f"Missing permission to post the {platform} expansion",
-            url=url,
-            message_id=message_id,
-            channel_id=channel_id,
-            error_type=type(error).__name__,
-            code=error.code,
-        )
-    else:
-        logfire.error(
-            f"Failed to send {platform} expansion",
-            url=url,
-            message_id=message_id,
-            channel_id=channel_id,
-            error_type=type(error).__name__,
-            _exc_info=error,
-        )
+    report_discord_failure(
+        error=error,
+        not_found_message=f"The {platform} expansion placeholder is gone",
+        forbidden_message=f"Missing permission to post the {platform} expansion",
+        other_message=f"Failed to send {platform} expansion",
+        other_level="error",
+        url=url,
+        message_id=message_id,
+        channel_id=channel_id,
+    )
 
 
 class ExpansionDelivery(BaseModel):
@@ -718,24 +703,15 @@ class ExpansionCog[ParsedT](commands.Cog):
                 raise
             # Source message deleted meanwhile; nothing left to restore.
             return False
-        except Forbidden as error:
-            # Missing Manage Messages is expected; omit identical traceback.
-            logfire.warn(
-                f"Could not {action} the source message embed",
-                message_id=message.id,
-                guild_id=message.guild.id if message.guild else None,
-                error_type=type(error).__name__,
-            )
-            return False
         except Exception as error:
             # Broad on purpose: toggling Discord's preview is cosmetic and must not abort
             # delivery or keep the failure mark off.
-            logfire.warn(
-                f"Could not {action} the source message embed",
+            report_discord_failure(
+                error=error,
+                forbidden_message=f"Could not {action} the source message embed",
+                other_message=f"Could not {action} the source message embed",
                 message_id=message.id,
                 guild_id=message.guild.id if message.guild else None,
-                error_type=type(error).__name__,
-                _exc_info=error,
             )
             return False
         return True

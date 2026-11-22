@@ -22,7 +22,7 @@ from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.sqlite_config import open_reply_session
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.discord_errors import is_reply_target_gone
+from discordbot.utils.discord_errors import is_reply_target_gone, report_discord_failure
 
 # Shared auto-expansion reaction outcomes (independent of reply-turn marks):
 # WORKING: in progress; DONE: card delivered; RETRY_LATER: transient fetch/timeout failure;
@@ -231,20 +231,26 @@ async def send_expansion_placeholder(
         placeholder = await message.reply(
             content=text, mention_author=False, allowed_mentions=AllowedMentions.none()
         )
-    except Forbidden as error:
-        logfire.warn(
-            "Missing permission to post an expansion placeholder",
-            message_id=message.id,
-            channel_id=message.channel.id,
-            error_type=type(error).__name__,
-        )
-        return None
     except HTTPException as error:
-        if not is_reply_target_gone(error=error):
+        if not isinstance(error, Forbidden) and not is_reply_target_gone(error=error):
             raise
-        logfire.info(
-            "The message to expand is gone", message_id=message.id, channel_id=message.channel.id
-        )
+        if isinstance(error, NotFound | Forbidden):
+            report_discord_failure(
+                error=error,
+                not_found_message="The message to expand is gone",
+                forbidden_message="Missing permission to post an expansion placeholder",
+                other_message="Failed to post an expansion placeholder",
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
+        else:
+            logfire.info(
+                "The message to expand is gone",
+                message_id=message.id,
+                channel_id=message.channel.id,
+                code=error.code,
+                error_type=type(error).__name__,
+            )
         return None
     await _record_pending(placeholder=placeholder, source_message=message, source=source, url=url)
     return ExpansionPlaceholder(message=placeholder)
@@ -259,7 +265,18 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
         placeholder_message = await channel.fetch_message(record.message_id)
     # Drop row only on NotFound/Forbidden/non-fetchable channel; transient errors keep it for
     # the next restart.
-    except (NotFound, Forbidden, TypeError):
+    except (NotFound, Forbidden) as error:
+        report_discord_failure(
+            error=error,
+            not_found_message=None,
+            forbidden_message="Missing permission to fetch an interrupted expansion placeholder",
+            other_message="Failed to fetch an interrupted expansion placeholder",
+            channel_id=record.channel_id,
+            message_id=record.message_id,
+        )
+        await _forget_pending(message_id=record.message_id)
+        return
+    except TypeError:
         await _forget_pending(message_id=record.message_id)
         return
     placeholder = ExpansionPlaceholder(message=placeholder_message)
@@ -267,7 +284,15 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
     try:
         source_message = await channel.fetch_message(record.source_message_id)
     # Source link deleted while down; discard the placeholder.
-    except (NotFound, Forbidden):
+    except (NotFound, Forbidden) as error:
+        report_discord_failure(
+            error=error,
+            not_found_message=None,
+            forbidden_message="Missing permission to fetch an interrupted expansion source",
+            other_message="Failed to fetch an interrupted expansion source",
+            channel_id=record.channel_id,
+            message_id=record.source_message_id,
+        )
         await placeholder.discard()
         return
 

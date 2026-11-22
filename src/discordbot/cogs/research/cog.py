@@ -52,7 +52,7 @@ from discordbot.cogs.research.agent import (
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
 from discordbot.utils.sqlite_config import ensure_database_upgraded
-from discordbot.utils.discord_errors import is_reply_target_gone
+from discordbot.utils.discord_errors import is_reply_target_gone, report_discord_failure
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
@@ -195,27 +195,30 @@ class ResearchCogs(commands.Cog):
             return
         try:
             await message.reply(content=_launch_reply(outcome=outcome, thread_id=thread_id))
-        except Forbidden:
-            logfire.warn(
-                "deep research cannot say why it did not start",
-                message_id=message.id,
-                channel_id=message.channel.id,
-            )
         # Broad: launch already ended; raising would make research_bridge report a dropped brief.
         except Exception as exc:
-            if isinstance(exc, HTTPException) and is_reply_target_gone(error=exc):
+            if (
+                isinstance(exc, HTTPException)
+                and not isinstance(exc, NotFound)
+                and is_reply_target_gone(error=exc)
+            ):
                 logfire.info(
                     "deep research's request is gone before it could say why it did not start",
                     message_id=message.id,
                     channel_id=message.channel.id,
+                    code=exc.code,
+                    error_type=type(exc).__name__,
                 )
                 return
-            logfire.warn(
-                "failed to say why deep research did not start",
+            report_discord_failure(
+                error=exc,
+                not_found_message=(
+                    "deep research's request is gone before it could say why it did not start"
+                ),
+                forbidden_message="deep research cannot say why it did not start",
+                other_message="failed to say why deep research did not start",
                 message_id=message.id,
                 channel_id=message.channel.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
 
     @nextcord.slash_command(
@@ -287,27 +290,23 @@ class ResearchCogs(commands.Cog):
                 content=f"{interaction.user.mention} 要研究:{topic[:200]}",
                 allowed_mentions=owner_allowed_mentions(owner_id=interaction.user.id),
             )
-        except Forbidden:
-            logfire.warn(
-                "deep research cannot post its anchor in this channel",
-                channel_id=channel.id,
-                owner_id=interaction.user.id,
-            )
-            await interaction.edit_original_message(
-                content=_launch_reply(outcome="forbidden", thread_id=None)
-            )
-            return
         # Broad: report anchor failure directly instead of generic command error handling.
         except Exception as exc:
-            logfire.error(
-                "failed to post the deep research anchor",
+            report_discord_failure(
+                error=exc,
+                not_found_message="failed to post the deep research anchor",
+                not_found_level="error",
+                not_found_exc_info=True,
+                forbidden_message="deep research cannot post its anchor in this channel",
+                other_message="failed to post the deep research anchor",
+                other_level="error",
                 channel_id=channel.id,
                 owner_id=interaction.user.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
             await interaction.edit_original_message(
-                content=_launch_reply(outcome="error", thread_id=None)
+                content=_launch_reply(
+                    outcome="forbidden" if isinstance(exc, Forbidden) else "error", thread_id=None
+                )
             )
             return
         outcome, thread_id = await self._start_for(
@@ -359,26 +358,22 @@ class ResearchCogs(commands.Cog):
             name = await self._generate_thread_name(brief=brief)
             try:
                 thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
-            except Forbidden:
-                logfire.warn(
-                    "deep research cannot open a thread in this channel",
-                    message_id=anchor.id,
-                    owner_id=owner_id,
-                    channel_id=anchor.channel.id,
-                )
-                return "forbidden", None
             except Exception as exc:
                 # Broad: create_thread can fail on an LLM-authored name Discord rejects or an
                 # outage; all of them end the launch the same way.
-                logfire.error(
-                    "failed to create research thread",
+                report_discord_failure(
+                    error=exc,
+                    not_found_message="failed to create research thread",
+                    not_found_level="error",
+                    not_found_exc_info=True,
+                    forbidden_message="deep research cannot open a thread in this channel",
+                    other_message="failed to create research thread",
+                    other_level="error",
                     message_id=anchor.id,
                     owner_id=owner_id,
                     channel_id=anchor.channel.id,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
                 )
-                return "error", None
+                return ("forbidden" if isinstance(exc, Forbidden) else "error"), None
             agent = self.runtime_models.antigravity_model.name
             try:
                 await db.insert_session(
@@ -402,21 +397,18 @@ class ResearchCogs(commands.Cog):
                 )
                 try:
                     await thread.delete()
-                except Forbidden:
-                    # Deleting a thread needs Manage Threads, which launch does not require.
-                    logfire.warn(
-                        "research thread of a failed launch could not be deleted",
-                        thread_id=thread.id,
-                        owner_id=owner_id,
-                    )
                 except Exception as delete_error:
                     # Broad: the launch has already failed, and any failure leaves the thread.
-                    logfire.warn(
-                        "failed to delete the research thread of a failed launch",
+                    # Deleting a thread needs Manage Threads, which launch does not require.
+                    report_discord_failure(
+                        error=delete_error,
+                        not_found_message="failed to delete the research thread of a failed launch",
+                        not_found_level="warn",
+                        not_found_exc_info=True,
+                        forbidden_message="research thread of a failed launch could not be deleted",
+                        other_message="failed to delete the research thread of a failed launch",
                         thread_id=thread.id,
                         owner_id=owner_id,
-                        error_type=type(delete_error).__name__,
-                        _exc_info=delete_error,
                     )
                 return "error", None
             self._active_threads.add(thread.id)
@@ -544,15 +536,16 @@ class ResearchCogs(commands.Cog):
             try:
                 await status.edit(content=content, allowed_mentions=AllowedMentions.none())
                 return
-            except Forbidden:
-                logfire.warn("research thread refused the status edit", thread_id=thread.id)
             except Exception as exc:
                 # Broad: any Discord failure is recoverable by the fallback send below.
-                logfire.warn(
-                    "failed to edit research status message",
+                report_discord_failure(
+                    error=exc,
+                    not_found_message="failed to edit research status message",
+                    not_found_level="warn",
+                    not_found_exc_info=True,
+                    forbidden_message="research thread refused the status edit",
+                    other_message="failed to edit research status message",
                     thread_id=thread.id,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
                 )
         await self._safe_send(
             thread=thread,
@@ -721,15 +714,16 @@ class ResearchCogs(commands.Cog):
                     RESEARCHING_PREFIX
                 ):
                     return message
-        except Forbidden:
-            logfire.warn("research thread refused the history read", thread_id=thread.id)
         except Exception as exc:
             # Broad: a resume must not die on a best-effort lookup it can do without.
-            logfire.warn(
-                "failed to read research thread history",
+            report_discord_failure(
+                error=exc,
+                not_found_message="failed to read research thread history",
+                not_found_level="warn",
+                not_found_exc_info=True,
+                forbidden_message="research thread refused the history read",
+                other_message="failed to read research thread history",
                 thread_id=thread.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
         return None
 
@@ -743,11 +737,14 @@ class ResearchCogs(commands.Cog):
             return cached
         try:
             fetched = await self.bot.fetch_channel(thread_id)
-        except NotFound:
-            logfire.info("research thread is gone; skipping", thread_id=thread_id)
-            return None
-        except Forbidden:
-            logfire.warn("research thread refused the fetch; skipping", thread_id=thread_id)
+        except (NotFound, Forbidden) as exc:
+            report_discord_failure(
+                error=exc,
+                not_found_message="research thread is gone; skipping",
+                forbidden_message="research thread refused the fetch; skipping",
+                other_message="failed to fetch research thread",
+                thread_id=thread_id,
+            )
             return None
         return fetched if isinstance(fetched, Thread) else None
 
@@ -767,12 +764,17 @@ class ResearchCogs(commands.Cog):
             if embed is None:
                 return await thread.send(content=content, allowed_mentions=mentions)
             return await thread.send(content=content, embed=embed, allowed_mentions=mentions)
-        except Forbidden:
-            logfire.warn(refused, thread_id=thread.id)
-            return None
         except Exception as exc:
             # Broad: missing message is a degraded outcome; failed-run cleanup must still finish.
-            logfire.warn(failed, thread_id=thread.id, error_type=type(exc).__name__, _exc_info=exc)
+            report_discord_failure(
+                error=exc,
+                not_found_message=failed,
+                not_found_level="warn",
+                not_found_exc_info=True,
+                forbidden_message=refused,
+                other_message=failed,
+                thread_id=thread.id,
+            )
             return None
 
 

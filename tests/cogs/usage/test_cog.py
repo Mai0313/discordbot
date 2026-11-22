@@ -10,8 +10,9 @@ from nextcord import InteractionType
 from discordbot.cli import DiscordBot
 from discordbot.cogs.usage.cog import UsageCogs, command_path
 
-from tests.helpers.casting import as_bot, as_interaction, as_command_interaction_data
+from tests.helpers.casting import as_interaction, as_command_interaction_data
 from tests.helpers.usage_log import usage_records
+from tests.helpers.discord_mocks import stub_bot
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -88,7 +89,7 @@ def test_command_path_walks_to_the_invoked_subcommand() -> None:
 
 async def test_the_listener_records_one_invocation(usage_log_isolated_dir: Path) -> None:
     """The listener writes a record for an application command, wherever it was run."""
-    cog = UsageCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = UsageCogs(bot=stub_bot())
 
     await cog.on_interaction(
         interaction=as_interaction(
@@ -124,7 +125,7 @@ def test_the_recorder_hooks_in_as_a_listener_not_an_override() -> None:
     `DiscordBot.on_interaction` override would stop every slash command executing while
     the records themselves still looked healthy.
     """
-    listeners = dict(UsageCogs(bot=as_bot(fake=SimpleNamespace())).get_listeners())
+    listeners = dict(UsageCogs(bot=stub_bot()).get_listeners())
 
     assert "on_interaction" in listeners
     assert getattr(UsageCogs.on_interaction, "__cog_listener__", False) is True
@@ -135,7 +136,7 @@ async def test_the_listener_ignores_everything_that_is_not_a_command(
     usage_log_isolated_dir: Path,
 ) -> None:
     """Buttons, autocomplete and modals share the event; only invocations are usage."""
-    cog = UsageCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = UsageCogs(bot=stub_bot())
 
     for interaction_type in (
         InteractionType.component,

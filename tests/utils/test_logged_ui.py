@@ -30,7 +30,8 @@ async def test_a_failing_memory_page_press_is_logged(monkeypatch: pytest.MonkeyP
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
     view = MemoryPagesView(pages=["一", "二"], footer_text="footer", title="title")
     button = cast("Button[Any]", view.next_page)
-    interaction = FakeInteraction(user=FakeUser(user_id=7), message=FakeDiscordMessage())
+    message = FakeDiscordMessage()
+    interaction = FakeInteraction(user=FakeUser(user_id=7), message=message)
     error = make_not_found()
 
     async def refused(**_kwargs: object) -> None:
@@ -45,7 +46,7 @@ async def test_a_failing_memory_page_press_is_logged(monkeypatch: pytest.MonkeyP
     assert fields["view"] == "MemoryPagesView"
     assert fields["custom_id"] == button.custom_id
     assert fields["user_id"] == 7
-    assert fields["message_id"] == 1
+    assert fields["message_id"] == message.id
     assert fields["_exc_info"] is error
 
 
@@ -141,11 +142,12 @@ async def test_a_failing_loan_timeout_is_logged(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr("discordbot.cogs.economy.views.reject_expired_loan_proposal", locked)
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
-    view.message = as_message(fake=FakeDiscordMessage())
+    message = FakeDiscordMessage()
+    view.message = as_message(fake=message)
     await _run_dispatched_timeout(view=view)
 
     assert len(logged) == 1
     _message, fields = logged[0]
     assert fields["view"] == "CreditLoanDecisionView"
-    assert fields["message_id"] == 1
+    assert fields["message_id"] == message.id
     assert fields["_exc_info"] is error

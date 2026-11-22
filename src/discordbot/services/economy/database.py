@@ -819,8 +819,11 @@ async def _rollback_session(session: AsyncSession) -> None:
     """Rolls back a session without masking the original settlement exception."""
     try:
         await session.rollback()
-    except Exception:
-        logfire.warn("Failed to roll back settlement session", _exc_info=True)
+    # Broad on purpose: rollback failure must not mask the original settlement exception.
+    except Exception as exc:
+        logfire.warn(
+            "Failed to roll back settlement session", error_type=type(exc).__name__, _exc_info=exc
+        )
 
 
 async def get_casino_ledger() -> CasinoLedgerSnapshot:

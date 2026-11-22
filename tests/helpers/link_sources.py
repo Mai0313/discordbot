@@ -39,8 +39,8 @@ from discordbot.services.platforms.facebook import FacebookOutput, FacebookConve
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramConversation
 from discordbot.services.platforms.page_json import FetchedPage
 
-from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
-from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeDiscordMessage, expansion_payload
+from tests.helpers.casting import as_message, make_media_hosting_config
+from tests.helpers.discord_mocks import FakeGuild, FakeDiscordMessage, stub_bot, expansion_payload
 
 TWITTER_URL = "https://x.com/Dbacks/status/1628549742539194368"
 FACEBOOK_URL = "https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/"
@@ -58,9 +58,6 @@ SAMPLE_POST_URLS: dict[str, str] = {
     # wrong reason.
     "bilibili": "https://www.bilibili.com/video/BV1jpK86hEc8",
 }
-
-# The id every stub bot answers to, so a test mentions it as `<@999>`.
-BOT_USER_ID = 999
 
 
 def link_build_deadline(media_seconds: float = LINK_MEDIA_TIMEOUT_SECONDS) -> float:
@@ -155,11 +152,6 @@ class StubConversationDownloader:
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
-
-
-def stub_bot() -> commands.Bot:
-    """A bot whose user a test can mention as `<@BOT_USER_ID>`."""
-    return as_bot(fake=SimpleNamespace(user=FakeUser(user_id=BOT_USER_ID, bot=True)))
 
 
 def stub_conversation_cog[CogT: commands.Cog](

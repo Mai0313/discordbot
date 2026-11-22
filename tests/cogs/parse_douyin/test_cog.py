@@ -24,7 +24,6 @@ from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
     StubDouyinOptions,
     StubDouyinDownloader,
-    stub_bot,
     guild_message,
     hosting_planner,
     stub_douyin_downloads,
@@ -32,6 +31,7 @@ from tests.helpers.link_sources import (
 )
 from tests.helpers.discord_mocks import (
     FakeDiscordMessage,
+    stub_bot,
     expansion_payload,
     placeholder_withdrawn,
 )

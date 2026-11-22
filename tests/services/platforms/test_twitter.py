@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 import threading
 
 import pytest
-import requests
 
 from discordbot.typings.timeouts import (
     TWITTER_PAGE_TIMEOUT_SECONDS,
@@ -26,6 +25,8 @@ from discordbot.services.platforms.twitter import (
     TwitterDownloader,
     TwitterConversation,
 )
+
+from tests.helpers.http import install_get, make_response
 
 _STATUS_ID = "1628549742539194368"
 _URL = f"https://x.com/Dbacks/status/{_STATUS_ID}"
@@ -863,7 +864,11 @@ def test_a_refused_post_reads_as_unreadable_whatever_it_says(
 
 def test_a_url_naming_no_post_costs_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
     """A profile URL that reached the parser anyway must not spend a request to say so."""
-    calls = _install_get(monkeypatch, response=_FakeResponse(payload=_tweet()))
+    calls = install_get(
+        monkeypatch=monkeypatch,
+        target=twitter_module.requests,
+        response=make_response(json_body=_tweet()),
+    )
 
     conversation = TwitterDownloader().parse_metadata(url="https://x.com/Dbacks")
 
@@ -885,43 +890,6 @@ def test_a_post_with_no_author_block_still_parses(monkeypatch: pytest.MonkeyPatc
     assert target.is_readable
 
 
-class _FakeResponse:
-    """The slice of `requests.Response` `_fetch_tweet` touches."""
-
-    def __init__(
-        self, payload: dict[str, Any] | Exception | None = None, status_code: int = 200
-    ) -> None:
-        self._payload = payload
-        self.status_code = status_code
-
-    def raise_for_status(self) -> None:
-        """Raises the `HTTPError` carrying a response, exactly as `requests` does."""
-        if self.status_code >= 400:
-            raise requests.HTTPError(f"{self.status_code}", response=self)
-
-    def json(self) -> dict[str, Any]:
-        """The decoded body, or the decoder's own error when the body is not JSON."""
-        if isinstance(self._payload, Exception):
-            raise self._payload
-        return self._payload or {}
-
-
-def _install_get(monkeypatch: pytest.MonkeyPatch, response: _FakeResponse) -> list[dict[str, Any]]:
-    """Replaces the one `requests.get` the module makes; returns the captured call kwargs.
-
-    A captured call is the request kwargs bag, so `Any` is what lets an assertion reach into a
-    nested value such as `calls[0]["headers"]["User-Agent"]`.
-    """
-    calls: list[dict[str, Any]] = []
-
-    def fake_get(url: str, **kwargs: object) -> _FakeResponse:
-        calls.append({"url": url, **kwargs})
-        return response
-
-    monkeypatch.setattr(target=twitter_module.requests, name="get", value=fake_get)
-    return calls
-
-
 def test_the_request_carries_what_the_endpoint_refuses_to_answer_without(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -932,7 +900,11 @@ def test_the_request_carries_what_the_endpoint_refuses_to_answer_without(
     as a post that cannot be read, and dropping the User-Agent answers 400 with an empty body.
     Both are total, silent outages of the feature.
     """
-    calls = _install_get(monkeypatch, response=_FakeResponse(payload=_tweet()))
+    calls = install_get(
+        monkeypatch=monkeypatch,
+        target=twitter_module.requests,
+        response=make_response(json_body=_tweet()),
+    )
 
     TwitterDownloader().parse_metadata(url=_URL)
 
@@ -947,13 +919,13 @@ def test_the_fxtwitter_request_names_the_post_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The second request is FxTwitter's conversation page for the same id, under its own bound."""
-    calls: list[dict[str, Any]] = []
-
-    def fake_get(url: str, **kwargs: object) -> _FakeResponse:
-        calls.append({"url": url, **kwargs})
-        return _FakeResponse(payload=_fx_page() if "fxtwitter" in url else _tweet())
-
-    monkeypatch.setattr(target=twitter_module.requests, name="get", value=fake_get)
+    calls = install_get(
+        monkeypatch=monkeypatch,
+        target=twitter_module.requests,
+        handler=lambda url, _kwargs: make_response(
+            json_body=_fx_page() if "fxtwitter" in url else _tweet()
+        ),
+    )
 
     TwitterDownloader().parse_metadata(url=f"{_URL}?s=46&t=f4h6W3bSqlanXhWACchAYQ")
 
@@ -975,7 +947,11 @@ def test_a_failed_request_raises_the_class_that_decides_the_reaction(
     Telling a reader a working link is dead is the worst outcome the feature has, and a 429 is
     exactly when it would: the post is fine and the same link works in a minute.
     """
-    _install_get(monkeypatch, response=_FakeResponse(status_code=status_code))
+    install_get(
+        monkeypatch=monkeypatch,
+        target=twitter_module.requests,
+        response=make_response(status_code=status_code),
+    )
 
     with pytest.raises(expected):
         TwitterDownloader().parse_metadata(url=_URL)
@@ -990,7 +966,11 @@ def test_an_id_too_large_to_be_a_post_is_refused_before_the_request(
     mistyped 21-digit id would reach the channel as the cross that means the bot broke, plus an
     error-level log with a traceback. The id cannot be a post, so no request is spent on it.
     """
-    calls = _install_get(monkeypatch, response=_FakeResponse(payload=_tweet()))
+    calls = install_get(
+        monkeypatch=monkeypatch,
+        target=twitter_module.requests,
+        response=make_response(json_body=_tweet()),
+    )
 
     conversation = TwitterDownloader().parse_metadata(
         url="https://x.com/Dbacks/status/9999999999999999999999"
@@ -1008,9 +988,10 @@ def test_a_body_that_is_not_json_is_not_reported_as_a_failed_fetch(
     Inside it, an interstitial served behind a 200 would be classified as a failed FETCH of a
     request that landed fine, and the operator would go looking at the network.
     """
-    _install_get(
-        monkeypatch,
-        response=_FakeResponse(payload=requests.exceptions.JSONDecodeError("no", "<html>", 0)),
+    install_get(
+        monkeypatch=monkeypatch,
+        target=twitter_module.requests,
+        response=make_response(text="<html>"),
     )
 
     with pytest.raises(RuntimeError) as excinfo:

@@ -4,7 +4,6 @@ Each cog's hosting service is pointed at the test's own temp serve dir before `o
 sweep a started loop runs touches nothing outside it.
 """
 
-from types import SimpleNamespace
 import asyncio
 from pathlib import Path
 import contextlib
@@ -13,8 +12,8 @@ import pytest
 
 from discordbot.cogs.media_cleanup.cog import MediaCleanupCogs
 
-from tests.helpers.casting import as_bot
 from tests.helpers.link_sources import hosting_service
+from tests.helpers.discord_mocks import stub_bot
 
 
 def _record_starts(monkeypatch: pytest.MonkeyPatch, cog: MediaCleanupCogs) -> list[bool]:
@@ -34,7 +33,7 @@ async def test_on_ready_is_inert_when_cleanup_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both caps off -> cleanup disabled -> the loop never starts and no sweep runs."""
-    cog = MediaCleanupCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = MediaCleanupCogs(bot=stub_bot())
     cog.media_hosting = hosting_service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
     starts = _record_starts(monkeypatch=monkeypatch, cog=cog)
 
@@ -48,7 +47,7 @@ async def test_on_ready_starts_once_across_reconnects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """on_ready fires on every reconnect, but the _started gate starts the loop only once."""
-    cog = MediaCleanupCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = MediaCleanupCogs(bot=stub_bot())
     cog.media_hosting = hosting_service(serve_dir=tmp_path)
     starts = _record_starts(monkeypatch=monkeypatch, cog=cog)
 

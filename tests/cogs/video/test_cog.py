@@ -22,9 +22,9 @@ from discordbot.services.platforms.douyin import (
     DouyinUnavailableError,
 )
 
-from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.casting import as_interaction
 from tests.helpers.link_sources import hosting_planner
-from tests.helpers.discord_mocks import FakeInteraction
+from tests.helpers.discord_mocks import FakeInteraction, stub_bot
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
@@ -47,13 +47,13 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
     assert set(DouyinDownloader.quality_ratios) == presets
     assert set(QUALITY_CHOICES.values()) == presets
 
-    cog = VideoCogs(bot=as_bot(fake=object()))
+    cog = VideoCogs(bot=stub_bot())
     assert cog.download_video.options["quality"].default in presets
 
 
 def test_every_option_is_described_in_each_locale_the_command_is() -> None:
     """An option left in English reads wrong under a command named in the caller's language."""
-    cog = VideoCogs(bot=as_bot(fake=object()))
+    cog = VideoCogs(bot=stub_bot())
     command_locales = set(cog.download_video.description_localizations or {})
 
     for name, option in cog.download_video.options.items():
@@ -95,7 +95,7 @@ def _install(
     monkeypatch: pytest.MonkeyPatch, outcome: DownloadResult | DouyinDownload | Exception
 ) -> tuple[VideoCogs, _CannedDownloader]:
     """Builds the cog with hosting off and both of its downloaders answering `outcome`."""
-    cog = VideoCogs(bot=as_bot(fake=object()))
+    cog = VideoCogs(bot=stub_bot())
     stub = _CannedDownloader(outcome=outcome)
     monkeypatch.setattr(target=video, name="DouyinDownloader", value=lambda output_folder: stub)
     monkeypatch.setattr(target=video, name="VideoDownloader", value=lambda output_folder: stub)
@@ -257,7 +257,7 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
     the download because the worker is watching for it.
     """
     monkeypatch.setattr(video, "VIDEO_DOWNLOAD_TIMEOUT_SECONDS", 0.05)
-    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog = VideoCogs(bot=stub_bot())
 
     class StallingDownloader:
         """Drips like a stalling host, and watches the stop signal like yt-dlp's progress hook."""

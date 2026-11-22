@@ -580,3 +580,19 @@ async def test_render_history_logs_unsupported_attachment_once_when_payload_capp
         if text == "gen_reply skipping unsupported attachment"
     ]
     assert skips == [2]
+
+
+async def test_render_parts_logs_distinct_turn_attachment_render_done_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-turn attachment render logs a distinct name from per-message `input.py` records."""
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
+    message = _said(content="hi")
+
+    await _context_builder(
+        cog=_cog(bot_user_id=BOT_ID, file_api_enabled=False), message=as_message(fake=message)
+    ).render_parts(text_only=False)
+
+    assert [text for text, _ in logged if "attachment render done" in text] == [
+        "gen_reply turn attachment render done"
+    ]

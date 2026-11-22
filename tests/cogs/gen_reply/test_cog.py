@@ -34,6 +34,7 @@ from tests.helpers.reply_fakes import (
     _recorded_video,
     _ready_context_task,
 )
+from tests.helpers.discord_mocks import FakeUser, stub_bot
 from tests.helpers.ask_interaction import (
     GUILD_ID,
     _CAT_PNG,
@@ -250,7 +251,7 @@ def test_the_cog_builds_no_toolkit_until_a_reply_needs_one(
     """An unconfigured deployment never constructs a Gemini client it can never use."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    cog = ReplyGeneratorCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    cog = ReplyGeneratorCogs(bot=stub_bot())
     assert "toolkit" not in cog.__dict__
 
 
@@ -316,7 +317,7 @@ def _ask_cog(
 ) -> ReplyGeneratorCogs:
     """A cog whose `/ask` gets as far as handing the pipeline the turn, and no further."""
     cog = ReplyGeneratorCogs(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
+        bot=stub_bot(user=FakeUser(user_id=BOT_USER_ID, name="pocat", bot=True))
     )
     cog.__dict__["toolkit"] = _toolkit(interaction=interaction)
     monkeypatch.setattr(ReplyPipeline, "run", run)
@@ -416,7 +417,7 @@ async def test_ask_answers_an_attachment_sent_without_a_question(
 async def test_ask_without_a_proxy_key_answers_its_deferred_response() -> None:
     """Otherwise the asker is left on Discord's "thinking" state with nothing ever landing."""
     cog = ReplyGeneratorCogs(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
+        bot=stub_bot(user=FakeUser(user_id=BOT_USER_ID, name="pocat", bot=True))
     )
     cog.config = LLMConfig.model_construct()
     interaction = _interaction()

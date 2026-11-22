@@ -59,13 +59,11 @@ from discordbot.services.platforms.instagram import InstagramConversation
 from tests.helpers.casting import as_message, make_forbidden, make_server_error
 from tests.helpers.source_tree import PACKAGE
 from tests.helpers.link_sources import (
-    BOT_USER_ID,
     TWITTER_URL,
     FACEBOOK_URL,
     INSTAGRAM_URL,
     StubDouyinDownloader,
     ThreadsDownloaderStub,
-    stub_bot,
     twitter_post,
     facebook_post,
     guild_message,
@@ -73,9 +71,11 @@ from tests.helpers.link_sources import (
     stub_conversation_cog,
 )
 from tests.helpers.discord_mocks import (
+    BOT_USER_ID,
     FakeUser,
     FakeGuild,
     FakeDiscordMessage,
+    stub_bot,
     placeholder_withdrawn,
 )
 from tests.helpers.logfire_capture import capture_logs, capture_levels
@@ -754,7 +754,7 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
 
     assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
     ((_message, fields),) = _preview_warns(warns=warns)
-    assert (fields["message_id"], fields["guild_id"]) == (1, 100)
+    assert (fields["message_id"], fields["guild_id"]) == (staged.message.id, 100)
     assert "_exc_info" not in fields
 
 
@@ -823,7 +823,7 @@ async def test_a_refused_preview_restore_names_its_ids_and_the_cross_still_lands
     assert placeholder_withdrawn(message=staged.message)
     # The hide went through here, so the one refusal on record is the restore's.
     ((_message, fields),) = _preview_warns(warns=warns)
-    assert (fields["message_id"], fields["guild_id"]) == (1, 100)
+    assert (fields["message_id"], fields["guild_id"]) == (staged.message.id, 100)
     assert "_exc_info" not in fields
 
 

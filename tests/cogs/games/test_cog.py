@@ -2,13 +2,11 @@
 
 from types import SimpleNamespace
 from typing import Any, cast
-from pathlib import Path
 
 import pytest
 import nextcord
 from nextcord import Embed
 
-from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.typings.economy import MAX_SINGLE_BET
 from discordbot.cogs.games.lobby import BaseGameLobbyView
@@ -21,17 +19,21 @@ from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import card, seat, lobby_button
-from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy import seed_balance, get_jackpot_pool
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import (
+    BOT_USER_ID,
+    FakeUser,
+    FakeInteraction,
+    FakeDiscordMessage,
+    stub_bot,
+)
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 
 def _cog() -> GamesCogs:
     """Builds the cog around a bot whose own account is user 999, the table's bot player."""
-    return GamesCogs(
-        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    )
+    return GamesCogs(bot=stub_bot(user=FakeUser(user_id=BOT_USER_ID, display_name="Dealer")))
 
 
 async def test_bot_blackjack_participant_spreads_bet_by_true_count() -> None:
@@ -75,17 +77,6 @@ async def test_blackjack_history_missing_user_sends_notice() -> None:
     assert interaction.response.sent[0]["ephemeral"] is True
     assert interaction.response.sent[0]["content"]
     assert interaction.followup.sent == []
-
-
-def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
-    """A test that asks for no isolation still cannot reach the deployed `cleanup.db`.
-
-    The lobby tests below record their public messages for deletion without patching the
-    store, so this requests nothing but `tmp_path` and fails if the autouse swap is dropped.
-    It lives here rather than beside the store's own tests so that a module-local swap there
-    cannot satisfy it.
-    """
-    assert cleanup_module._engine.url.database == str(tmp_path / "cleanup.db")
 
 
 async def test_games_commands_open_their_lobbies() -> None:

@@ -46,7 +46,6 @@ from tests.helpers.source_tree import REPO_ROOT
 from tests.helpers.link_sources import (
     SAMPLE_POST_URLS,
     expand,
-    stub_bot,
     twitter_post,
     facebook_post,
     guild_message,
@@ -57,7 +56,12 @@ from tests.helpers.link_sources import (
     serve_card_videos,
     stub_conversation_cog,
 )
-from tests.helpers.discord_mocks import DiscordPayload, FakeDiscordMessage, expansion_payload
+from tests.helpers.discord_mocks import (
+    DiscordPayload,
+    FakeDiscordMessage,
+    stub_bot,
+    expansion_payload,
+)
 from tests.helpers.logfire_capture import capture_logs
 
 type _CogType = type[ConversationExpansionCog[Any, Any]]

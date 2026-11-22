@@ -1,6 +1,5 @@
 """One started Blackjack round per human player (`cogs/games/seats.py`)."""
 
-from types import SimpleNamespace
 from random import Random
 from typing import Any
 import asyncio
@@ -35,9 +34,9 @@ from tests.helpers.games import (
     attached_button,
     blackjack_round,
 )
-from tests.helpers.casting import as_bot, as_message, as_interaction, make_forbidden
+from tests.helpers.casting import as_message, as_interaction, make_forbidden
 from tests.helpers.economy import seed_balance
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage, stub_bot
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 BOB = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
@@ -260,7 +259,7 @@ async def test_a_table_frees_its_seats_after_settling_even_when_settling_raises(
 async def test_a_join_from_a_player_another_round_seats_is_refused() -> None:
     """The Join press answers privately and seats nobody."""
     claim_seat(user_id=2, holder=_Holder())
-    cog = GamesCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
+    cog = GamesCogs(bot=stub_bot())
     press = FakeInteraction(user=FakeUser(user_id=2))
 
     participant = await cog._prepare_participant(
@@ -284,7 +283,7 @@ async def test_opening_a_table_while_seated_elsewhere_is_refused(
 
     await seed_balance(user_id=1, name="alice", amount=100)
     claim_seat(user_id=1, holder=_Holder())
-    cog = GamesCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
+    cog = GamesCogs(bot=stub_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await GamesCogs.blackjack.callback(cog, interaction, bet="10")
@@ -390,7 +389,7 @@ async def test_a_dragon_gate_table_frees_its_seats_when_it_ends(
 async def test_opening_dragon_gate_while_seated_elsewhere_is_refused() -> None:
     """/games dragon_gate answers privately before deferring and opens no lobby."""
     claim_seat(user_id=1, holder=_Holder())
-    cog = GamesCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
+    cog = GamesCogs(bot=stub_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await GamesCogs.dragon_gate.callback(cog, interaction)

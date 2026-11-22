@@ -264,9 +264,12 @@ async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
     assert bot.fetch_calls == [message.channel.id]
     assert len(warns) == 1, f"expected one report, got {warns}"
     _, fields = warns[0]
-    assert fields == {"channel_id": message.channel.id, "message_id": message.id}, (
-        "a permission the bot cannot earn needs the ids and no traceback"
-    )
+    assert fields == {
+        "channel_id": message.channel.id,
+        "message_id": message.id,
+        "code": 0,
+        "error_type": "Forbidden",
+    }, "a permission the bot cannot earn needs the ids, code, error_type, and no traceback"
     assert await list_pending_public_messages() == []
 
 
@@ -294,7 +297,11 @@ async def test_a_transient_http_failure_keeps_its_traceback(
 
     assert len(warns) == 1
     _, fields = warns[0]
-    assert fields.get("_exc_info") is True, "a transport failure still needs its traceback"
+    assert isinstance(fields.get("_exc_info"), HTTPException), (
+        "a transport failure still needs its traceback"
+    )
+    assert fields["code"] == 0
+    assert fields["error_type"] == "HTTPException"
     assert await list_pending_public_messages() == [
         PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
     ]

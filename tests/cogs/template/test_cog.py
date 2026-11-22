@@ -53,7 +53,13 @@ async def test_template_logs_a_refused_reaction_at_warn(monkeypatch: pytest.Monk
     await cog.on_message(message=as_message(fake=message))
 
     assert [fields for _message, fields in warns] == [
-        {"message_id": 1, "channel_id": 2, "emoji": "🤬"}
+        {
+            "message_id": message.id,
+            "channel_id": message.channel.id,
+            "emoji": "🤬",
+            "code": 0,
+            "error_type": "Forbidden",
+        }
     ]
 
 

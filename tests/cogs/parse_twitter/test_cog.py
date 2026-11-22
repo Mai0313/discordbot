@@ -27,14 +27,13 @@ from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 from tests.helpers.link_sources import (
     TWITTER_URL,
     expand,
-    stub_bot,
     twitter_post,
     twitter_output,
     expansion_embeds,
     serve_card_images,
     serve_card_videos,
 )
-from tests.helpers.discord_mocks import expansion_payload
+from tests.helpers.discord_mocks import stub_bot, expansion_payload
 
 
 async def test_a_pasted_link_is_expanded_into_a_card() -> None:

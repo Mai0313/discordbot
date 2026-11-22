@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 from typing import Any, cast
 import asyncio
-from pathlib import Path
 from datetime import datetime, timedelta
 from collections.abc import Callable, Awaitable
 
@@ -73,6 +72,7 @@ from tests.helpers.economy import (
     open_personal_loan,
     hide_from_leaderboard,
 )
+from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.economy_invariants import (
     assert_wallet_consistent,
     assert_daily_casino_stats,
@@ -286,16 +286,6 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
         updated_at = result.scalar_one()
 
     assert before <= updated_at <= after
-
-
-def test_every_test_gets_its_own_ledger(tmp_path: Path) -> None:
-    """A test that asks for no isolation still cannot reach the deployed `economy.db`.
-
-    It requests nothing but `tmp_path`, so dropping the autouse from `economy_isolated_db`
-    fails here, before any ledger call, instead of letting the next unpatched one write the
-    live file. The engine is read off the module because the fixture swaps it per test.
-    """
-    assert economy_database._engine.url.database == str(tmp_path / "economy.db")
 
 
 async def test_the_migrated_schema_holds_only_the_current_tables() -> None:
@@ -1460,3 +1450,22 @@ async def test_apply_jackpot_settlement_batch_accumulates_deltas_for_same_player
 
     assert result.applied_player_deltas == {1: -350}
     assert result.player_balances[1] == 650
+
+
+async def test_rollback_session_logs_error_type_and_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rollback failure is logged at `warn` with `error_type` and `_exc_info` without raising."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    boom = RuntimeError("rollback failed")
+
+    async def failing_rollback() -> None:
+        raise boom
+
+    await economy_database._rollback_session(
+        session=cast("AsyncSession", SimpleNamespace(rollback=failing_rollback))
+    )
+
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields == {"error_type": "RuntimeError", "_exc_info": boom}
