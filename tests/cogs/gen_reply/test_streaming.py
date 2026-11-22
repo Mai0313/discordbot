@@ -357,7 +357,7 @@ async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
     streamer.stored_content = "partial answer"
     warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
-    await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
+    await asyncio.wait_for(streamer._preview_editor().run(), timeout=1.0)
 
     assert [fields for _, fields in warned] == [
         {"channel_id": message.channel.id, "message_id": message.id}

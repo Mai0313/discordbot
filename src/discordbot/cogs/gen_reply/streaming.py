@@ -9,7 +9,7 @@ import unicodedata
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import File, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
+from nextcord import File, Embed, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from nextcord.ui import View
@@ -31,6 +31,7 @@ from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
 from discordbot.utils.llm_transcript import render_usage_footer
+from discordbot.utils.preview_editor import CadencePreviewEditor
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -397,8 +398,7 @@ class ResponseStreamer(BaseModel):
             "request, so the first-content-delta log measures answer-call-to-first-token."
         ),
     )
-    _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
-    _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
+    _editor: CadencePreviewEditor | None = PrivateAttr(default=None)
     # Final cleaned reply body before any hosted-link, hint, memory, or footer lines.
     _body_text: str = PrivateAttr(default="")
     # Hosted media URL block spliced above hint/memory/footer when it fits DISCORD_MESSAGE_LIMIT.
@@ -411,8 +411,6 @@ class ResponseStreamer(BaseModel):
     _hint_line: str = PrivateAttr(default="")
     # True if reply was deleted mid-stream, suppressing dropped-media hints.
     _reply_deleted: bool = PrivateAttr(default=False)
-    # Suppresses repeated preview-edit warns across ticks and retries.
-    _preview_error_logged: bool = PrivateAttr(default=False)
     # Ensures first-reasoning latency is logged once across retries.
     _reasoning_logged: bool = PrivateAttr(default=False)
     _answer_seconds: float = PrivateAttr(default=0.0)
@@ -495,68 +493,22 @@ class ResponseStreamer(BaseModel):
             await self.reply.edit(content=preview)
         self.displayed_content = preview
 
-    async def _preview_editor(self) -> None:
-        """Edits the reply on a fixed cadence until `_editor_stop` is set.
-
-        Stopped via event rather than cancellation so an in-flight first reply finishes first.
-        """
-        while True:
-            try:
-                await asyncio.wait_for(
-                    self._editor_stop.wait(), timeout=self.preview_interval_seconds
-                )
-            except TimeoutError:
-                try:
-                    await self._write_preview_snapshot()
-                except NotFound:
-                    # Reply deleted mid-stream; handled again in _write_final_message.
-                    logfire.info(
-                        "Reply deleted while streaming; stopping preview edits",
-                        message_id=self.message.id,
-                    )
-                    return
-                except Forbidden:
-                    logfire.warn(
-                        "Channel refused a preview write; stopping preview edits",
-                        channel_id=self.message.channel.id,
-                        message_id=self.message.id,
-                    )
-                    return
-                except Exception as exc:
-                    # Broad: live preview is best-effort; log once since displayed_content stays
-                    # unchanged across ticks.
-                    if not self._preview_error_logged:
-                        self._preview_error_logged = True
-                        logfire.warn(
-                            "Preview snapshot edit failed; continuing to stream",
-                            message_id=self.message.id,
-                            error_type=type(exc).__name__,
-                            _exc_info=exc,
-                        )
-            else:
-                return
-
-    def _ensure_editor_started(self) -> None:
-        """Starts the snapshot editor task on the first delta that gives it work."""
-        if self._editor_task is None:
-            self._editor_task = asyncio.create_task(coro=self._preview_editor())
-
-    async def _stop_editor(self) -> None:
-        """Signals the editor to stop and waits out any in-flight Discord write."""
-        if self._editor_task is None:
-            return
-        self._editor_stop.set()
-        try:
-            await self._editor_task
-        except Exception as exc:
-            # Broad: editor failure must not sink the finished reply; cancellation propagates.
-            logfire.warn(
-                "Preview editor task crashed; the reply still finalizes without live preview",
+    def _preview_editor(self) -> CadencePreviewEditor:
+        """Returns the cadence editor driving live Discord preview edits for this streamer."""
+        if self._editor is None:
+            self._editor = CadencePreviewEditor(
+                write_snapshot=self._write_preview_snapshot,
+                interval_seconds=self.preview_interval_seconds,
                 message_id=self.message.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
+                channel_id=self.message.channel.id,
+                deleted_log="Reply deleted while streaming; stopping preview edits",
+                forbidden_log="Channel refused a preview write; stopping preview edits",
+                error_log="Preview snapshot edit failed; continuing to stream",
+                crash_log=(
+                    "Preview editor task crashed; the reply still finalizes without live preview"
+                ),
             )
-        self._editor_task = None
+        return self._editor
 
     async def _write_final_message(self, content: str, footer: str) -> None:
         """Writes the final reply and overflow chunks via `surface`; no-ops if deleted."""
@@ -616,7 +568,7 @@ class ResponseStreamer(BaseModel):
                     message_id=self.message.id,
                 )
         self.reasoning_content += delta
-        self._ensure_editor_started()
+        self._preview_editor().start()
 
     def _on_content_delta(self, delta: str) -> None:
         """Accumulates one content delta, logging the first one's latency."""
@@ -634,20 +586,21 @@ class ResponseStreamer(BaseModel):
                     message_id=self.message.id,
                 )
         self.stored_content += delta
-        self._ensure_editor_started()
+        self._preview_editor().start()
 
     def reset_for_retry(self) -> None:
         """Resets per-attempt text state and re-arms the preview editor for the next attempt.
 
         Preserves `reply`, `created_at`, `content_ever_started`, `_reasoning_logged`, and token
-        counters across attempts, and clears `_editor_stop` so the next delta can restart live
+        counters across attempts, and resets the preview editor so the next delta can restart live
         preview edits.
         """
         self.attempts += 1
         self.stored_content = ""
         self.reasoning_content = ""
         self.content_started = False
-        self._editor_stop.clear()
+        if self._editor is not None:
+            self._editor.reset()
 
     async def announce_retry(self) -> None:
         """Marks the source message with `RETRY_HINT_EMOJI` and edits an existing reply to a retry notice.
@@ -1320,7 +1273,8 @@ class ResponseStreamer(BaseModel):
         finally:
             # Stamp before finalize_reply so inline media renders do not inflate answer_seconds.
             self._answer_seconds = time.monotonic() - self.created_at
-            await self._stop_editor()
+            if self._editor is not None:
+                await self._editor.stop()
         if incomplete is not None:
             logfire.warn(
                 "gen_reply answer stream incomplete",
