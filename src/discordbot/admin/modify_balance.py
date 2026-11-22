@@ -16,8 +16,10 @@ from collections.abc import Sequence
 
 from alembic import command
 from pydantic import Field, BaseModel, ConfigDict
+from rich.text import Text
 from rich.console import Console
 from alembic.config import Config
+from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.economy import clamped_balance
 from discordbot.services.economy.database import top_n, get_account, adjust_balance
@@ -105,31 +107,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(args=argv)
 
 
-async def modify_balance(
-    user_id: int, name: str, delta: int, allow_negative: bool = False, dry_run: bool = False
+async def _apply_balance_change(  # noqa: PLR0913 -- pre-fetched account state plus adjustment flags
+    user_id: int,
+    effective_name: str,
+    before: int,
+    created: bool,
+    delta: int,
+    allow_negative: bool,
+    dry_run: bool,
 ) -> BalanceChange:
-    """Applies a manual economy balance adjustment via the database API.
-
-    Routes the change through `adjust_balance`, so it counts as neither casino
-    activity nor a loan payment. Dry runs read the current state and compute
-    the expected applied delta without writing.
-
-    Args:
-        user_id (int): Discord user ID whose account should be adjusted.
-        name (str): Display name to store when creating or updating the account.
-        delta (int): Signed amount to add to the current balance.
-        allow_negative (bool): Whether the resulting balance may go below zero.
-        dry_run (bool): Whether to compute and return the change without committing it.
-
-    Returns:
-        BalanceChange: Summary describing the requested and applied change.
-    """
-    account = await get_account(user_id=user_id)
-    created = account is None
-    existing_name = account.name if account is not None else ""
-    before = account.balance if account is not None else 0
-    effective_name = name or existing_name or str(user_id)
-
+    """Computes or applies one manual balance adjustment from pre-fetched account state."""
     projected_after = clamped_balance(balance=before, delta=delta, allow_negative=allow_negative)
     projected_applied_delta = projected_after - before
 
@@ -162,6 +149,41 @@ async def modify_balance(
     )
 
 
+async def modify_balance(
+    user_id: int, name: str, delta: int, allow_negative: bool = False, dry_run: bool = False
+) -> BalanceChange:
+    """Applies a manual economy balance adjustment via the database API.
+
+    Routes the change through `adjust_balance`, so it counts as neither casino
+    activity nor a loan payment. Dry runs read the current state and compute
+    the expected applied delta without writing.
+
+    Args:
+        user_id (int): Discord user ID whose account should be adjusted.
+        name (str): Display name to store when creating or updating the account.
+        delta (int): Signed amount to add to the current balance.
+        allow_negative (bool): Whether the resulting balance may go below zero.
+        dry_run (bool): Whether to compute and return the change without committing it.
+
+    Returns:
+        BalanceChange: Summary describing the requested and applied change.
+    """
+    account = await get_account(user_id=user_id)
+    created = account is None
+    existing_name = account.name if account is not None else ""
+    before = account.balance if account is not None else 0
+    effective_name = name or existing_name or str(user_id)
+    return await _apply_balance_change(
+        user_id=user_id,
+        effective_name=effective_name,
+        before=before,
+        created=created,
+        delta=delta,
+        allow_negative=allow_negative,
+        dry_run=dry_run,
+    )
+
+
 async def modify_all_balances(
     delta: int, allow_negative: bool = False, dry_run: bool = False
 ) -> BulkBalanceChange:
@@ -183,9 +205,11 @@ async def modify_all_balances(
     changes: list[BalanceChange] = []
     for account in accounts:
         changes.append(
-            await modify_balance(
+            await _apply_balance_change(
                 user_id=account.user_id,
-                name=account.name,
+                effective_name=account.name or str(account.user_id),
+                before=account.balance,
+                created=False,
                 delta=delta,
                 allow_negative=allow_negative,
                 dry_run=dry_run,
@@ -204,7 +228,7 @@ def _print_change(change: BalanceChange) -> None:
     title = "Dry run" if change.dry_run else "Balance modified"
     console.print(f"[bold]{title}[/bold]")
     console.print(f"user_id: {change.user_id}")
-    console.print(f"name: {change.name}")
+    console.print(Text(text=f"name: {change.name}"))
     console.print(f"created: {change.created}")
     console.print(f"before: {currency_text(amount=change.before)}")
     console.print(f"requested_delta: {currency_text(amount=change.requested_delta, signed=True)}")
@@ -225,15 +249,18 @@ def _print_bulk_change(change: BulkBalanceChange) -> None:
     )
     for item in change.changes:
         console.print(
-            f"{item.user_id} ({item.name}): "
-            f"{currency_text(amount=item.before)} -> {currency_text(amount=item.after)} "
-            f"({currency_text(amount=item.applied_delta, signed=True)})"
+            Text(
+                text=(
+                    f"{item.user_id} ({item.name}): "
+                    f"{currency_text(amount=item.before)} -> {currency_text(amount=item.after)} "
+                    f"({currency_text(amount=item.applied_delta, signed=True)})"
+                )
+            )
         )
 
 
-async def _async_main(argv: Sequence[str] | None = None) -> None:
-    """Runs the CLI."""
-    args = _parse_args(argv=argv)
+async def _async_main(args: argparse.Namespace) -> None:
+    """Runs the CLI for parsed `args`."""
     if args.target == "all":
         bulk_change = await modify_all_balances(
             delta=args.delta, allow_negative=args.allow_negative, dry_run=args.dry_run
@@ -256,11 +283,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     Args:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
-    # data/ is gitignored and may not exist on a fresh checkout seeded before the
-    # bot's first run, so create and migrate it here like cli.py does before any DB write.
-    Path("./data/database").mkdir(parents=True, exist_ok=True)
-    command.upgrade(config=Config(file_="alembic.ini", ini_section="economy"), revision="head")
-    asyncio.run(main=_async_main(argv=argv))
+    args = _parse_args(argv=argv)
+    db_path = Path("./data/database/economy.db")
+    if args.dry_run:
+        if not db_path.is_file():
+            raise SystemExit(f"no economy database at {db_path}")
+    else:
+        # data/ is gitignored and may not exist on a fresh checkout seeded before the
+        # bot's first run, so create and migrate it here like cli.py does before any DB write.
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        command.upgrade(config=Config(file_="alembic.ini", ini_section="economy"), revision="head")
+    try:
+        asyncio.run(main=_async_main(args=args))
+    except OperationalError as exc:
+        raise SystemExit(
+            f"economy database is unreadable or unmigrated at {db_path}: {exc}"
+        ) from exc
 
 
 if __name__ == "__main__":

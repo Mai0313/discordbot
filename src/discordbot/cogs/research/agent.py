@@ -3,7 +3,8 @@
 Runs `RuntimeModelCatalog.antigravity_model` directly against Google with `background=True`,
 `store=True`, and `stream=True`, re-attaching SSE streams via `last_event_id` on mid-run drops.
 Reads the authoritative final result via `_poll_until_terminal` (`interactions.get`) with no
-wall-clock timeout on streaming or polling.
+job-level wall-clock timeout; individual RPC handshakes and polls are bounded by
+`RESEARCH_RPC_TIMEOUT_SECONDS`.
 """
 
 import base64
@@ -23,7 +24,8 @@ from google.genai.interactions import (
 )
 
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.utils.llm_errors import is_retryable_llm_error
+from discordbot.typings.timeouts import RESEARCH_RPC_TIMEOUT_SECONDS
+from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
@@ -102,23 +104,29 @@ class ResearchResult(BaseModel):
 
 def _extract_image(interaction: _ResearchInteraction) -> bytes | None:
     """Returns the first decoded image from `interaction`'s `model_output` steps, if any."""
-    for step in interaction.steps or []:
-        if getattr(step, "type", None) != "model_output":
-            continue
-        for item in getattr(step, "content", None) or []:
-            if getattr(item, "type", None) == "image" and getattr(item, "data", None):
-                try:
-                    return base64.b64decode(item.data)
-                except Exception as exc:
-                    # Broad: corrupt chart bytes only drop the image; the report still delivers.
-                    logfire.warn(
-                        "research chart image could not be decoded; delivering without it",
-                        interaction_id=interaction.id,
-                        error_type=type(exc).__name__,
-                        _exc_info=exc,
-                    )
-                    return None
-    return None
+    encoded = next(
+        (
+            data
+            for step in interaction.steps or []
+            if getattr(step, "type", None) == "model_output"
+            for item in getattr(step, "content", None) or []
+            if getattr(item, "type", None) == "image" and (data := getattr(item, "data", None))
+        ),
+        None,
+    )
+    if encoded is None:
+        return None
+    try:
+        return base64.b64decode(encoded)
+    except Exception as exc:
+        # Broad: corrupt chart bytes only drop the image; the report still delivers.
+        logfire.warn(
+            "research chart image could not be decoded; delivering without it",
+            interaction_id=interaction.id,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
+        return None
 
 
 def _to_result(interaction: _ResearchInteraction) -> ResearchResult:
@@ -142,11 +150,12 @@ async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _Re
     consecutive_errors = 0
     while True:
         try:
-            interaction = cast(
-                "_ResearchInteraction", await client.aio.interactions.get(id=interaction_id)
-            )
+            async with asyncio.timeout(delay=RESEARCH_RPC_TIMEOUT_SECONDS):
+                interaction = cast(
+                    "_ResearchInteraction", await client.aio.interactions.get(id=interaction_id)
+                )
         except Exception as exc:
-            if not is_retryable_llm_error(exc=exc):
+            if not isinstance(exc, TimeoutError) and not is_retryable_llm_error(exc=exc):
                 raise
             consecutive_errors += 1
             logfire.warn(
@@ -204,9 +213,10 @@ class _StreamDriver(BaseModel):
 
     async def _reopen(self) -> "AsyncIterator[InteractionSSEEvent]":
         """Re-attaches a live stream to the running interaction from the last resume token."""
-        responses = await self.client.aio.interactions.get(
-            id=self.interaction_id, stream=True, last_event_id=self.last_event_id
-        )
+        async with asyncio.timeout(delay=RESEARCH_RPC_TIMEOUT_SECONDS):
+            responses = await self.client.aio.interactions.get(
+                id=self.interaction_id, stream=True, last_event_id=self.last_event_id
+            )
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
     async def _persist_created(self, interaction_id: str, on_created: "CreatedCallback") -> None:
@@ -223,31 +233,42 @@ class _StreamDriver(BaseModel):
                 _exc_info=exc,
             )
 
+    async def _record_event(
+        self, event: "InteractionSSEEvent", on_created: "CreatedCallback"
+    ) -> bool:
+        """Records event bookkeeping and returns whether `event` marks a terminal state."""
+        event_id = getattr(event, "event_id", None)
+        if event_id:
+            self.last_event_id = event_id
+        if event.event_type == "interaction.created" and not self.interaction_id:
+            created_id = getattr(getattr(event, "interaction", None), "id", None)
+            if created_id:
+                await self._persist_created(interaction_id=str(created_id), on_created=on_created)
+        return _is_terminal_event(event=event)
+
     async def events(
         self,
         open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
         on_created: "CreatedCallback",
     ) -> "AsyncIterator[InteractionSSEEvent]":
         """Yields events across reconnects until the interaction reaches a terminal event."""
-        stream = await open_initial()
+        stream: AsyncIterator[InteractionSSEEvent] | None = await open_initial()
         empty_reconnects = 0
         while True:
             terminal = False
             progressed = False
             try:
+                if stream is None:
+                    stream = await self._reopen()
                 async for event in stream:
                     progressed = True
-                    event_id = getattr(event, "event_id", None)
-                    if event_id:
-                        self.last_event_id = event_id
-                    if event.event_type == "interaction.created" and not self.interaction_id:
-                        await self._persist_created(
-                            interaction_id=str(event.interaction.id or ""), on_created=on_created
-                        )
-                    if _is_terminal_event(event=event):
-                        terminal = True
+                    terminal |= await self._record_event(event=event, on_created=on_created)
                     yield event
             except Exception as exc:
+                # Permanent API refusals (e.g. HTTP 400 expired last_event_id, 403, 404) won't
+                # heal on reconnect; propagate to `_drive` so it falls back to polling immediately.
+                if llm_status_code(exc=exc) is not None and not is_retryable_llm_error(exc=exc):
+                    raise
                 # Broad: SDK surfaces transport/SSE drops arbitrarily; reconnect handles them.
                 logfire.warn(
                     "research stream dropped; will reconnect",
@@ -263,8 +284,8 @@ class _StreamDriver(BaseModel):
             empty_reconnects = 0 if progressed else empty_reconnects + 1
             if empty_reconnects > MAX_STREAM_RECONNECTS:
                 raise RuntimeError("research stream reconnect gave up")
+            stream = None
             await asyncio.sleep(RESEARCH_POLL_INTERVAL_SECONDS)
-            stream = await self._reopen()
 
 
 async def _drive(
@@ -317,17 +338,18 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
     driver = _StreamDriver(client=client)
 
     async def _open() -> "AsyncIterator[InteractionSSEEvent]":
-        responses = await client.aio.interactions.create(
-            agent=agent,
-            input=brief,
-            system_instruction=system_instruction,
-            environment=environment,
-            agent_config=RESEARCH_AGENT_CONFIG,
-            tools=RESEARCH_TOOLS,
-            background=True,
-            store=True,
-            stream=True,
-        )
+        async with asyncio.timeout(delay=RESEARCH_RPC_TIMEOUT_SECONDS):
+            responses = await client.aio.interactions.create(
+                agent=agent,
+                input=brief,
+                system_instruction=system_instruction,
+                environment=environment,
+                agent_config=RESEARCH_AGENT_CONFIG,
+                tools=RESEARCH_TOOLS,
+                background=True,
+                store=True,
+                stream=True,
+            )
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
     logfire.info("research antigravity streaming", agent=agent)
@@ -350,7 +372,8 @@ async def resume_research_stream(
     driver = _StreamDriver(client=client, interaction_id=interaction_id)
 
     async def _open() -> "AsyncIterator[InteractionSSEEvent]":
-        responses = await client.aio.interactions.get(id=interaction_id, stream=True)
+        async with asyncio.timeout(delay=RESEARCH_RPC_TIMEOUT_SECONDS):
+            responses = await client.aio.interactions.get(id=interaction_id, stream=True)
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
     interaction = await _drive(

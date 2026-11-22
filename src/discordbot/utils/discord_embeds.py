@@ -100,6 +100,8 @@ def target_allows_file_uploads(target: object | None) -> bool:
     if target is None:
         return True
     channel = getattr(target, "channel", None)
+    if channel is None and hasattr(target, "permissions_for"):
+        channel = target
     guild = getattr(target, "guild", None) or getattr(channel, "guild", None)
     if guild is None:
         return True
@@ -154,24 +156,28 @@ def embed_spacer_payload(
     """
     spacer_url = embed_spacer_url()
     files: list[File] = list(extra_files or [])
+    if all(_embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds):
+        early_payload: dict[str, Any] = {"files": files} if files else {}
+        if is_edit:
+            early_payload["attachments"] = []
+        return early_payload
+
     retained: list[Attachment] = []
-    if any(not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds):
-        existing_spacer = _existing_spacer_attachment(target=target) if is_edit else None
-        can_upload_spacer = target_allows_file_uploads(target=target)
-        # Retain by id on edits; re-uploading on rapid edits trips Discord error 400009.
-        if existing_spacer is not None:
-            apply_embed_spacer_image(embeds=embeds)
-            retained.append(existing_spacer)
-        elif can_upload_spacer and len(files) < DISCORD_ATTACHMENT_LIMIT:
-            apply_embed_spacer_image(embeds=embeds)
-            files.append(build_embed_spacer_file())
-        else:
-            for embed in embeds:
-                if embed.image and embed.image.url == spacer_url:
-                    embed.set_image(url=None)
-    payload: dict[str, Any] = {}
-    if files:
-        payload["files"] = files
+    existing_spacer = _existing_spacer_attachment(target=target) if is_edit else None
+    can_upload_spacer = target_allows_file_uploads(target=target)
+    # Retain by id on edits; re-uploading on rapid edits trips Discord error 400009.
+    if existing_spacer is not None:
+        apply_embed_spacer_image(embeds=embeds)
+        retained.append(existing_spacer)
+    elif can_upload_spacer and len(files) < DISCORD_ATTACHMENT_LIMIT:
+        apply_embed_spacer_image(embeds=embeds)
+        files.append(build_embed_spacer_file())
+    else:
+        for embed in embeds:
+            if embed.image and embed.image.url == spacer_url:
+                embed.set_image(url=None)
+
+    payload: dict[str, Any] = {"files": files} if files else {}
     if is_edit:
         payload["attachments"] = retained
     return payload

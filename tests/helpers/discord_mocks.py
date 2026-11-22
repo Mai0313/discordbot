@@ -299,19 +299,28 @@ def text_channel_granting(permissions: Permissions | None = None) -> MagicMock:
 def on_ready_bot(
     started_at: datetime, sync_all_application_commands: Callable[[], Awaitable[None]]
 ) -> SimpleNamespace:
-    """A bot double carrying what `DiscordBot.on_ready` reads up to its command sync.
+    """A bot double carrying what `DiscordBot.on_ready` reads through its command sync.
 
-    `on_ready` is called unbound on it, so it answers the first-run latch, the startup task
-    registry, the process start the sweeps cut off at, the logged-in user and the registered
-    command count; the sync is the caller's, since what it does decides the test.
+    `on_ready` is called unbound on it, so it answers the startup-sweep and command-sync latches,
+    the startup task registry, the process start the sweeps cut off at, the logged-in user, the
+    registered command count, and post-sync app metadata; the sync is the caller's, since what it
+    does decides the test.
     """
+
+    async def _application_info() -> SimpleNamespace:
+        return SimpleNamespace(id=999)
+
     return SimpleNamespace(
-        _initial_setup_done=False,
+        _startup_sweeps_done=False,
+        _commands_synced=False,
+        _commands_syncing=False,
         _startup_tasks=set(),
         _started_at=started_at,
         user=FakeUser(user_id=999, bot=True),
         _count_registered_commands=partial(asyncio.sleep, delay=0),
         sync_all_application_commands=sync_all_application_commands,
+        get_application_commands=list,
+        application_info=_application_info,
     )
 
 

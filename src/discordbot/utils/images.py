@@ -73,17 +73,18 @@ def get_image_data(image_file: str) -> LoadedMedia:
         PIL.UnidentifiedImageError: Response body is not a decodable image.
     """
     response = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
+    response.raise_for_status()
     # An image opens on its first frame, and saving without `save_all` writes only that frame.
-    image = Image.open(fp=BytesIO(initial_bytes=response.content))
-    image.thumbnail(
-        size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
-    )
-    buffered = BytesIO()
-    if image.has_transparency_data:
-        image.save(fp=buffered, format="PNG")
-        return LoadedMedia(data=buffered.getvalue(), mime_type="image/png")
-    image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
-    return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
+    with Image.open(fp=BytesIO(initial_bytes=response.content)) as image:
+        image.thumbnail(
+            size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
+        )
+        buffered = BytesIO()
+        if image.has_transparency_data:
+            image.save(fp=buffered, format="PNG")
+            return LoadedMedia(data=buffered.getvalue(), mime_type="image/png")
+        image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
+        return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
 
 
 def to_data_uri(data: bytes, mime_type: str | None = None) -> str:

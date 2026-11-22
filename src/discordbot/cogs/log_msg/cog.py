@@ -106,6 +106,10 @@ class MessageLogger(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message: Message = Field(..., description="The Discord message being logged.")
+    dm_partner: tuple[int, str] | None = Field(
+        default=None,
+        description="Cached `(user_id, display_name)` for uncached gateway DMs where `recipient` is None.",
+    )
 
     @staticmethod
     def sanitize_text(s: str) -> str:
@@ -123,22 +127,38 @@ class MessageLogger(BaseModel):
             return "dm"
         return "guild"
 
+    def _resolved_dm_partner(self, channel: DMChannel) -> tuple[int, str] | None:
+        """Returns `(partner_id, partner_display_name)` for `channel`, or None if unresolvable."""
+        if channel.recipient is not None:
+            return channel.recipient.id, channel.recipient.display_name
+        # Nextcord constructs gateway DM channels with `recipient=None` (`DMChannel._from_message`),
+        # so a human author is the partner and bot replies use the cog's cached partner.
+        if not self.message.author.bot:
+            return self.message.author.id, self.message.author.display_name
+        return self.dm_partner
+
     @property
     def channel_name_or_author_name(self) -> str:
-        """Returns the DM author label (`DM_<name>_<id>`) or channel label (`channel_<name>_<id>`)."""
-        if isinstance(self.message.channel, DMChannel):
-            author_name = self.message.author.display_name
-            return f"DM_{author_name}_{self.message.author.id}"
+        """Returns the DM partner label (`DM_<name>_<id>`) or channel label (`channel_<name>_<id>`)."""
         channel = self.message.channel
+        if isinstance(channel, DMChannel):
+            partner = self._resolved_dm_partner(channel=channel)
+            if partner is not None:
+                partner_id, partner_name = partner
+                return f"DM_{partner_name}_{partner_id}"
+            return f"DM_{channel.id}"
         channel_name = getattr(channel, "name", None) or channel.id
         return f"channel_{channel_name}_{channel.id}"
 
     @property
     def channel_id_or_author_id(self) -> str:
-        """Returns the author ID for direct messages, or the channel ID otherwise."""
-        if isinstance(self.message.channel, DMChannel):
-            return f"{self.message.author.id}"
-        return f"{self.message.channel.id}"
+        """Returns the DM partner ID (falling back to channel ID) for DMs, or the channel ID otherwise."""
+        channel = self.message.channel
+        if isinstance(channel, DMChannel):
+            partner = self._resolved_dm_partner(channel=channel)
+            partner_id = partner[0] if partner is not None else channel.id
+            return f"{partner_id}"
+        return f"{channel.id}"
 
     async def log(self) -> None:
         """Persists the message row without filtering by author."""
@@ -186,12 +206,30 @@ class LogMessageCog(commands.Cog):
         """
         self.bot = bot
         self._tasks: set[asyncio.Task[None]] = set()
+        # Maps uncached gateway DM channel IDs to `(partner_id, partner_display_name)` so bot
+        # replies and edits share the partner key even when `DMChannel.recipient` is None.
+        self._dm_partners: dict[int, tuple[int, str]] = {}
 
     def _should_log(self, message: Message) -> bool:
         """Returns whether `message` is from a human or from this bot itself."""
         if not message.author.bot:
             return True
         return bool(self.bot.user and message.author.id == self.bot.user.id)
+
+    def _record_dm_partner(self, message: Message) -> tuple[int, str] | None:
+        """Updates and returns the cached DM partner for `message.channel` if it is a DM."""
+        channel = message.channel
+        if not isinstance(channel, DMChannel):
+            return None
+        if channel.recipient is not None:
+            partner = (channel.recipient.id, channel.recipient.display_name)
+            self._dm_partners[channel.id] = partner
+            return partner
+        if not message.author.bot:
+            partner = (message.author.id, message.author.display_name)
+            self._dm_partners[channel.id] = partner
+            return partner
+        return self._dm_partners.get(channel.id)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -202,8 +240,11 @@ class LogMessageCog(commands.Cog):
         """
         if not self._should_log(message=message):
             return
+        partner = self._record_dm_partner(message=message)
         spawn_tracked(
-            coro=MessageLogger(message=message).log(), tasks=self._tasks, name="log-message"
+            coro=MessageLogger(message=message, dm_partner=partner).log(),
+            tasks=self._tasks,
+            name="log-message",
         )
 
     @commands.Cog.listener()
@@ -216,8 +257,11 @@ class LogMessageCog(commands.Cog):
         """
         if not self._should_log(message=after):
             return
+        partner = self._record_dm_partner(message=after)
         spawn_tracked(
-            coro=MessageLogger(message=after).log(), tasks=self._tasks, name="log-message"
+            coro=MessageLogger(message=after, dm_partner=partner).log(),
+            tasks=self._tasks,
+            name="log-message",
         )
 
 

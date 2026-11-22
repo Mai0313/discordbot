@@ -1,9 +1,11 @@
 """Cached LiteLLM model pricing and input-modality lookup.
 
-Fetches LiteLLM's upstream price table on first use, mirrors usable tables to
-`MODEL_INFO_CACHE_PATH`, and refreshes via `refresh_model_info` while degraded or past
-`MODEL_INFO_MAX_AGE_HOURS`. Lookups never raise: an unavailable upstream degrades to the mirror
-and then to an empty table (unknown rates and default modalities).
+`load_model_info` reads only the in-memory table and the local disk mirror at
+`MODEL_INFO_CACHE_PATH` so synchronous callers on the event loop never block on HTTP.
+`refresh_model_info` (run off the event loop) fetches LiteLLM's upstream price table, mirrors
+usable tables to disk, and retries while degraded or past `MODEL_INFO_MAX_AGE_HOURS`. Lookups
+never raise: an unavailable upstream degrades to the mirror and then to an empty table (unknown
+rates and default modalities).
 """
 
 import json
@@ -12,6 +14,7 @@ from typing import Any
 from pathlib import Path
 import secrets
 import threading
+import contextlib
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, ValidationError
@@ -139,6 +142,8 @@ def _write_mirror(payload: str) -> None:
         tmp_path.write_text(data=payload, encoding="utf-8")
         tmp_path.replace(target=MODEL_INFO_CACHE_PATH)
     except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
         logfire.warn(
             "model price mirror write failed", path=str(MODEL_INFO_CACHE_PATH), _exc_info=exc
         )
@@ -156,24 +161,31 @@ def _load_upstream() -> tuple[dict[str, ModelPriceEntry] | None, str]:
     return prices, "served"
 
 
+def _load_mirror() -> tuple[dict[str, ModelPriceEntry], str]:
+    """Returns `(prices, status)` from the local disk mirror without touching the network."""
+    mirrored = _read_mirror()
+    if mirrored is None:
+        return {}, "absent"
+    prices = _decode_table(payload=mirrored, source=str(MODEL_INFO_CACHE_PATH))
+    if prices:
+        logfire.info(
+            "serving the mirrored model price table",
+            path=str(MODEL_INFO_CACHE_PATH),
+            entries=len(prices),
+        )
+        return prices, "served"
+    return {}, "unusable"
+
+
 def _load_table() -> _LoadedTable:
     """Returns the best table there is: upstream, else the mirror, else an empty one."""
     prices, upstream = _load_upstream()
     if prices:
         return _LoadedTable(prices=prices, served_at=monotonic())
 
-    mirrored = _read_mirror()
-    mirror = "absent"
-    if mirrored is not None:
-        mirror = "unusable"
-        prices = _decode_table(payload=mirrored, source=str(MODEL_INFO_CACHE_PATH))
-        if prices:
-            logfire.info(
-                "serving the mirrored model price table",
-                path=str(MODEL_INFO_CACHE_PATH),
-                entries=len(prices),
-            )
-            return _LoadedTable(prices=prices, served_at=None)
+    mirrored_prices, mirror = _load_mirror()
+    if mirrored_prices:
+        return _LoadedTable(prices=mirrored_prices, served_at=None)
 
     # Log at error since replies still succeed without a price table.
     logfire.error(
@@ -187,10 +199,11 @@ def _load_table() -> _LoadedTable:
 
 
 def load_model_info() -> dict[str, ModelPriceEntry]:
-    """Returns the cached LiteLLM model info table, or an empty dict if none could be loaded.
+    """Returns the cached LiteLLM model info table without performing network I/O.
 
-    Loads once on first call (upstream, mirror, then empty) and serves the held table until
-    `refresh_model_info` replaces it.
+    Reads the in-memory cache or falls back to the local disk mirror once on first call,
+    returning an empty dict if no mirror is available. Upstream HTTP fetches run only in
+    `refresh_model_info`.
     """
     global _LOADED_TABLE  # noqa: PLW0603 -- the process-wide price table
 
@@ -199,7 +212,8 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
     if held is not None:
         return held.prices
 
-    loaded = _load_table()
+    prices, _ = _load_mirror()
+    loaded = _LoadedTable(prices=prices, served_at=None)
     with _LOADED_TABLE_LOCK:
         # Keep an upstream table installed by a concurrent refresh instead of overwriting it.
         if _LOADED_TABLE is None:
@@ -217,7 +231,10 @@ def refresh_model_info() -> None:
     with _LOADED_TABLE_LOCK:
         held = _LOADED_TABLE
     if held is None:
-        load_model_info()
+        loaded = _load_table()
+        with _LOADED_TABLE_LOCK:
+            if _LOADED_TABLE is None or loaded.served_at is not None:
+                _LOADED_TABLE = loaded
         return
     if (
         held.served_at is not None

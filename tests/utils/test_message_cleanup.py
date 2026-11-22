@@ -13,6 +13,7 @@ from discordbot.utils.timezone import database_now
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
     PendingPublicMessage,
+    _delete_tasks,
     track_public_message,
     delete_public_message,
     delete_public_message_after,
@@ -211,8 +212,8 @@ async def test_delete_tracked_public_messages_skips_non_messageable_cached_chann
     assert await list_pending_public_messages() == []
 
 
-async def test_delete_tracked_public_messages_keeps_unresolved_channel_records() -> None:
-    """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
+async def test_delete_tracked_public_messages_forgets_unresolved_channel_records() -> None:
+    """Startup cleanup drops records whose channel cannot fetch messages instead of retrying forever."""
     message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
 
@@ -220,9 +221,7 @@ async def test_delete_tracked_public_messages_keeps_unresolved_channel_records()
         bot=as_bot(fake=_UnfetchableBotStub()), tracked_before=_a_later_start()
     )
 
-    assert await list_pending_public_messages() == [
-        PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
-    ]
+    assert await list_pending_public_messages() == []
 
 
 class _ForbiddenChannelBotStub:
@@ -265,6 +264,7 @@ async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
     assert fields == {"channel_id": message.channel.id, "message_id": message.id}, (
         "a permission the bot cannot earn needs the ids and no traceback"
     )
+    assert await list_pending_public_messages() == []
 
 
 async def test_a_transient_http_failure_keeps_its_traceback(
@@ -281,7 +281,8 @@ async def test_a_transient_http_failure_keeps_its_traceback(
             self.fetch_calls.append(channel_id)
             raise make_server_error()
 
-    await track_public_message(message=as_message(fake=FakeDiscordMessage()))
+    message = FakeDiscordMessage()
+    await track_public_message(message=as_message(fake=message))
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await delete_tracked_public_messages(
@@ -291,6 +292,9 @@ async def test_a_transient_http_failure_keeps_its_traceback(
     assert len(warns) == 1
     _, fields = warns[0]
     assert fields.get("_exc_info") is True, "a transport failure still needs its traceback"
+    assert await list_pending_public_messages() == [
+        PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
+    ]
 
 
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
@@ -404,3 +408,26 @@ async def test_schedule_public_message_delete_uses_default_ttl(
     await asyncio.sleep(delay=0)
 
     assert scheduled_delay == PUBLIC_MESSAGE_TTL_SECONDS
+
+
+def test_delete_tasks_registry_rebinds_across_event_loops(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_delete_tasks` clears stale tasks when a new event loop starts."""
+
+    async def never_finish(**_kwargs: object) -> None:
+        await asyncio.Future()
+
+    monkeypatch.setattr(
+        "discordbot.utils.message_cleanup.delete_public_message_after", never_finish
+    )
+
+    async def _spawn_and_count() -> int:
+        schedule_public_message_delete(message=as_message(fake=FakeDiscordMessage()))
+        tasks = _delete_tasks.get(key="delete")
+        assert tasks is not None
+        count = len(tasks)
+        for task in list(tasks):
+            task.cancel()
+        return count
+
+    assert asyncio.run(main=_spawn_and_count()) == 1
+    assert asyncio.run(main=_spawn_and_count()) == 1

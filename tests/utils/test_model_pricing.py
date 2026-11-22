@@ -84,11 +84,30 @@ def _refuse(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
+def test_load_model_info_is_read_only_and_never_fetches_upstream(
+    monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
+) -> None:
+    """Synchronous lookups read only memory + local disk mirror so the event loop never blocks."""
+    calls = _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+
+    assert load_model_info() == {}
+    assert get_token_rates(model_name=_MODEL) is None
+    assert calls == []
+
+    # With a mirror on disk and an unprimed cache, load_model_info reads the mirror without HTTP.
+    monkeypatch.setattr("discordbot.utils.model_pricing._LOADED_TABLE", None)
+    model_price_mirror_isolated.write_text(json.dumps(obj=_TABLE), encoding="utf-8")
+
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+    assert calls == []
+
+
 def test_a_fetched_price_table_is_mirrored_to_disk(
     monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
 ) -> None:
     """The mirror is written from the fetch, so a later start without upstream has rates."""
     _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
     assert json.loads(s=model_price_mirror_isolated.read_text(encoding="utf-8")) == _TABLE
@@ -100,6 +119,7 @@ def test_a_failed_fetch_serves_the_mirrored_table(
     """An unreachable upstream costs nothing while a mirror is on disk."""
     model_price_mirror_isolated.write_text(json.dumps(obj=_TABLE), encoding="utf-8")
     _refuse(monkeypatch=monkeypatch)
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
     assert get_supported_modalities(model_name=_MODEL) == {"text", "image", "video"}
@@ -111,6 +131,7 @@ def test_an_unreadable_upstream_payload_keeps_the_mirror(
     """An upstream that answers 200 with something else must not become the new mirror."""
     model_price_mirror_isolated.write_text(json.dumps(obj=_TABLE), encoding="utf-8")
     _serve(monkeypatch=monkeypatch, payload="<html>404: Not Found</html>")
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
     assert json.loads(s=model_price_mirror_isolated.read_text(encoding="utf-8")) == _TABLE
@@ -122,6 +143,7 @@ def test_an_empty_upstream_answer_keeps_the_mirror(
     """`{}` parses, so only the yielded-an-entry bar stops it destroying the last good table."""
     model_price_mirror_isolated.write_text(json.dumps(obj=_TABLE), encoding="utf-8")
     _serve(monkeypatch=monkeypatch, payload="{}")
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
     assert json.loads(s=model_price_mirror_isolated.read_text(encoding="utf-8")) == _TABLE
@@ -133,6 +155,7 @@ def test_a_non_utf8_mirror_degrades_like_an_absent_one(
     """A corrupt mirror raises UnicodeDecodeError, a ValueError that `except OSError` misses."""
     model_price_mirror_isolated.write_bytes(b'\xff\xfe{"m": {}}')
     _refuse(monkeypatch=monkeypatch)
+    refresh_model_info()
 
     assert load_model_info() == {}
     assert get_token_rates(model_name=_MODEL) is None
@@ -146,6 +169,7 @@ def test_one_unreadable_entry_does_not_cost_the_whole_table(
         monkeypatch=monkeypatch,
         payload=json.dumps(obj={**_TABLE, "broken": {"input_cost_per_token": None}}),
     )
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
     assert set(load_model_info()) == {_MODEL}
@@ -157,6 +181,7 @@ def test_a_model_listed_at_zero_is_free_and_an_unlisted_one_is_unpriced(
     """Only a rate the table lists may price a footer at zero; a missing entry has no rates."""
     free = {"input_cost_per_token": 0.0, "output_cost_per_token": 0.0}
     _serve(monkeypatch=monkeypatch, payload=json.dumps(obj={**_TABLE, "free-model": free}))
+    refresh_model_info()
 
     assert get_token_rates(model_name="free-model") == (0.0, 0.0)
     assert get_token_rates(model_name="unlisted-model") is None
@@ -186,6 +211,7 @@ def test_a_gemini_model_is_read_off_its_developer_api_entry(
             }
         ),
     )
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (5.0, 6.0)
     assert get_token_rates(model_name="gemini-new") == (5.0, 6.0)
@@ -198,6 +224,7 @@ def test_no_table_anywhere_degrades_to_the_documented_defaults(
 ) -> None:
     """The empty table keeps every modality the model family accepts and only costs the estimate."""
     _refuse(monkeypatch=monkeypatch)
+    refresh_model_info()
 
     assert load_model_info() == {}
     assert get_token_rates(model_name=_MODEL) is None
@@ -220,6 +247,7 @@ def test_a_gemini_model_the_table_does_not_describe_keeps_audio_and_video(
         monkeypatch=monkeypatch,
         payload=json.dumps(obj={**_TABLE, "gemini-no-field": unlisted_field}),
     )
+    refresh_model_info()
 
     full = {"text", "image", "audio", "video"}
     assert get_supported_modalities(model_name="gemini-unlisted") == full
@@ -232,6 +260,7 @@ def test_a_total_outage_is_logged_as_an_error(monkeypatch: pytest.MonkeyPatch) -
     """Nothing reaches the user when there is no table, so this line is the whole signal."""
     recorded = capture_logs(monkeypatch=monkeypatch, level="error")
     _refuse(monkeypatch=monkeypatch)
+    refresh_model_info()
 
     assert load_model_info() == {}
     assert len(recorded) == 1
@@ -239,9 +268,10 @@ def test_a_total_outage_is_logged_as_an_error(monkeypatch: pytest.MonkeyPatch) -
     assert recorded[0][1]["mirror"] == "absent"
 
 
-def test_a_failed_fetch_is_paid_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The degrade is held too, so an outage is not re-paid at 5s per call."""
+def test_a_failed_fetch_is_not_retried_by_sync_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a failed refresh, synchronous lookups stay cache-only and never re-pay HTTP."""
     calls = _refuse(monkeypatch=monkeypatch)
+    refresh_model_info()
 
     for _ in range(3):
         assert get_token_rates(model_name=_MODEL) is None
@@ -269,6 +299,21 @@ def test_each_mirror_write_uses_its_own_temp_file(
     assert len(set(staged)) == 2
 
 
+def test_write_mirror_cleans_up_temp_file_on_replace_failure(
+    monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
+) -> None:
+    """A failed atomic replace removes its temp file instead of stranding `.tmp` debris."""
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        del self, target
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    _write_mirror(payload=json.dumps(obj=_TABLE))
+
+    assert list(model_price_mirror_isolated.parent.iterdir()) == []
+
+
 def test_a_mirror_write_failure_never_costs_the_fetched_table(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -280,6 +325,7 @@ def test_a_mirror_write_failure_never_costs_the_fetched_table(
         blocker / "model_prices_and_context_window.json",
     )
     _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    refresh_model_info()
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
 
@@ -289,6 +335,7 @@ def test_an_empty_table_recovers_once_upstream_answers(
 ) -> None:
     """The case #473 is about: a first start with no mirror while upstream is unreachable."""
     _refuse(monkeypatch=monkeypatch)
+    refresh_model_info()
     assert load_model_info() == {}
 
     _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
@@ -339,6 +386,7 @@ def test_a_served_table_is_refetched_only_once_it_is_a_day_old(
     """A healthy process pays nothing per pass, and a model listed later still arrives."""
     _clock(monkeypatch=monkeypatch, now=1000.0)
     calls = _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    refresh_model_info()
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
 
     _clock(monkeypatch=monkeypatch, now=1000.0 + MODEL_INFO_MAX_AGE_HOURS * 3600 - 1)
@@ -360,6 +408,7 @@ def test_a_failed_daily_refetch_keeps_the_served_table(monkeypatch: pytest.Monke
     """Upstream being down the day a refetch is due costs the process nothing it had."""
     _clock(monkeypatch=monkeypatch, now=1000.0)
     _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    refresh_model_info()
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
 
     calls = _refuse(monkeypatch=monkeypatch)

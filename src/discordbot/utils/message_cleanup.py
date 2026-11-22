@@ -12,11 +12,11 @@ from nextcord.abc import Messageable
 from nextcord.ext import commands
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from discordbot.utils.asyncio_locks import spawn_tracked
+from discordbot.utils.asyncio_locks import LoopLocalRegistry, spawn_tracked
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
-_delete_tasks: set[asyncio.Task[None]] = set()
+_delete_tasks: LoopLocalRegistry[str, set[asyncio.Task[None]]] = LoopLocalRegistry()
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 metadata = MetaData()
 Table(
@@ -333,6 +333,7 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
                 message_id=record.message_id,
                 _exc_info=True,
             )
+            await forget_public_message(message_id=record.message_id)
             continue
         except Forbidden:
             # Expected when channel overwrites exclude the bot; omit traceback.
@@ -341,6 +342,7 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
                 channel_id=record.channel_id,
                 message_id=record.message_id,
             )
+            await forget_public_message(message_id=record.message_id)
             continue
         except HTTPException:
             logfire.warn(
@@ -401,6 +403,6 @@ def schedule_public_message_delete(
         coro=delete_public_message_after(
             message=message, delay=delay, user_name=user_name, interaction=interaction
         ),
-        tasks=_delete_tasks,
+        tasks=_delete_tasks.setdefault(key="delete", default=set()),
         name="delete-public-response",
     )

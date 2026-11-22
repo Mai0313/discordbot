@@ -9,7 +9,7 @@ from nextcord import Embed
 
 from discordbot.cogs.template.cog import TemplateCogs
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden
+from tests.helpers.casting import as_bot, as_message, make_forbidden, make_not_found
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs
 
@@ -18,11 +18,12 @@ if TYPE_CHECKING:
 
 
 async def test_template_on_message_and_ping() -> None:
-    """Verifies template debug reaction and ping command response."""
+    """Verifies template trigger reactions and ping command response."""
     cog = TemplateCogs(bot=as_bot(fake=SimpleNamespace(latency=0.25)))
-    message = FakeDiscordMessage(author=FakeUser(bot=False), content="debug")
-    await cog.on_message(message=as_message(fake=message))
-    assert len(message.reactions) == 1
+    for content, expected_emoji in (("DEBUG", "🤬"), ("可愛捏", "↖️"), ("可爱捏", "↖️")):
+        message = FakeDiscordMessage(author=FakeUser(bot=False), content=content)
+        await cog.on_message(message=as_message(fake=message))
+        assert message.reactions == [expected_emoji]
 
     bot_message = FakeDiscordMessage(author=FakeUser(bot=True), content="debug")
     await cog.on_message(message=as_message(fake=bot_message))
@@ -51,4 +52,25 @@ async def test_template_logs_a_refused_reaction_at_warn(monkeypatch: pytest.Monk
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert [fields for _message, fields in warns] == [{"message_id": 1, "channel_id": 2}]
+    assert [fields for _message, fields in warns] == [
+        {"message_id": 1, "channel_id": 2, "emoji": "🤬"}
+    ]
+
+
+async def test_template_suppresses_not_found_trigger_reaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deleted trigger message is ignored without raising or warning."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    cog = TemplateCogs(bot=as_bot(fake=SimpleNamespace(latency=0.123)))
+    message = FakeDiscordMessage(author=FakeUser(bot=False), content="debug")
+
+    async def gone(emoji: str) -> None:
+        del emoji
+        raise make_not_found(message="Unknown Message")
+
+    monkeypatch.setattr(target=message, name="add_reaction", value=gone)
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert warns == []

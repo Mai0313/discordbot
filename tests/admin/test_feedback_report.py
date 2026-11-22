@@ -338,6 +338,11 @@ def test_feedback_report_exits_cleanly_on_missing_db_or_bad_args(
     with pytest.raises(SystemExit):
         _capture(argv=["--db", str(db_path), "--messages-db", missing_msg_db, "--limit", "-1"])
 
+    empty_db = tmp_path / "empty_reply.db"
+    sqlite3.connect(database=empty_db).close()
+    with pytest.raises(SystemExit, match="reply feedback tables missing"):
+        _capture(argv=["--db", str(empty_db), "--messages-db", missing_msg_db, "--show", "101"])
+
 
 def test_feedback_report_preserves_bracketed_text_without_rich_markup_errors(
     tmp_path: Path, migrated_databases: dict[str, Path]

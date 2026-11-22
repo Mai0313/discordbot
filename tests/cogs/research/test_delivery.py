@@ -11,6 +11,7 @@ from discordbot.cogs.research import agent
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import render_usage_footer
+from discordbot.utils.media_delivery import MEDIA_ENVELOPE_MARGIN
 from discordbot.cogs.research.delivery import (
     split_report,
     deliver_report,
@@ -173,28 +174,65 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
 
 
-async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -> None:
-    """Host-off contract: md + png that each fit but jointly exceed the limit BOTH attach natively.
+async def test_delivery_shares_remaining_budget_and_envelope_margin_across_md_and_png(
+    tmp_path: Path,
+) -> None:
+    """Combined md + png respect `upload_limit - MEDIA_ENVELOPE_MARGIN` while prioritizing `.md`.
 
-    Routing both through one `plan()` call would fire the planner's combined-peel and drop the
-    larger (the report), so delivery decides each attachment on its own.
+    Even when `.md` is larger than `.png`, `.md` keeps native priority and `.png` overflows to
+    external hosting (or drops when hosting is off) so the combined upload never hits HTTP 413.
     """
-    thread = _RunThread()
-    status = _RunStatus(thread=thread)
-    thread.guild = SimpleNamespace(filesize_limit=100)  # each file fits, md + png together do not
+    usable_limit = MEDIA_ENVELOPE_MARGIN + 100
+
+    # Hosting on: .md (70 B) stays native, .png (50 B) overflows remaining 30 B -> hosted URL.
+    hosted_thread = _RunThread()
+    hosted_thread.guild = SimpleNamespace(filesize_limit=usable_limit)
     await deliver_report(
-        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
-        status=as_message(fake=status),  # minimal status-message double
+        thread=cast("Thread", hosted_thread),
+        status=as_message(fake=_RunStatus(thread=hosted_thread)),
         owner_id=1,
-        result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
+        result=_completed_result(report_text="R" * 70, image_bytes=b"x" * 50),
+        footer="-# footer",
+        media_delivery=hosting_planner(serve_dir=tmp_path),
+    )
+    hosted_edit = hosted_thread.writes[0]
+    hosted_files = hosted_edit["files"]
+    assert isinstance(hosted_files, list)
+    assert [file.filename for file in hosted_files] == ["research.md"]
+    assert any(
+        line.startswith("https://media.test/") and line.endswith(".png")
+        for line in str(hosted_edit["content"]).splitlines()
+    )
+
+    # Hosting off: .md stays native, .png drops cleanly rather than pushing combined bytes over cap.
+    drop_thread = _RunThread()
+    drop_thread.guild = SimpleNamespace(filesize_limit=usable_limit)
+    await deliver_report(
+        thread=cast("Thread", drop_thread),
+        status=as_message(fake=_RunStatus(thread=drop_thread)),
+        owner_id=1,
+        result=_completed_result(report_text="R" * 70, image_bytes=b"x" * 50),
         footer="-# footer",
         media_delivery=hosting_off_planner(),
     )
-    edit = thread.writes[0]
-    files = edit["files"]
-    assert isinstance(files, list)
-    assert len(files) == 2  # research.md AND research.png both attached, neither dropped
-    assert "https://" not in str(edit["content"])  # nothing was hosted
+    drop_files = drop_thread.writes[0]["files"]
+    assert isinstance(drop_files, list)
+    assert [file.filename for file in drop_files] == ["research.md"]
+
+    # When both fit inside `upload_limit - MEDIA_ENVELOPE_MARGIN`, both attach natively.
+    fit_thread = _RunThread()
+    fit_thread.guild = SimpleNamespace(filesize_limit=usable_limit)
+    await deliver_report(
+        thread=cast("Thread", fit_thread),
+        status=as_message(fake=_RunStatus(thread=fit_thread)),
+        owner_id=1,
+        result=_completed_result(report_text="R" * 40, image_bytes=b"x" * 60),
+        footer="-# footer",
+        media_delivery=hosting_off_planner(),
+    )
+    fit_files = fit_thread.writes[0]["files"]
+    assert isinstance(fit_files, list)
+    assert [file.filename for file in fit_files] == ["research.md", "research.png"]
 
 
 async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.MonkeyPatch) -> None:

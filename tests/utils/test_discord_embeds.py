@@ -13,6 +13,7 @@ from discordbot.utils.discord_embeds import (
     embed_spacer_payload,
     build_embed_spacer_file,
     apply_embed_spacer_image,
+    target_allows_file_uploads,
 )
 
 from tests.helpers.discord_mocks import text_channel_granting
@@ -241,3 +242,22 @@ def test_a_clip_lands_inside_the_limit_when_every_character_costs_two() -> None:
 def test_a_limit_too_small_for_the_notice_yields_the_notice_alone() -> None:
     """The negative slice this replaces returned the WHOLE string for a limit of zero."""
     assert clip_to_utf16_limit(text="x" * 3000, limit=0, notice="…cut") == "…cut"
+
+
+def test_target_allows_file_uploads_accepts_a_channel_directly() -> None:
+    """Passing a TextChannel directly checks its permissions rather than defaulting to True."""
+    denied = text_channel_granting(permissions=Permissions(attach_files=False))
+    allowed = text_channel_granting(permissions=Permissions(attach_files=True))
+
+    assert target_allows_file_uploads(target=denied) is False
+    assert target_allows_file_uploads(target=allowed) is True
+
+
+def test_embed_spacer_payload_edit_with_real_image_only_clears_attachments() -> None:
+    """Early-return edit path still clears stale attachments when no spacer is needed."""
+    embed = Embed(description="board")
+    embed.set_image(url="https://cdn.test/board.png")
+
+    payload = embed_spacer_payload(embeds=[embed], is_edit=True)
+
+    assert payload == {"attachments": []}

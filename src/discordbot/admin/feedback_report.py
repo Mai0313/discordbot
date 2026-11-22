@@ -269,24 +269,24 @@ def _load_preceding_context(
             return [], "source message not found in messages.db"
         anchor_id = anchor["id"]
         anchor_created_at = anchor["created_at"]
-        if turn.guild_id is None:
-            rows = messages_conn.execute(
-                "SELECT author, author_id, content, created_at, attachments, stickers "
-                "FROM messages "
-                "WHERE source_type = 'dm' AND channel_id = ? "
-                "AND created_at <= ? AND (created_at < ? OR id < ?) "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (str(turn.author_id), anchor_created_at, anchor_created_at, anchor_id, limit),
-            ).fetchall()
-        else:
-            rows = messages_conn.execute(
-                "SELECT author, author_id, content, created_at, attachments, stickers "
-                "FROM messages "
-                "WHERE channel_id = ? "
-                "AND created_at <= ? AND (created_at < ? OR id < ?) "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (str(turn.channel_id), anchor_created_at, anchor_created_at, anchor_id, limit),
-            ).fetchall()
+        source_type = "dm" if turn.guild_id is None else None
+        channel_key = str(turn.author_id if turn.guild_id is None else turn.channel_id)
+        rows = messages_conn.execute(
+            "SELECT author, author_id, content, created_at, attachments, stickers "
+            "FROM messages "
+            "WHERE (? IS NULL OR source_type = ?) AND channel_id = ? "
+            "AND created_at <= ? AND (created_at < ? OR id < ?) "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (
+                source_type,
+                source_type,
+                channel_key,
+                anchor_created_at,
+                anchor_created_at,
+                anchor_id,
+                limit,
+            ),
+        ).fetchall()
     except sqlite3.Error:
         return [], "messages.db unreadable"
     messages = [
@@ -782,17 +782,17 @@ def run_report(argv: list[str] | None = None, out: Console | None = None) -> Non
     conn = _connect_readonly(db_path=args.db)
     messages_conn = _connect_optional_readonly(db_path=args.messages_db)
     try:
-        if args.show is not None:
-            _show_turn(
-                conn=conn,
-                messages_conn=messages_conn,
-                reply_message_id=args.show,
-                context_limit=args.context,
-                author_cache={},
-                out=target,
-            )
-            return
         try:
+            if args.show is not None:
+                _show_turn(
+                    conn=conn,
+                    messages_conn=messages_conn,
+                    reply_message_id=args.show,
+                    context_limit=args.context,
+                    author_cache={},
+                    out=target,
+                )
+                return
             scope_turns = _load_turns(conn=conn, route=args.route, model=None, since=since)
             scope_feedback = _load_feedback(
                 conn=conn, route=args.route, model=None, asker_only=args.asker_only, since=since

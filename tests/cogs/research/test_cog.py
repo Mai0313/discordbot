@@ -381,7 +381,9 @@ async def test_both_entry_points_name_the_owners_running_research_alike(
     running = research_cog._launch_reply(outcome="exists", thread_id=_THREAD_ID)
     assert [reply.get("content") for reply in request.replies] == [running]
     assert [edit.get("content") for edit in interaction.edits] == [running]
-    assert slash_anchor.deleted is True
+    # Pre-check rejects before posting a public anchor so the user never gets a ghost ping.
+    channel.send.assert_not_called()
+    assert slash_anchor.deleted is False
 
 
 async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
@@ -789,7 +791,11 @@ async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails
     assert [edit.get("content") for edit in interaction.edits] == [
         research_cog._launch_reply(outcome="error", thread_id=None)
     ]
-    assert anchor.deleted is True
+    if call == "active_thread_for_owner":
+        channel.send.assert_not_called()
+        assert anchor.deleted is False
+    else:
+        assert anchor.deleted is True
     # Only the insert comes after the thread is opened, and a thread with no row is not a run.
     assert thread.deleted is (call == "insert_session")
     assert thread.writes == []
@@ -936,14 +942,73 @@ async def test_a_resume_whose_history_read_fails_runs_on_a_status_line_of_its_ow
     ]
 
 
-async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "failure",
+    [make_not_found(message="Unknown Channel"), make_forbidden(message="Missing Access")],
+    ids=["not_found", "forbidden"],
+)
+async def test_a_resume_whose_thread_is_permanently_gone_releases_without_streaming(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="cancelled"))
+    """Permanent `NotFound`/`Forbidden` releases immediately without wasting minutes streaming."""
+    streamed = False
+
+    async def _must_not_stream(**_kwargs: object) -> NoReturn:
+        nonlocal streamed
+        streamed = True
+        raise AssertionError("permanent thread loss must not stream")
+
+    monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_must_not_stream)
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace())
+    cog.bot = as_bot(
+        fake=SimpleNamespace(
+            user=_ThreadBot.user,
+            get_channel=lambda channel_id: None,
+            fetch_channel=AsyncMock(side_effect=failure),
+        )
+    )
 
     await _resume_run(cog=cog)
 
+    assert streamed is False
     await _assert_owner_released(cog=cog, phase="cancelled")
+
+
+@pytest.mark.parametrize("recovers", [True, False], ids=["recovers_for_delivery", "stays_down"])
+async def test_a_resume_with_a_transient_thread_fetch_error_streams_and_refetches(
+    monkeypatch: pytest.MonkeyPatch, recovers: bool
+) -> None:
+    """A transient Discord error streams headless and re-fetches before discarding the result."""
+    thread = _RunThread()
+    thread_mock = _ThreadBot(thread=thread).get_channel(channel_id=_THREAD_ID)
+    attempts = 0
+
+    async def _flaky_fetch(channel_id: int) -> MagicMock:
+        nonlocal attempts
+        assert channel_id == _THREAD_ID
+        attempts += 1
+        if attempts == 1 or not recovers:
+            raise make_server_error()
+        assert thread_mock is not None
+        return thread_mock
+
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_settling_client(status="completed"), thread=None
+    )
+    cog.bot = as_bot(
+        fake=SimpleNamespace(
+            user=_ThreadBot.user, get_channel=lambda channel_id: None, fetch_channel=_flaky_fetch
+        )
+    )
+
+    await _resume_run(cog=cog)
+
+    assert attempts == 2
+    await _assert_owner_released(cog=cog, phase="done")
+    if recovers:
+        assert any("# Report" in str(write["content"]) for write in thread.writes)
+    else:
+        assert thread.writes == []
 
 
 @pytest.mark.parametrize(

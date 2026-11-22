@@ -3,8 +3,9 @@ import base64
 
 from PIL import Image
 import pytest
+import requests
 
-from discordbot.utils.images import to_data_uri, shrink_image_bytes
+from discordbot.utils.images import to_data_uri, get_image_data, shrink_image_bytes
 
 from tests.helpers.logfire_capture import capture_logs
 
@@ -152,3 +153,33 @@ def test_data_uri_keeps_a_given_type_over_the_header() -> None:
     uri = to_data_uri(data=payload, mime_type="application/pdf")
 
     assert uri == f"data:application/pdf;base64,{base64.b64encode(payload).decode()}"
+
+
+def test_get_image_data_raises_http_error_on_non_2xx_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 404/500 body raises requests.HTTPError instead of falling through to PIL decoding."""
+    response = requests.Response()
+    response.status_code = 404
+    response._content = b"<html>Not Found</html>"
+    response.url = "https://cdn.test/missing.png"
+    monkeypatch.setattr("discordbot.utils.images.requests.get", lambda url, timeout: response)
+
+    with pytest.raises(requests.HTTPError):
+        get_image_data(image_file="https://cdn.test/missing.png")
+
+
+@pytest.mark.parametrize(("mode", "expected_mime"), [("RGB", "image/jpeg"), ("RGBA", "image/png")])
+def test_get_image_data_decodes_and_reencodes_200_responses(
+    monkeypatch: pytest.MonkeyPatch, mode: str, expected_mime: str
+) -> None:
+    """A 200 image response is downscaled and re-encoded as JPEG (opaque) or PNG (alpha)."""
+    response = requests.Response()
+    response.status_code = 200
+    response._content = _encoded_bytes(size=(32, 32), mode=mode, image_format="PNG")
+    monkeypatch.setattr("discordbot.utils.images.requests.get", lambda url, timeout: response)
+
+    loaded = get_image_data(image_file="https://cdn.test/ok.png")
+
+    assert loaded.mime_type == expected_mime
+    assert loaded.data
