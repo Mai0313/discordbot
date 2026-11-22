@@ -16,6 +16,7 @@ nav:
   - Reference:
       - discordbot:
           - admin:
+              - feedback_report: Reference/discordbot/admin/feedback_report.md
               - modify_balance: Reference/discordbot/admin/modify_balance.md
               - regen_memories: Reference/discordbot/admin/regen_memories.md
               - usage_report: Reference/discordbot/admin/usage_report.md
@@ -54,6 +55,7 @@ nav:
                       - openai_file_api: Reference/discordbot/cogs/gen_reply/attachment/openai_file_api.md
                       - select: Reference/discordbot/cogs/gen_reply/attachment/select.md
                   - link_sources:
+                      - __init__: Reference/discordbot/cogs/gen_reply/link_sources/__init__.md
                       - bilibili: Reference/discordbot/cogs/gen_reply/link_sources/bilibili.md
                       - douyin: Reference/discordbot/cogs/gen_reply/link_sources/douyin.md
                       - facebook: Reference/discordbot/cogs/gen_reply/link_sources/facebook.md
@@ -66,10 +68,15 @@ nav:
                   - ask_message: Reference/discordbot/cogs/gen_reply/ask_message.md
                   - ask_store: Reference/discordbot/cogs/gen_reply/ask_store.md
                   - capabilities: Reference/discordbot/cogs/gen_reply/capabilities.md
+                  - chunking: Reference/discordbot/cogs/gen_reply/chunking.md
                   - cog: Reference/discordbot/cogs/gen_reply/cog.md
                   - context: Reference/discordbot/cogs/gen_reply/context.md
+                  - feedback_store: Reference/discordbot/cogs/gen_reply/feedback_store.md
+                  - feedback_views: Reference/discordbot/cogs/gen_reply/feedback_views.md
                   - files_api: Reference/discordbot/cogs/gen_reply/files_api.md
                   - generation: Reference/discordbot/cogs/gen_reply/generation.md
+                  - images: Reference/discordbot/cogs/gen_reply/images.md
+                  - inline_media: Reference/discordbot/cogs/gen_reply/inline_media.md
                   - input: Reference/discordbot/cogs/gen_reply/input.md
                   - interactions: Reference/discordbot/cogs/gen_reply/interactions.md
                   - markers: Reference/discordbot/cogs/gen_reply/markers.md
@@ -78,12 +85,14 @@ nav:
                   - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
                   - recall: Reference/discordbot/cogs/gen_reply/recall.md
                   - references: Reference/discordbot/cogs/gen_reply/references.md
+                  - regen: Reference/discordbot/cogs/gen_reply/regen.md
                   - research_bridge: Reference/discordbot/cogs/gen_reply/research_bridge.md
                   - routing: Reference/discordbot/cogs/gen_reply/routing.md
                   - speculation: Reference/discordbot/cogs/gen_reply/speculation.md
                   - status_marks: Reference/discordbot/cogs/gen_reply/status_marks.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
                   - surface: Reference/discordbot/cogs/gen_reply/surface.md
+                  - tool_use: Reference/discordbot/cogs/gen_reply/tool_use.md
                   - toolkit: Reference/discordbot/cogs/gen_reply/toolkit.md
                   - turn_state: Reference/discordbot/cogs/gen_reply/turn_state.md
               - log_msg:
@@ -144,7 +153,6 @@ nav:
                   - bilibili: Reference/discordbot/services/platforms/bilibili.md
                   - douyin: Reference/discordbot/services/platforms/douyin.md
                   - facebook: Reference/discordbot/services/platforms/facebook.md
-                  - file_downloads: Reference/discordbot/services/platforms/file_downloads.md
                   - instagram: Reference/discordbot/services/platforms/instagram.md
                   - page_json: Reference/discordbot/services/platforms/page_json.md
                   - threads: Reference/discordbot/services/platforms/threads.md
@@ -164,7 +172,6 @@ nav:
               - media: Reference/discordbot/typings/media.md
               - memory: Reference/discordbot/typings/memory.md
               - models: Reference/discordbot/typings/models.md
-              - research: Reference/discordbot/typings/research.md
               - timeouts: Reference/discordbot/typings/timeouts.md
               - video: Reference/discordbot/typings/video.md
           - utils:
@@ -177,25 +184,29 @@ nav:
               - douyin_delivery: Reference/discordbot/utils/douyin_delivery.md
               - expansion_cog: Reference/discordbot/utils/expansion_cog.md
               - expansion_placeholder: Reference/discordbot/utils/expansion_placeholder.md
-              - images: Reference/discordbot/utils/images.md
+              - file_downloads: Reference/discordbot/utils/file_downloads.md
               - interaction_responses: Reference/discordbot/utils/interaction_responses.md
               - link_errors: Reference/discordbot/utils/link_errors.md
               - llm: Reference/discordbot/utils/llm.md
               - llm_errors: Reference/discordbot/utils/llm_errors.md
               - llm_transcript: Reference/discordbot/utils/llm_transcript.md
               - logged_ui: Reference/discordbot/utils/logged_ui.md
+              - lru: Reference/discordbot/utils/lru.md
               - media_delivery: Reference/discordbot/utils/media_delivery.md
               - mentions: Reference/discordbot/utils/mentions.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
+              - preview_editor: Reference/discordbot/utils/preview_editor.md
               - reactions: Reference/discordbot/utils/reactions.md
+              - research_access: Reference/discordbot/utils/research_access.md
               - scratch_dir: Reference/discordbot/utils/scratch_dir.md
               - sqlite_config: Reference/discordbot/utils/sqlite_config.md
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - timezone: Reference/discordbot/utils/timezone.md
               - urls: Reference/discordbot/utils/urls.md
               - usage_log: Reference/discordbot/utils/usage_log.md
+          - __init__: Reference/discordbot/__init__.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - develop:

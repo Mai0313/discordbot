@@ -43,6 +43,22 @@ flowchart LR
 
 Any layer may import from the layers to its right, never to its left; `services/` is Discord-free, and a cog directory never imports from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`.
 
+## Adding or Removing a Cog
+
+`src/discordbot/cli.py` is feature-agnostic: it upgrades only the core `cleanup.db` (`utils/message_cleanup.py`) and auto-loads every cog directory under `src/discordbot/cogs/`. Presence activity (`typings/config.py::DiscordConfig.bot_activity`) and reaction/status emojis (`typings/emojis.py::EmojiConfig`) default to neutral values so fresh deployments boot without custom Discord Application Emojis.
+
+When adding a cog:
+
+- **Directory layout**: create `src/discordbot/cogs/<name>/` with an empty `__init__.py` (no re-exports) and `cog.py` holding one `commands.Cog` subclass plus a synchronous `setup(bot)` calling `bot.add_cog(..., override=True)`. Every nested subpackage under `cogs/` must also carry `__init__.py` so package walks reach every view and command (`tests/guards/test_view_callbacks.py::test_the_module_walk_reaches_every_module_on_disk`).
+- **Slash commands**: every root slash command must declare `integration_types=INSTALL_CONTEXTS` and `contexts=INTERACTION_CONTEXTS` from `typings/commands.py`, and every command and subcommand/group must localize `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja` and omit `default_member_permissions` (`tests/guards/test_capabilities.py`). Update `src/discordbot/cogs/gen_reply/capabilities.md` and the command tables in all three READMEs in the same change.
+- **Views and modals**: every `View` and `Modal` must subclass `utils/logged_ui.py::LoggedView` or `LoggedModal` (never raw `nextcord.ui.View` / `Modal`), must not name a callback after any `View` attribute (such as `refresh`, `stop`, or `children`), and timeout-editing public views should subclass `utils/message_cleanup.py::PressBoundView` (`tests/guards/test_view_callbacks.py`).
+- **Database ownership**: if the cog owns or shares a SQLite database, call `utils/sqlite_config.py::ensure_database_upgraded(section=...)` inside `setup(bot)` and register its metadata lazily in `migrations/env.py::_SECTION_METADATA` (`tests/guards/test_migrations.py`).
+
+When removing an optional cog:
+
+- Delete `src/discordbot/cogs/<name>/` (and remove any leftover directory kept alive by ignored `__pycache__/` in existing checkouts, or `_load_cogs_sync` raises at boot).
+- `migrations/env.py` skips absent optional cogs on shared `reply.db` automatically (`tests/guards/test_migrations.py::test_reply_upgrade_survives_removed_optional_cogs`). If permanently removing a cog from the repository, update `capabilities.md`, the three READMEs, and any guard or migration references to it.
+
 ## Workflow
 
 - Create a focused branch such as `feat/your-change`, `fix/your-bug`, `docs/your-doc-change`, or `chore/your-maintenance-task`.
@@ -75,18 +91,18 @@ def setup(bot: commands.Bot) -> None:
 `async def setup` is not safe here: cogs load inside `DiscordBot()` before any event loop runs, so nextcord's attempt to schedule it raises and boot aborts with `ExtensionFailed`.
 
 - Slash commands take their English `name` and `description` as the defaults, plus `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja`.
-- Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
-- Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`. A new one goes into `.env.example` in the same change: it is the only settings list a deployer sees.
-- Keep `Field(description=..., examples=...)` populated for configurable values. These descriptions document the environment contract.
+- Use Pydantic for structured data models, service and helper classes included: prefer `BaseModel`, frozen models, enums, and typed result objects over loose `object`, `Any`, dictionaries, or `dataclass`.
+- Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`. A new one goes into `.env.example` in the same change: it is the only settings list a deployer sees (`tests/guards/test_env_example.py`).
+- Every Pydantic field carries `Field(description=...)` (required fields as `Field(..., description=...)`), with `examples=` populated where useful.
 - Prefer precise typed APIs. `Any` is a last resort.
 - Keyword arguments are required for normal function calls, including single argument calls such as `create_engine(url=...)` and `re.compile(pattern=...)`.
 - No bare `*` in a function signature unless an external API needs it; `tests/guards/test_no_bare_star.py` enforces this and lists each exception with its reason.
 - Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, `text.split(",")`, exception constructors, variadic collectors, and `logfire.info("message")`.
 - Whichever of `service_tier`, `extra_headers` and `extra_body` a `responses.create` / `.parse` or `interactions.create` call passes goes as an explicit keyword, never through a `**dict` spread, which costs the result its types.
-- Build the `tasks` list for a `gather` over a variable number of awaitables with a `for` loop, not a comprehension.
-- Avoid intermediate one-level aliases when directly using the original object is clearer.
-- Prefer a constant with one caller inside that function, unless anything else references it, it is user-visible config, or it belongs in `typings/timeouts.py` or `typings/context_budgets.py`.
-- No compatibility wrappers, re-exports at an old import path, or read-path tolerance for an old data layout: repoint every caller, change a database through an Alembic migration, and clean other changed data once, offline.
+- Build the `tasks` list for a `gather` over a variable number of awaitables with a `for` loop on its own lines, never a comprehension or generator expression (existing ones are not a sweep target).
+- Avoid intermediate one-level aliases when directly using the original object is clearer (such as `usage = responses.usage`).
+- Prefer a constant with one caller inside that function rather than a module-level `_NAME`, unless anything else (a test included) references it, it is user-visible config, or it belongs in `typings/timeouts.py` or `typings/context_budgets.py` (a preference for new code, not a sweep).
+- No legacy or compatibility code: no wrapper kept for compatibility, no re-export at an old import path, and no read-path tolerance for an old data layout; repoint every caller, change a database through an Alembic migration, and clean other changed data once, offline.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.
 
 ## Comments
@@ -125,7 +141,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 - Every log statement inside an `except` attaches the exception (`_exc_info=True`, or `_exc_info=exc` when the handler binds it), plus `error_type=type(exc).__name__` when the handler is broad. The one carve-out is a failure that is **expected rather than diagnosable**, where the exception's own type is the whole finding and the stack is identical on every occurrence: catch that type on its own, say what it means in the message, and attach nothing. A permission the bot never had and cannot earn is the example — `utils/message_cleanup.py`'s `Forbidden` branch, which is split from the `HTTPException` one precisely so a 5xx keeps its traceback. A broad handler never qualifies, because there the type is what you came to find out.
 - Every log carries the structured fields that identify its subject (`message_id`, `url`, `scope`, `thread_id`, `filename`), so a recurrence is greppable without reading the traceback.
-- No log carries the text of a user's message or prompt, only its size (`prompt_chars=len(user_prompt)`).
+- No log carries the text of a user's message or prompt, only its size (`prompt_chars=len(user_prompt)`); model output and community nicknames may appear.
 - A broad `except Exception` or `contextlib.suppress(Exception)` is allowed only as a deliberate best-effort boundary. When it is, a comment says why it stays broad, and the handler still logs. `services/memory/inflight.py::safe_db_write` is the reference shape.
 - Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
 - A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
@@ -178,7 +194,7 @@ docker compose pull bot && docker compose up -d bot
 
 The image's `org.opencontainers.image.revision` label names the commit it was built from, so `docker inspect` on the running container shows what is deployed.
 
-Startup applies new migrations to every database except `messages.db`, which it only creates. When a merge adds a `messages.db` revision, the bot keeps running with message logging off until it is applied by hand. Stop the bot, back up the file (the backup reads through the WAL, so nothing committed is lost), and run the revision from the new image; batch mode rebuilds the table, so it needs free disk about the size of the file:
+Startup upgrades `cleanup.db` from `cli.py` and each loaded cog's own databases (`economy`, `games`, `reply`) from its `setup()` (with `migrations/env.py` loading only the active section's metadata lazily), while `log_msg` still only creates `messages.db`. When a merge adds a `messages.db` revision, the bot keeps running with message logging off until it is applied by hand. Stop the bot, back up the file (the backup reads through the WAL, so nothing committed is lost), and run the revision from the new image; batch mode rebuilds the table, so it needs free disk about the size of the file:
 
 ```bash
 docker compose stop bot
