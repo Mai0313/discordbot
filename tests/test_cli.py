@@ -29,12 +29,7 @@ from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
 from discordbot.utils.media_delivery import upload_limit_for
 
-from tests.helpers.casting import (
-    as_bot,
-    as_guild,
-    as_discord_bot,
-    make_invalid_webhook_token,
-)
+from tests.helpers.casting import as_bot, as_guild, as_discord_bot, make_invalid_webhook_token
 from tests.helpers.source_tree import PACKAGE, REPO_ROOT
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
@@ -480,6 +475,24 @@ def test_discord_bot_boots_with_subsets_of_cogs_removed(
     assert len(bot.cogs) == len(kept_cogs)
     assert {path.name for path in (tmp_path / "data" / "database").iterdir()} == expected_dbs
     assert not (tmp_path / "data" / "memories").exists()
+
+
+def test_discord_bot_activity_defaults_and_reads_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`DiscordBot` presence defaults to `Discord` and honors `DISCORD_BOT_ACTIVITY`."""
+    monkeypatch.chdir(path=tmp_path)
+    monkeypatch.setattr(target=cli, name="ensure_database_upgraded", value=lambda **_kwargs: None)
+    monkeypatch.setattr(target=DiscordBot, name="_load_cogs_sync", value=lambda self: None)
+
+    default_bot = DiscordBot()
+    assert default_bot.activity is not None
+    assert default_bot.activity.name == "Discord"
+
+    monkeypatch.setenv(name="DISCORD_BOT_ACTIVITY", value="custom status")
+    custom_bot = DiscordBot()
+    assert custom_bot.activity is not None
+    assert custom_bot.activity.name == "custom status"
 
 
 def test_discord_bot_init_does_not_duplicate_logfire_handlers(

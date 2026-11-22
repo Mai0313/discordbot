@@ -38,6 +38,7 @@ from discordbot.typings.llm import LLMConfig
 # Imported as a module so a test that swaps one store call on it reaches this cog.
 from discordbot.cogs.research import database as db
 from discordbot.typings.colors import DISCORD_RED
+from discordbot.typings.emojis import RESEARCH_EMOJI
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
@@ -415,9 +416,7 @@ class ResearchCogs(commands.Cog):
                 return "error", None
             self._active_threads.add(thread.id)
         # Distinct research reaction on the anchor message (best-effort).
-        await update_reaction(
-            message=anchor, bot_user=self.bot.user, emoji="<:dino:1517560319281594570>"
-        )
+        await update_reaction(message=anchor, bot_user=self.bot.user, emoji=RESEARCH_EMOJI)
         spawn_tracked(
             coro=self._run_research(thread=thread, owner_id=owner_id, brief=brief, agent=agent),
             tasks=self._tasks,

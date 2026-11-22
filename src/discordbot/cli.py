@@ -4,7 +4,6 @@ import os
 import sys
 from time import monotonic
 from typing import TYPE_CHECKING, Any
-import asyncio
 import logging
 from pathlib import Path
 import platform
@@ -28,22 +27,34 @@ from discordbot.utils.message_cleanup import (
 )
 
 if TYPE_CHECKING:
+    import asyncio
+
     from nextcord.types.interactions import Interaction as InteractionPayload
 
 
 class DiscordBot(commands.Bot):
     """Discord bot configured with project-specific intents and cogs."""
 
-    def __init__(self) -> None:
-        """Initialises the Discord bot with specific intents and configuration."""
+    def __init__(self, activity_name: str | None = None) -> None:
+        """Initialises the Discord bot with specific intents and configuration.
+
+        Args:
+            activity_name (str | None): Playing-activity label for the bot's presence; defaults
+                to `DiscordConfig.bot_activity`.
+        """
         intents = Intents.all()
         intents.members = False
         intents.presences = False
+        resolved_activity = (
+            activity_name
+            if activity_name is not None
+            else DiscordConfig(discord_bot_token="").bot_activity
+        )
         super().__init__(
             intents=intents,
             help_command=None,
             description="A Discord bot made with Nextcord.",
-            activity=Game("your mama"),
+            activity=Game(name=resolved_activity),
         )
         for logger_name, level in (("nextcord.state", logging.WARNING), ("alembic", logging.INFO)):
             logger = logging.getLogger(name=logger_name)
@@ -252,7 +263,7 @@ def main() -> None:
     """Initialises and runs the Discord bot."""
     setup_logging()
     discord_config = DiscordConfig()
-    bot = DiscordBot()
+    bot = DiscordBot(activity_name=discord_config.bot_activity)
     bot.run(token=discord_config.discord_bot_token)
 
 

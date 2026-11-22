@@ -20,7 +20,7 @@ from discordbot.cogs.gen_reply.streaming import (
     IncompleteAnswerError,
     stream_answer_with_retry,
 )
-from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
+from discordbot.cogs.gen_reply.status_marks import ANSWER_EMOJI, RETRY_HINT_EMOJI
 
 from tests.helpers.casting import as_message, make_not_found
 from tests.helpers.reply_fakes import (
@@ -392,7 +392,7 @@ async def test_a_failure_over_a_thinking_preview_clears_it() -> None:
     """
     message = FakeMessage()
     reply = FakeReply()
-    reply.content = "-# <:message:1517560873000898860> Thinking..."
+    reply.content = f"-# {ANSWER_EMOJI} Thinking..."
     streamer = _streamer(message=message, reply=as_message(fake=reply))
     streamer.reasoning_content = "weighing the options"
 
