@@ -76,7 +76,7 @@ from discordbot.typings.economy import (
     central_bank_credit_ceiling,
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import SqliteBootstrap, sqlite_url
 from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
 from discordbot.services.economy.holds import spending, spendable, held_amount
 
@@ -85,7 +85,7 @@ from discordbot.services.economy.holds import spending, spendable, held_amount
 _CONDITIONAL_WRITE_MAX_RETRIES: Final[int] = 8
 _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/economy.db")
+_engine: AsyncEngine = create_async_engine(url=sqlite_url(filename="economy.db"))
 
 
 def _taipei_midnight(now: datetime) -> datetime:

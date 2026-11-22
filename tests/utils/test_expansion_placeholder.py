@@ -5,6 +5,7 @@ from typing import Unpack
 import pytest
 from nextcord import Embed, Message
 
+from discordbot.typings.emojis import LinkSourceName
 from discordbot.utils.timezone import database_now
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.utils.expansion_placeholder import (
@@ -27,7 +28,7 @@ from tests.helpers.discord_mocks import FakeUser, DiscordPayload, FakeDiscordMes
 from tests.helpers.logfire_capture import capture_logs
 
 _TEXT = "-# 正在讀取貼文⋯"
-_SOURCE = "threads"
+_SOURCE: LinkSourceName = "threads"
 _URL = "https://www.threads.com/@someone/post/AAA"
 
 
@@ -421,3 +422,32 @@ async def test_a_resumed_expansion_that_raises_still_marks_the_source() -> None:
 
     assert source.reactions[-1] == EXPANSION_FAILED_EMOJI
     assert placeholder_message.deleted is True
+    assert await _load_pending(source=_SOURCE, created_before=database_now()) == []
+
+
+async def test_resuming_in_an_uncached_channel_fetches_the_channel_only_once() -> None:
+    """An uncached channel is resolved once and reused for both the placeholder and source reads."""
+    _source, placeholder_message, channel = await _interrupted()
+    fetch_calls: list[int] = []
+
+    class _UncachedBot:
+        user = FakeUser(user_id=999, bot=True)
+
+        def get_channel(self, channel_id: int, /) -> None:
+            del channel_id
+
+        async def fetch_channel(self, channel_id: int, /) -> _FakeChannel:
+            fetch_calls.append(channel_id)
+            return channel
+
+    expand = _RecordingExpand()
+    await resume_expansion_placeholders(
+        bot=as_bot(fake=_UncachedBot()),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
+    )
+
+    assert len(expand.calls) == 1
+    assert placeholder_message.edits
+    assert len(fetch_calls) == 1

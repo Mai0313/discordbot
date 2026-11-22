@@ -11,11 +11,10 @@ import asyncio
 import logfire
 from nextcord.ext import tasks, commands
 
-from discordbot.utils.media_delivery import (
-    MEDIA_CLEANUP_INTERVAL_HOURS,
-    MediaHostingConfig,
-    MediaHostingService,
-)
+from discordbot.utils.media_delivery import MediaHostingConfig, MediaHostingService
+
+# Periodic cleanup cadence passed to @tasks.loop at decoration time.
+MEDIA_CLEANUP_INTERVAL_HOURS = 6.0
 
 
 class MediaCleanupCogs(commands.Cog):

@@ -205,7 +205,10 @@ async def test_uncached_gateway_dm_preserves_partner_key_for_human_and_bot_repli
     await asyncio.gather(*cog._tasks)
 
     rows = await _query(
-        sql='SELECT discord_message_id, author_id, channel_id, channel_name FROM "messages" ORDER BY id'
+        sql=(
+            'SELECT discord_message_id, author_id, channel_id, channel_name FROM "messages" '
+            "ORDER BY CAST(discord_message_id AS INTEGER)"
+        )
     )
     assert rows == [("10", "800", "800", "DM_Alice_800"), ("11", "999", "800", "DM_Alice_800")]
 

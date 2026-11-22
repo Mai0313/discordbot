@@ -453,6 +453,7 @@ def test_cli_imports_no_feature_modules() -> None:
         (("template", "economy"), {"cleanup.db", "economy.db"}),
         (("template", "games"), {"cleanup.db", "economy.db", "games.db"}),
         (("template", "memory"), {"cleanup.db", "reply.db"}),
+        (("template", "parse_threads"), {"cleanup.db", "reply.db"}),
     ],
 )
 def test_discord_bot_boots_with_subsets_of_cogs_removed(

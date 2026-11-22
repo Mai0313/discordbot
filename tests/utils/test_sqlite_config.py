@@ -5,18 +5,40 @@ seed rows decide the outcome.
 """
 
 from pathlib import Path
+from collections import Counter
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import text, insert, select, update
 from alembic.config import Config
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.utils import sqlite_config
-from discordbot.utils.sqlite_config import SqliteBootstrap, ensure_database_upgraded
+from discordbot.utils import sqlite_config, message_cleanup, expansion_placeholder
+from discordbot.cogs.games import database as games_database
+from discordbot.cogs.log_msg import cog as log_msg
+from discordbot.cogs.research import database as research_database
+from discordbot.cogs.gen_reply import ask_store, feedback_store
+from discordbot.services.memory import database as memory_database
+from discordbot.services.economy import database as economy_database
+from discordbot.utils.sqlite_config import (
+    DATABASE_DIR,
+    SqliteBootstrap,
+    sqlite_url,
+    open_reply_session,
+    ensure_database_upgraded,
+)
 from discordbot.utils.stored_integer import StoredInteger
 
 from tests.helpers.source_tree import REPO_ROOT
+
+# Captured at collection time, before function-scoped `conftest.py` isolation swaps engines.
+_PRODUCTION_ENGINE_URLS: dict[str, str] = {
+    "cleanup": str(message_cleanup._engine.url),
+    "economy": str(economy_database._engine.url),
+    "games": str(games_database._engine.url),
+    "messages": str(log_msg._engine.url),
+    "reply": str(sqlite_config.reply_db_engine.url),
+}
 
 
 class _Base(DeclarativeBase):
@@ -77,3 +99,64 @@ def test_ensure_database_upgraded_creates_dir_and_runs_once_per_section(
     assert (tmp_path / "data" / "database" / "cleanup.db").is_file()
     assert (tmp_path / "data" / "database" / "economy.db").is_file()
     assert calls == ["cleanup", "economy"]
+
+
+def test_every_database_engine_points_at_its_expected_sqlite_file() -> None:
+    """Pins each database engine's production URL and verifies reply.db stores share one engine."""
+    assert Path("./data/database") == DATABASE_DIR
+    assert sqlite_url(filename="reply.db") == "sqlite+aiosqlite:///data/database/reply.db"
+    assert _PRODUCTION_ENGINE_URLS == {
+        "cleanup": "sqlite+aiosqlite:///data/database/cleanup.db",
+        "economy": "sqlite+aiosqlite:///data/database/economy.db",
+        "games": "sqlite+aiosqlite:///data/database/games.db",
+        "messages": "sqlite+aiosqlite:///data/database/messages.db",
+        "reply": "sqlite+aiosqlite:///data/database/reply.db",
+    }
+    for module in (
+        ask_store,
+        feedback_store,
+        research_database,
+        expansion_placeholder,
+        memory_database,
+    ):
+        assert not hasattr(module, "_engine")
+
+
+async def test_checkout_configures_each_pooled_connection_once_and_reconfigures_after_invalidation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One-shot checkout skips repeat PRAGMAs on pool reuse and re-applies after invalidation."""
+    calls: list[bool] = []
+    real_configure = sqlite_config.configure_sqlite_connection
+
+    def counting_configure(dbapi_connection: object, enable_foreign_keys: bool = False) -> None:
+        calls.append(enable_foreign_keys)
+        real_configure(dbapi_connection=dbapi_connection, enable_foreign_keys=enable_foreign_keys)
+
+    monkeypatch.setattr(
+        target=sqlite_config, name="configure_sqlite_connection", value=counting_configure
+    )
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'oneshot.db'}")
+    bootstrap = SqliteBootstrap(enable_foreign_keys=True)
+
+    try:
+        async with bootstrap.open_session(engine=engine) as session:
+            assert await session.scalar(statement=text(text="PRAGMA foreign_keys")) == 1
+        async with bootstrap.open_session(engine=engine) as session:
+            assert await session.scalar(statement=text(text="PRAGMA foreign_keys")) == 1
+        assert Counter(calls) == Counter({True: 1})
+
+        async with bootstrap.open_session(engine=engine) as session:
+            conn = await session.connection()
+            await conn.invalidate()
+        async with bootstrap.open_session(engine=engine) as session:
+            assert await session.scalar(statement=text(text="PRAGMA foreign_keys")) == 1
+        assert Counter(calls) == Counter({True: 2})
+    finally:
+        await engine.dispose()
+
+
+async def test_open_reply_session_enables_foreign_keys() -> None:
+    """The unified `reply.db` engine enforces foreign keys for `feedback_store` constraints."""
+    async with open_reply_session() as session:
+        assert await session.scalar(statement=text(text="PRAGMA foreign_keys")) == 1

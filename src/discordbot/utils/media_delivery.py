@@ -83,8 +83,6 @@ _TEMP_PREFIX = ".mediahost-tmp-"
 _STALE_TEMP_SECONDS = 300.0
 # Grace window protecting newly published files from concurrent size-cap eviction.
 _EVICTION_GRACE_SECONDS = 300.0
-# Periodic cleanup cadence passed to @tasks.loop at decoration time.
-MEDIA_CLEANUP_INTERVAL_HOURS = 6.0
 
 # Matches only files written by this service (32-hex stem + allowlisted suffix), excluding others.
 _HOSTED_NAME_RE = re.compile(
