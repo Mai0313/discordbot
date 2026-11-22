@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, NoReturn
+import asyncio
 import sqlite3
 import contextlib
 
@@ -250,12 +251,13 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     owner_interaction = _RefusedAfterTheTable(user=FakeUser(user_id=1), message=message)
     start_button = lobby_button(view=lobby, label="開始")
 
-    with pytest.raises(nextcord.Forbidden):
-        await start_button.callback(as_interaction(fake=owner_interaction))
+    await start_button.callback(as_interaction(fake=owner_interaction))
 
     assert len(message.edits) == 1, "the table landed before the refusal"
     assert owner_interaction.followup.sent == []
-    assert reports == []
+    assert [(level, msg) for level, msg, _ in reports] == [
+        ("warn", "Discord refused an in-progress Blackjack table edit")
+    ]
 
 
 async def test_dragon_gate_lobby_join_leave_and_owner_start(
@@ -528,3 +530,126 @@ async def test_a_start_that_raises_before_its_table_is_up_charges_nothing_and_re
     assert not view.is_finished()
     await view.on_timeout()
     assert scheduled.messages == [message]
+
+
+async def test_a_refusal_propagates_when_start_game_keeps_started_true() -> None:
+    """A Discord refusal raised after the table is marked started is not misreported as failed start."""
+    lobby = scripted_blackjack_lobby(dealt=[])
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+
+    async def raises_after_start(interaction: Interaction[Any]) -> bool:
+        del interaction
+        raise make_forbidden(message="Missing Access")
+
+    lobby._start_game = raises_after_start  # type: ignore[method-assign]
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+
+    with pytest.raises(nextcord.Forbidden):
+        await lobby_button(view=lobby, label="開始").callback(
+            as_interaction(fake=owner_interaction)
+        )
+    assert owner_interaction.followup.sent == []
+
+
+async def test_lobby_on_timeout_waits_for_lock_and_keeps_disabled_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`on_timeout` serializes on `self._lock`, keeps disabled buttons visible, and blocks late joins."""
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    lobby = scripted_blackjack_lobby(dealt=[])
+    bob = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
+    lobby.prepare_participant = joins_as(participant=bob)
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+
+    async with lobby._lock:
+        timeout_task = asyncio.create_task(coro=lobby.on_timeout())
+        await asyncio.sleep(0)
+        assert not timeout_task.done(), "on_timeout must wait for self._lock"
+        assert message.edits == []
+    await timeout_task
+
+    assert scheduled.messages == [message]
+    assert len(message.edits) == 1
+    assert message.edits[0]["view"] is lobby
+    assert all(child.disabled for child in lobby.children if isinstance(child, nextcord.ui.Button))
+
+    late_join = FakeInteraction(user=FakeUser(user_id=2, name="bob"), message=message)
+    await lobby_button(view=lobby, label="加入").callback(as_interaction(fake=late_join))
+    assert [participant.user_id for participant in lobby.participants] == [1]
+    assert late_join.followup.sent[0]["ephemeral"] is True
+
+
+@pytest.mark.parametrize(argnames="label", argvalues=["加入", "離開"], ids=["join", "leave"])
+async def test_lobby_join_and_leave_defer_before_acquiring_lock(label: str) -> None:
+    """Join and leave acknowledge Discord immediately so lock contention cannot expire the 3s token."""
+    lobby = scripted_blackjack_lobby(dealt=[])
+    bob = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
+    lobby.prepare_participant = joins_as(participant=bob)
+    if label == "離開":
+        lobby._participants[2] = bob
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+    press = FakeInteraction(user=FakeUser(user_id=2, name="bob"), message=message)
+
+    async with lobby._lock:
+        task = asyncio.create_task(
+            coro=lobby_button(view=lobby, label=label).callback(as_interaction(fake=press))
+        )
+        await asyncio.sleep(0)
+        assert press.response.deferred is True, "button press must defer before waiting on _lock"
+        assert not task.done()
+    await task
+
+
+async def test_dragon_gate_lobby_keeps_started_true_during_ante_refund(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While failed-start antes are refunding, the lobby stays closed to joins and reopens after."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    owner = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=1_000)
+    bob = await funded_dragon_gate_seat(user_id=2, display_name="Bob", balance=1_000)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+    refund_entered = asyncio.Event()
+    allow_refund = asyncio.Event()
+    started_during_refund: list[bool] = []
+
+    async def gated_batch(
+        game_id: str, settlements: Sequence[JackpotSettlementRequest]
+    ) -> JackpotSettlementBatchResult:
+        if settlements[0].player_delta > 0:
+            started_during_refund.append(view._started)
+            refund_entered.set()
+            await allow_refund.wait()
+        return await apply_jackpot_settlement_batch(game_id=game_id, settlements=settlements)
+
+    monkeypatch.setattr("discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", gated_batch)
+    message = FakeDiscordMessage()
+    view = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
+        initial_jackpot=pool_before,
+    )
+    view.message = as_message(fake=message)
+    owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_start.edit_failure = make_forbidden(message="Missing Access")
+
+    start_task = asyncio.create_task(
+        coro=lobby_button(view=view, label="開始").callback(as_interaction(fake=owner_start))
+    )
+    await refund_entered.wait()
+    late_join = FakeInteraction(user=FakeUser(user_id=2, name="bob"), message=message)
+    await lobby_button(view=view, label="加入").callback(as_interaction(fake=late_join))
+    assert late_join.followup.sent[0]["content"] == "這桌已經開始了"
+    assert [participant.user_id for participant in view.participants] == [1]
+
+    allow_refund.set()
+    await start_task
+
+    assert started_during_refund == [True]
+    assert view._started is False
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000)
+    await assert_wallet_consistent(user_id=2, expected_balance=1_000)

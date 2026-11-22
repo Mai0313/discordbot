@@ -65,7 +65,7 @@ def _insurance_settlement(
 
 
 async def settle_blackjack_player(
-    round_state: BlackjackRound, player: BlackjackPlayerHand
+    round_state: BlackjackRound, player: BlackjackPlayerHand, is_vip: bool | None = None
 ) -> BlackjackPlayerSettlement:
     """Returns the aggregated settlement for `player` after writing every sub-hand and insurance.
 
@@ -81,6 +81,7 @@ async def settle_blackjack_player(
     Args:
         round_state (BlackjackRound): Round providing the dealer cards and peek state.
         player (BlackjackPlayerHand): Player to settle; its participant names the account written.
+        is_vip (bool | None): Pre-fetched VIP flag for `player`, or None to read it from the ledger.
     """
     hand_settlements = [
         _hand_settlement_from_state(hand=hand, dealer=round_state.dealer) for hand in player.hands
@@ -92,7 +93,8 @@ async def settle_blackjack_player(
     five_card_bonus = sum(settlement.five_card_bonus for settlement in hand_settlements)
 
     participant = player.participant
-    is_vip = await get_vip(user_id=participant.user_id)
+    if is_vip is None:
+        is_vip = await get_vip(user_id=participant.user_id)
     casino_paid_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
     casino_paid_vip_bonus = casino_paid_delta - base_delta
     five_card_vip_delta = apply_vip_blackjack_bonus(delta=five_card_bonus, is_vip=is_vip)

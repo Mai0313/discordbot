@@ -99,6 +99,7 @@ class BaseGameLobbyView(GameView):
                 self._participants[extra.user_id] = extra
         self._lock = asyncio.Lock()
         self._started = False
+        self._timed_out = False
 
     @property
     def participants(self) -> list[GameParticipant]:
@@ -107,45 +108,49 @@ class BaseGameLobbyView(GameView):
 
     async def on_timeout(self) -> None:
         """Cleans up a lobby that never started."""
-        if self._started or self.message is None:
-            return
-        self._disable_buttons()
-        self.stop()
-        embed = self.lobby_embed(status="Lobby 已逾時")
+        async with self._lock:
+            if self._started or self._timed_out or self.message is None:
+                return
+            self._timed_out = True
+            self._disable_buttons()
+            self.stop()
+            embed = self.lobby_embed(status="Lobby 已逾時")
+            message = self.message
+            last_press = self.last_press
         try:
             await edit_public_message(
-                message=self.message,
-                interaction=self.last_press,
+                message=message,
+                interaction=last_press,
                 payload={
                     "embed": embed,
                     "view": self,
-                    **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+                    **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
                 },
             )
         except NotFound:
             logfire.info(
                 "Lobby message gone before its timeout edit",
-                channel_id=self.message.channel.id,
-                message_id=self.message.id,
+                channel_id=message.channel.id,
+                message_id=message.id,
             )
         except Forbidden:
             # Only an edit without a live press token hits channel REST, which can return 403.
             logfire.warn(
                 "Discord refused the lobby's timeout edit",
-                channel_id=self.message.channel.id,
-                message_id=self.message.id,
+                channel_id=message.channel.id,
+                message_id=message.id,
             )
         # Broad on purpose: the cleanup below must still be scheduled.
         except Exception as exc:
             logfire.warn(
                 "Lobby timeout edit failed",
-                channel_id=self.message.channel.id,
-                message_id=self.message.id,
+                channel_id=message.channel.id,
+                message_id=message.id,
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
         schedule_public_message_delete(
-            message=self.message, user_name=self.owner.account_name, interaction=self.last_press
+            message=message, user_name=self.owner.account_name, interaction=last_press
         )
 
     @nextcord.ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
@@ -160,9 +165,14 @@ class BaseGameLobbyView(GameView):
         """
         if interaction.user is None:
             return
+        await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
+                return
+            if self._timed_out:
+                await self._send_notice(interaction=interaction, content="Lobby 已逾時")
                 return
             if interaction.user.id in self._participants:
                 await self._send_notice(interaction=interaction, content="你已經在這桌了")
@@ -170,8 +180,6 @@ class BaseGameLobbyView(GameView):
             if self.max_players is not None and len(self._participants) >= self.max_players:
                 await self._send_notice(interaction=interaction, content="這桌已經滿了")
                 return
-            await interaction.response.defer()
-            self._keep_press(interaction=interaction)
             participant = await self.prepare_participant(interaction=interaction)
             if participant is None:
                 return
@@ -192,9 +200,14 @@ class BaseGameLobbyView(GameView):
         """
         if interaction.user is None:
             return
+        await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
+                return
+            if self._timed_out:
+                await self._send_notice(interaction=interaction, content="Lobby 已逾時")
                 return
             if interaction.user.id == self.owner.user_id:
                 await self._send_notice(interaction=interaction, content="房主不能離開 lobby")
@@ -203,7 +216,6 @@ class BaseGameLobbyView(GameView):
             if participant is None:
                 await self._send_notice(interaction=interaction, content="你不在這桌")
                 return
-            await interaction.response.defer()
             await self._refresh_message(
                 interaction=interaction, status=f"{participant.display_name} 已離開"
             )
@@ -242,6 +254,9 @@ class BaseGameLobbyView(GameView):
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
+                return
+            if self._timed_out:
+                await self._send_notice(interaction=interaction, content="Lobby 已逾時")
                 return
             elsewhere = self._seat_participants(claimed=claimed)
             if any(seat.user_id == self.owner.user_id for seat in elsewhere):
@@ -337,15 +352,12 @@ class BaseGameLobbyView(GameView):
     async def _show_table(
         self, interaction: Interaction[commands.Bot], payload: dict[str, Any]
     ) -> None:
-        """Edits the lobby message into its table; an edit that never lands reopens the lobby.
+        """Edits the lobby message into its table.
 
         No retry here: nextcord's webhook client already retries every Discord 5xx before raising.
+        Callers reopen `_started` under `self._lock` only after their rollback finishes.
         """
-        try:
-            await interaction.edit_original_message(**payload)
-        except Exception:
-            self._started = False
-            raise
+        await interaction.edit_original_message(**payload)
 
     def holds_seats(self) -> bool:
         """Returns True; a lobby holds seats only while its start press runs."""
@@ -436,25 +448,28 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         """Charges antes before delegating to the jackpot game start hook."""
         message = interaction.message
         if message is None:
-            self._started = False
+            async with self._lock:
+                self._started = False
             return False
         try:
             result = await self._settle_pregame_antes()
         except Exception:
             # The charge rolls back whatever it raises on, so the table never started.
-            self._started = False
+            async with self._lock:
+                self._started = False
             raise
         if result.rejected_player_ids:
             rejected = set(result.rejected_player_ids)
             owner_rejected = self.owner.user_id in rejected
             dropped: list[str] = []
-            for user_id in rejected:
-                if user_id == self.owner.user_id:
-                    continue
-                participant = self._participants.pop(user_id, None)
-                if participant is not None:
-                    dropped.append(participant.display_name)
-            self._started = False
+            async with self._lock:
+                for user_id in rejected:
+                    if user_id == self.owner.user_id:
+                        continue
+                    participant = self._participants.pop(user_id, None)
+                    if participant is not None:
+                        dropped.append(participant.display_name)
+                self._started = False
             if owner_rejected:
                 status = "房主餘額不足"
             elif dropped:
@@ -468,8 +483,11 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
                 interaction=interaction, message=message, final_balances=result.player_balances
             )
         except Exception:
-            self._started = False
-            await self._refund_pregame_antes()
+            try:
+                await self._refund_pregame_antes()
+            finally:
+                async with self._lock:
+                    self._started = False
             raise
         return True
 

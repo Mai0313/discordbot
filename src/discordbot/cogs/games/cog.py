@@ -29,7 +29,7 @@ from discordbot.utils.message_cleanup import track_public_message
 from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
-from discordbot.services.economy.database import get_balance, get_jackpot_snapshot
+from discordbot.services.economy.database import get_balance, get_balances, get_jackpot_snapshot
 from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
 from discordbot.utils.interaction_responses import (
     send_ephemeral_notice,
@@ -142,10 +142,13 @@ class GamesCogs(commands.Cog):
         self, participants: list[GameParticipant], mode: WagerMode
     ) -> RefreshParticipantsResult:
         """Re-checks balances against each queued participant wager."""
+        balances = await get_balances(
+            user_ids=[participant.user_id for participant in participants]
+        )
         refreshed: list[GameParticipant] = []
         dropped: list[str] = []
         for participant in participants:
-            balance = await get_balance(user_id=participant.user_id)
+            balance = balances.get(participant.user_id, 0)
             refreshed_participant = build_wager_participant(
                 identity=participant, balance=balance, wager=participant.bet, mode=mode
             )
@@ -431,4 +434,4 @@ def setup(bot: commands.Bot) -> None:
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
-    bot.add_cog(GamesCogs(bot), override=True)
+    bot.add_cog(cog=GamesCogs(bot=bot), override=True)

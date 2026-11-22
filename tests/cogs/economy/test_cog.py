@@ -7,7 +7,7 @@ before that write, and who gets to see the answer.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import asyncio
 
 import pytest
@@ -367,7 +367,10 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
         await command.callback(
             cog, as_interaction(fake=interaction), member=bot_member, amount=amount
         )
-        assert interaction.followup.sent[0].get("ephemeral") is not True
+        assert interaction.response.deferred is True
+        assert interaction.response.deferred_ephemeral is True
+        assert interaction.original_deleted is True
+        assert interaction.followup.sent[-1].get("ephemeral") is not True
 
     account = await get_account(user_id=999)
     assert account is not None
@@ -796,5 +799,96 @@ async def test_exhausted_vip_purchase_does_not_claim_insufficient_balance(
             actor_name="alice", avatar_url="", balance_now=VIP_PURCHASE_COST
         ).title,
     }
+    assert interaction.followup.sent[0]["embed"].title == "VIP 購買未完成"
     assert await get_vip(user_id=1) is False
     assert await get_balance(user_id=1) == VIP_PURCHASE_COST
+
+
+async def test_economy_commands_defer_before_avatar_and_admin_lookups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admin adjustments and loan repayments/calls defer before avatar or admin DB lookups."""
+    await set_admin(user_id=1, name="alice", is_admin=True)
+    await seed_balance(user_id=1, name="alice", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    cog = EconomyCogs(bot=_bot())
+    observed_deferred: list[bool] = []
+    real_avatar = economy.guild_avatar_url
+    real_get_admin = economy.get_admin
+
+    def install_spies(interaction: FakeInteraction) -> None:
+        async def spy_avatar(*args: Any, **kwargs: Any) -> str:  # noqa: ANN401 -- test spy
+            observed_deferred.append(interaction.response.deferred)
+            return await real_avatar(*args, **kwargs)
+
+        async def spy_get_admin(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401 -- test spy
+            observed_deferred.append(interaction.response.deferred)
+            return await real_get_admin(*args, **kwargs)
+
+        monkeypatch.setattr(economy, "guild_avatar_url", spy_avatar)
+        monkeypatch.setattr(economy, "get_admin", spy_get_admin)
+
+    target = FakeUser(user_id=2, name="bob", display_name="Bob")
+    cases = [
+        (EconomyCogs.admin_refund_tax, {"member": target, "amount": "50"}, False),
+        (EconomyCogs.credit_repay, {"member": target, "amount": "50"}, False),
+        (EconomyCogs.credit_call, {"member": target, "amount": "50"}, False),
+        (EconomyCogs.central_bank_repay, {"amount": "50"}, True),
+        (EconomyCogs.central_bank_call, {"member": target, "amount": "50"}, True),
+    ]
+    for command, kwargs, needs_admin in cases:
+        observed_deferred.clear()
+        interaction = FakeInteraction(
+            user=FakeUser(user_id=1, name="alice"),
+            guild_id=LENDING_GUILD,
+            administrator=needs_admin,
+            slash_command=True,
+        )
+        install_spies(interaction=interaction)
+        await command.callback(cog, as_interaction(fake=interaction), **kwargs)
+        assert observed_deferred, f"{command.name} never ran its lookup"
+        assert all(observed_deferred), f"{command.name} ran a lookup before deferring"
+
+
+async def test_central_bank_call_refuses_non_admin_without_deferring() -> None:
+    """Pre-DB permission refusal on `/central_bank call` replies ephemerally without deferring."""
+    cog = EconomyCogs(bot=_bot())
+    interaction = FakeInteraction(
+        user=FakeUser(user_id=1, name="alice"),
+        guild_id=LENDING_GUILD,
+        administrator=False,
+        slash_command=True,
+    )
+
+    await EconomyCogs.central_bank_call.callback(
+        cog,
+        as_interaction(fake=interaction),
+        member=FakeUser(user_id=2, name="bob", display_name="Bob"),
+        amount="50",
+    )
+
+    assert interaction.response.deferred is False
+    assert len(interaction.response.sent) == 1
+    assert interaction.response.sent[0]["ephemeral"] is True
+    assert interaction.followup.sent == []
+
+
+async def test_balance_uses_portfolio_vip_flag_without_second_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/balance` reads VIP status from `PortfolioView.is_vip` instead of calling `get_vip`."""
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 500)
+    assert await buy_vip(user_id=1, name="alice") is not None
+
+    async def fail_get_vip(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("get_vip should not be called by /balance")
+
+    monkeypatch.setattr(economy, "get_vip", fail_get_vip)
+    cog = EconomyCogs(bot=_bot())
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), slash_command=True)
+
+    await EconomyCogs.balance.callback(cog, as_interaction(fake=interaction), member=None)
+
+    assert len(interaction.followup.sent) == 1
+    assert "VIP" in str(interaction.followup.sent[0]["embed"].footer.text)

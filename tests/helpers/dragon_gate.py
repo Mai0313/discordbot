@@ -82,6 +82,7 @@ def record_jackpot_settlements(monkeypatch: pytest.MonkeyPatch) -> list[JackpotS
         game_id: str,
         player_avatar_url: str = "",
         expected_jackpot_generation: int | None = None,
+        refund: bool = False,
     ) -> JackpotSettlementResult:
         """Records the bet's request, then settles it."""
         requests.append(
@@ -91,6 +92,7 @@ def record_jackpot_settlements(monkeypatch: pytest.MonkeyPatch) -> list[JackpotS
                 player_avatar_url=player_avatar_url,
                 player_delta=player_delta,
                 expected_jackpot_generation=expected_jackpot_generation,
+                refund=refund,
             )
         )
         return await apply_jackpot_settlement(
@@ -100,6 +102,7 @@ def record_jackpot_settlements(monkeypatch: pytest.MonkeyPatch) -> list[JackpotS
             game_id=game_id,
             player_avatar_url=player_avatar_url,
             expected_jackpot_generation=expected_jackpot_generation,
+            refund=refund,
         )
 
     async def settle_batch(

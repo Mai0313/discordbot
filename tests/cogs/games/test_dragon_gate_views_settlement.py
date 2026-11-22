@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import sqlite3
+import contextlib
 
 import pytest
 from nextcord import Embed
 from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.economy import JackpotSnapshot, JackpotSettlementResult
+from discordbot.cogs.games.seats import claim_seat, seated_elsewhere, update_seat_stake
 from discordbot.utils.number_text import compact_amount
 from discordbot.cogs.games.dragon_gate import (
     GAME_ID,
@@ -17,7 +19,14 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGateRound,
     DragonGateBetRangeError,
 )
-from discordbot.services.economy.database import get_jackpot_snapshot, apply_jackpot_settlement
+from discordbot.services.economy.holds import spending, held_amount
+from discordbot.services.economy.database import (
+    transfer,
+    top_losers,
+    get_balance,
+    get_jackpot_snapshot,
+    apply_jackpot_settlement,
+)
 from discordbot.cogs.games.dragon_gate_views import DragonGateView
 from discordbot.services.economy.presentation import amount_code, currency_text
 
@@ -33,7 +42,10 @@ from tests.helpers.dragon_gate import (
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.message_cleanup import record_scheduled_deletes
-from tests.helpers.economy_invariants import assert_wallet_consistent
+from tests.helpers.economy_invariants import assert_wallet_consistent, assert_daily_casino_stats
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
@@ -670,3 +682,318 @@ async def test_a_timeout_whose_refund_raises_for_one_seat_still_settles_the_tabl
     # Only Bob's seat shows a refund; Alice's never landed, so she keeps her winnings.
     final = message.edits[-1]["embeds"][0]
     assert str(final.description).count(amount_code(amount=20, compact=True)) == 1
+
+
+async def test_dragon_gate_holds_net_winnings_until_lost_or_refunded_and_blocks_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mid-round winnings are held so a player cannot `/give` them away to dodge 逆贏不拿."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    alice = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=100)
+    bob = await funded_dragon_gate_seat(user_id=2, display_name="Bob", balance=100)
+    # Turn 1 (Alice): 3-9, third=7 -> win +100 (wallet=200, net=+100, hold=100)
+    # Turn 2 (Bob): 3-9, third=7 -> win +20
+    # Turn 3 (Alice): 3-9, third=2 -> lose -20 (wallet=180, net=+80, hold=80)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(
+            choices=(
+                "3",
+                "♠",
+                "9",
+                "♥",
+                "7",
+                "♣",
+                "3",
+                "♦",
+                "9",
+                "♣",
+                "7",
+                "♦",
+                "3",
+                "♥",
+                "9",
+                "♠",
+                "2",
+                "♣",
+            )
+        ),
+        participants=[alice, bob],
+    )
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=pool_before,
+        final_balances={1: 100, 2: 100},
+    )
+    view.message = as_message(fake=message)
+    claim_seat(user_id=1, holder=view)
+    claim_seat(user_id=2, holder=view)
+    update_seat_stake(user_id=1, holder=view, amount=0)
+    update_seat_stake(user_id=2, holder=view, amount=0)
+    view.sync_controls()
+    assert held_amount(user_id=1) == 0
+
+    await view._handle_bet_choice(
+        choice="max",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+    assert round_state.player_delta(user_id=1) == 100
+    assert held_amount(user_id=1) == 100
+    # Alice holds 200 total with 100 held: she cannot transfer 150 (into the held winnings).
+    assert (
+        await transfer(
+            sender_id=1, sender_name="alice", receiver_id=3, receiver_name="carol", amount=150
+        )
+        is None
+    )
+
+    await view._handle_bet_choice(
+        choice="min",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=2), message=message, custom_id="dg:bet")
+        ),
+    )
+    await view._handle_bet_choice(
+        choice="min",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+    assert round_state.player_delta(user_id=1) == 80
+    assert held_amount(user_id=1) == 80
+
+    # Leaving refunds the held 80 back to the pool and releases the hold.
+    await attached_button(view=view, custom_id="dg:leave").callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
+    )
+    assert held_amount(user_id=1) == 0
+    assert await get_balance(user_id=1) == 100
+
+
+async def test_dragon_gate_bet_reads_balance_and_settles_inside_spending_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Balance check and jackpot settlement run inside one `spending(user_id)` hold."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    alice = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=500)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[alice]
+    )
+    in_spending: list[bool] = []
+    held_now = False
+
+    @contextlib.asynccontextmanager
+    async def tracked_spending(user_id: int) -> AsyncGenerator[None]:
+        nonlocal held_now
+        async with spending(user_id=user_id):
+            held_now = True
+            try:
+                yield
+            finally:
+                held_now = False
+
+    async def spy_get_balance(user_id: int) -> int:
+        in_spending.append(held_now)
+        return await get_balance(user_id=user_id)
+
+    async def spy_settle(**kwargs: Any) -> JackpotSettlementResult:  # noqa: ANN401 -- test spy
+        in_spending.append(held_now)
+        return await apply_jackpot_settlement(**kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.spending", tracked_spending)
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", spy_get_balance)
+    monkeypatch.setattr(
+        "discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", spy_settle
+    )
+
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=await get_jackpot_pool(game_id=GAME_ID),
+        final_balances={1: 500},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+
+    await view._handle_bet_choice(
+        choice="min",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+
+    assert len(in_spending) == 2
+    assert all(in_spending)
+
+
+async def test_dragon_gate_does_not_falsely_clear_pool_when_pool_grew_past_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Winning >= stale `jackpot_snapshot` after another table fed the pool does not end the table."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    alice = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=1_000_000)
+    snapshot_before = await get_jackpot_snapshot(game_id=GAME_ID)
+    # Another table loses 500 into the pool, growing it past this table's stale snapshot.
+    await seed_balance(user_id=9, name="other", amount=500)
+    await apply_jackpot_settlement(
+        player_id=9, player_account_name="other", player_delta=-500, game_id=GAME_ID
+    )
+
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣", "4", "♦", "Q", "♣")),
+        participants=[alice],
+    )
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=snapshot_before.balance,
+        jackpot_generation=snapshot_before.generation,
+        final_balances={1: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+
+    await view._handle_bet_choice(
+        choice="max",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+
+    assert view._settled is False
+    assert view._jackpot_snapshot == 500
+    assert round_state.player_delta(user_id=1) == snapshot_before.balance
+
+
+async def test_dragon_gate_stale_generation_win_notifies_and_resyncs_without_recording_zero_win(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If another table drained & reset the pool, a stale win notifies and re-syncs instead of +0."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    alice = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=1_000_000)
+    snapshot_before = await get_jackpot_snapshot(game_id=GAME_ID)
+    # Another table claims the entire pool, bumping generation.
+    await apply_jackpot_settlement(
+        player_id=9,
+        player_account_name="other",
+        player_delta=snapshot_before.balance,
+        game_id=GAME_ID,
+    )
+    live_after_reset = await get_jackpot_snapshot(game_id=GAME_ID)
+    assert live_after_reset.generation == snapshot_before.generation + 1
+
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[alice]
+    )
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=snapshot_before.balance,
+        jackpot_generation=snapshot_before.generation,
+        final_balances={1: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+
+    press = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+    await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=press))
+
+    assert view._settled is False
+    assert view._history == []
+    assert round_state.player_delta(user_id=1) == 0
+    assert view._jackpot_snapshot == live_after_reset.balance
+    assert view._jackpot_generation == live_after_reset.generation
+    assert any("彩金池已被其他牌桌清空" in str(sent["content"]) for sent in press.followup.sent)
+
+
+async def test_dragon_gate_auto_withdraws_player_left_with_positive_balance_below_min_bet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player whose losing bet leaves `0 < balance < min_bet` is auto-withdrawn instead of stuck."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    alice = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=25)
+    bob = await funded_dragon_gate_seat(user_id=2, display_name="Bob", balance=1_000)
+    # Alice bets MIN_BET (20) and loses -20, leaving 5 (< MIN_BET=20).
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "2", "♣", "4", "♦", "Q", "♣")),
+        participants=[alice, bob],
+    )
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=await get_jackpot_pool(game_id=GAME_ID),
+        final_balances={1: 25, 2: 1_000},
+    )
+    view.message = as_message(fake=message)
+    claim_seat(user_id=1, holder=view)
+    claim_seat(user_id=2, holder=view)
+    update_seat_stake(user_id=1, holder=view, amount=0)
+    update_seat_stake(user_id=2, holder=view, amount=0)
+    view.sync_controls()
+    assert held_amount(user_id=1) == 0
+
+    press = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+    await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=press))
+
+    assert await get_balance(user_id=1) == 5
+    assert 1 in round_state.withdrawn_user_ids
+    assert not seated_elsewhere(user_id=1)
+    assert seated_elsewhere(user_id=2)
+    assert round_state.active_turn is not None
+    assert round_state.active_turn.participant.user_id == 2
+    assert any("餘額低於最低下注" in str(sent["content"]) for sent in press.followup.sent)
+
+
+async def test_dragon_gate_early_leave_clawback_does_not_inflate_daily_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """逆贏不拿 winnings clawback reverses daily_win/daily_net without crediting daily_loss."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    alice = await funded_dragon_gate_seat(user_id=1, display_name="Alice", balance=1_000)
+    bob = await funded_dragon_gate_seat(user_id=2, display_name="Bob", balance=1_000)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣", "4", "♦", "Q", "♣")),
+        participants=[alice, bob],
+    )
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=await get_jackpot_pool(game_id=GAME_ID),
+        final_balances={1: 1_000, 2: 1_000},
+    )
+    view.message = as_message(fake=message)
+    claim_seat(user_id=1, holder=view)
+    claim_seat(user_id=2, holder=view)
+    update_seat_stake(user_id=1, holder=view, amount=0)
+    update_seat_stake(user_id=2, holder=view, amount=0)
+    view.sync_controls()
+    assert held_amount(user_id=1) == 0
+
+    await view._handle_bet_choice(
+        choice="min",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+    await assert_daily_casino_stats(user_id=1, loss=0, win=MIN_BET, net=MIN_BET)
+
+    await attached_button(view=view, custom_id="dg:leave").callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
+    )
+
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000)
+    await assert_daily_casino_stats(user_id=1, loss=0, win=0, net=0)
+    assert await top_losers() == []

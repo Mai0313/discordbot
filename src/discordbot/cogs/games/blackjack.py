@@ -568,6 +568,16 @@ class BlackjackRound(BaseModel):
                 player.insurance_resolved = True
         self._maybe_close_insurance_phase()
 
+    def peek_active_player(self) -> BlackjackPlayerHand | None:
+        """Returns the player whose turn is active without advancing or settling the round."""
+        if self.finished or self.phase != "player_actions":
+            return None
+        for offset, player in enumerate(self.players[self.current_player_index :]):
+            start_hand = self.current_hand_index if offset == 0 else 0
+            if any(not hand.finished for hand in player.hands[start_hand:]):
+                return player
+        return None
+
     def active_player(self) -> BlackjackPlayerHand | None:
         """Returns the player whose turn is active, if any.
 

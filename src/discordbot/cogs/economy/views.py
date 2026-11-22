@@ -31,7 +31,11 @@ from discordbot.services.economy.database import (
     reject_loan_proposal,
     reject_expired_loan_proposal,
 )
-from discordbot.utils.interaction_responses import edit_response_embed, send_private_followup
+from discordbot.utils.interaction_responses import (
+    edit_response_embed,
+    send_ephemeral_notice,
+    send_private_followup,
+)
 
 
 def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
@@ -163,6 +167,16 @@ class LoanDecisionViewBase(LoggedView):
             )
         self._schedule_cleanup()
 
+    async def _notify_unexpected_error(
+        self, interaction: Interaction[commands.Bot], content: str
+    ) -> None:
+        """Tells the clicker privately when a deferred button callback fails unexpectedly."""
+        await send_ephemeral_notice(
+            interaction=interaction,
+            content=content,
+            log_message="Failed to send loan decision error notice",
+        )
+
     async def _handle_cancel(self, interaction: Interaction[commands.Bot]) -> None:
         """Cancels the request for its creator, and answers anyone else privately."""
         if interaction.user is None:
@@ -180,9 +194,23 @@ class LoanDecisionViewBase(LoggedView):
             )
         except LoanProposalExpiredError:
             self.stop()
-            await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
-            self._schedule_cleanup(interaction=interaction)
+            try:
+                await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
+            except Exception:
+                # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+                await self._notify_unexpected_error(
+                    interaction=interaction, content="申請已逾時，但更新面板失敗"
+                )
+                raise
+            finally:
+                self._schedule_cleanup(interaction=interaction)
             return
+        except Exception:
+            # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+            await self._notify_unexpected_error(
+                interaction=interaction, content="取消失敗，請稍後再試"
+            )
+            raise
         if proposal is None:
             embed = build_error_embed(
                 title="取消失敗", description="### 申請不存在、已處理，或你不是發起者"
@@ -196,8 +224,16 @@ class LoanDecisionViewBase(LoggedView):
             color=self.PANEL_COLOR,
         )
         self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        try:
+            await edit_response_embed(interaction=interaction, embed=embed)
+        except Exception:
+            # Broad on purpose: the cancel already committed; tell the clicker before LoggedView logs.
+            await self._notify_unexpected_error(
+                interaction=interaction, content="申請已取消，但更新面板失敗"
+            )
+            raise
+        finally:
+            self._schedule_cleanup(interaction=interaction)
 
     async def _handle_approve(
         self,
@@ -213,8 +249,10 @@ class LoanDecisionViewBase(LoggedView):
         if not await self._may_decide(interaction=interaction):
             return
 
-        actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
         try:
+            actor_avatar_url = await guild_avatar_url(
+                user=interaction.user, guild=interaction.guild
+            )
             result = await accept_loan_proposal(
                 proposal_id=self.proposal_id,
                 actor_id=interaction.user.id,
@@ -226,9 +264,23 @@ class LoanDecisionViewBase(LoggedView):
             )
         except LoanProposalExpiredError:
             self.stop()
-            await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
-            self._schedule_cleanup(interaction=interaction)
+            try:
+                await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
+            except Exception:
+                # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+                await self._notify_unexpected_error(
+                    interaction=interaction, content="申請已逾時，但更新面板失敗"
+                )
+                raise
+            finally:
+                self._schedule_cleanup(interaction=interaction)
             return
+        except Exception:
+            # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+            await self._notify_unexpected_error(
+                interaction=interaction, content="批准失敗，請稍後再試"
+            )
+            raise
         if result is None:
             embed = build_error_embed(title="批准失敗", description=self.APPROVE_FAILED_NOTICE)
             await send_private_followup(interaction=interaction, embed=embed)
@@ -240,8 +292,16 @@ class LoanDecisionViewBase(LoggedView):
             approver_avatar_url=actor_avatar_url,
         )
         self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        try:
+            await edit_response_embed(interaction=interaction, embed=embed)
+        except Exception:
+            # Broad on purpose: the approval already committed; tell the clicker before LoggedView logs.
+            await self._notify_unexpected_error(
+                interaction=interaction, content="申請已批准，但更新面板失敗"
+            )
+            raise
+        finally:
+            self._schedule_cleanup(interaction=interaction)
 
     async def _handle_reject(self, interaction: Interaction[commands.Bot]) -> None:
         """Rejects the request for whoever may decide it, and answers anyone else privately."""
@@ -260,9 +320,23 @@ class LoanDecisionViewBase(LoggedView):
             )
         except LoanProposalExpiredError:
             self.stop()
-            await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
-            self._schedule_cleanup(interaction=interaction)
+            try:
+                await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
+            except Exception:
+                # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+                await self._notify_unexpected_error(
+                    interaction=interaction, content="申請已逾時，但更新面板失敗"
+                )
+                raise
+            finally:
+                self._schedule_cleanup(interaction=interaction)
             return
+        except Exception:
+            # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+            await self._notify_unexpected_error(
+                interaction=interaction, content="拒絕失敗，請稍後再試"
+            )
+            raise
         if proposal is None:
             embed = build_error_embed(title="拒絕失敗", description=self.REJECT_FAILED_NOTICE)
             await send_private_followup(interaction=interaction, embed=embed)
@@ -274,8 +348,16 @@ class LoanDecisionViewBase(LoggedView):
             color=self.PANEL_COLOR,
         )
         self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        try:
+            await edit_response_embed(interaction=interaction, embed=embed)
+        except Exception:
+            # Broad on purpose: the rejection already committed; tell the clicker before LoggedView logs.
+            await self._notify_unexpected_error(
+                interaction=interaction, content="申請已拒絕，但更新面板失敗"
+            )
+            raise
+        finally:
+            self._schedule_cleanup(interaction=interaction)
 
 
 class CentralBankLoanDecisionView(LoanDecisionViewBase):

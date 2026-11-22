@@ -63,6 +63,7 @@ from discordbot.cogs.games.presentation import (
     lobby_participant_line,
     blackjack_player_early_finish_note,
 )
+from discordbot.services.economy.database import get_vips
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
@@ -229,9 +230,7 @@ def _player_seat_color(
     """Picks a player seat embed color from settlement or in-progress state."""
     if settlement is not None:
         return delta_color(delta=settlement.delta)
-    if insurance_phase:
-        return IN_PROGRESS_COLOR
-    if is_active:
+    if insurance_phase or is_active:
         return IN_PROGRESS_COLOR
     return PUSH_COLOR
 
@@ -543,6 +542,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
         """Deals the table and replaces the lobby message with the game view."""
         message = interaction.message
         if message is None:
+            async with self._lock:
+                self._started = False
             return False
         shoe: list[Card] | None = None
         shoe_generation = 0
@@ -577,9 +578,10 @@ class BlackjackLobbyView(BaseGameLobbyView):
         except Exception:
             # No card of this deal was shown and the round dealt from its own copy, so the lobby
             # reopens and the shoe goes back whole.
-            self._started = False
             if self._shoe_store is not None and shoe is not None:
                 self._shoe_store.put_back_shoe(channel_id=self._channel_id, cards=shoe)
+            async with self._lock:
+                self._started = False
             raise
         hand_over_seats(
             stakes={
@@ -682,7 +684,7 @@ class BlackjackView(GameView):
                 await self._send_notice(interaction=interaction, content="你已決定過保險")
                 return False
             return True
-        active = self.round_state.active_player()
+        active = self.round_state.peek_active_player()
         if active is not None and interaction.user.id == active.participant.user_id:
             return True
         if active is not None:
@@ -1033,7 +1035,8 @@ class BlackjackView(GameView):
         if hand is None:
             return
         allowed = self.round_state.allowed_actions()
-        chosen_action = choose_bot_action(
+        chosen_action = await asyncio.to_thread(
+            choose_bot_action,
             hand_cards=list(hand.cards),
             dealer_cards=list(self.round_state.dealer),
             shoe=list(self.round_state.shoe),
@@ -1102,13 +1105,40 @@ class BlackjackView(GameView):
     async def _edit_in_progress_locked(
         self, message: Message, interaction: Interaction[commands.Bot]
     ) -> None:
-        """Refreshes the per-seat embeds while holding the round lock."""
+        """Refreshes the per-seat embeds while holding the round lock.
+
+        Non-fatal edit failures are logged rather than raised so a transient Discord error
+        cannot strand a bot turn or later action.
+        """
         self.last_press = interaction
         self.sync_buttons()
         seat_embeds = build_in_progress_embeds(round_state=self.round_state)
-        await interaction.edit_original_message(
-            **table_edit_kwargs(embeds=seat_embeds, view=self, target=message)
-        )
+        try:
+            await interaction.edit_original_message(
+                **table_edit_kwargs(embeds=seat_embeds, view=self, target=message)
+            )
+        except NotFound:
+            logfire.info(
+                "Blackjack table message gone before an in-progress edit",
+                channel_id=self._channel_id,
+                message_id=message.id,
+            )
+        except Forbidden:
+            # Expected if the interaction token expired or channel permissions changed; ids suffice.
+            logfire.warn(
+                "Discord refused an in-progress Blackjack table edit",
+                channel_id=self._channel_id,
+                message_id=message.id,
+            )
+        # Broad on purpose: a failed intermediate refresh must not strand bot turns or later moves.
+        except Exception as exc:
+            logfire.warn(
+                "In-progress Blackjack table edit failed",
+                channel_id=self._channel_id,
+                message_id=message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     async def _reject_stale_action_locked(
         self, interaction: Interaction[commands.Bot], message: Message
@@ -1170,11 +1200,28 @@ class BlackjackView(GameView):
                 generation=self._shoe_generation,
             )
 
+        vip_by_user: dict[int, bool] = {}
+        try:
+            vip_by_user = await get_vips(
+                user_ids=[player.participant.user_id for player in self.round_state.players]
+            )
+        # Broad on purpose: falling back to per-seat lookup preserves per-seat failure isolation.
+        except Exception as exc:
+            logfire.warn(
+                "Batch VIP lookup failed; falling back to per-seat lookup",
+                channel_id=self._channel_id,
+                message_id=message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
             try:
                 settlement = await settle_blackjack_player(
-                    round_state=self.round_state, player=player
+                    round_state=self.round_state,
+                    player=player,
+                    is_vip=vip_by_user.get(player.participant.user_id),
                 )
             # Broad on purpose: whatever the seat's write raised on, it rolled back and booked
             # nothing, so it must not keep the later seats from settling or the table from closing.
@@ -1286,7 +1333,7 @@ class BlackjackView(GameView):
             payload=table_edit_kwargs(embeds=body_hidden, view=self, target=message),
             step="peek hidden",
         )
-        await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
+        await asyncio.sleep(delay=PEEK_REVEAL_DELAY_SECONDS)
 
         reveal_body = build_in_progress_embeds(round_state=self.round_state, force_show_hole=True)
         await self._safe_edit_locked(
@@ -1295,7 +1342,7 @@ class BlackjackView(GameView):
             payload=table_edit_kwargs(embeds=reveal_body, view=self, target=message),
             step="peek reveal",
         )
-        await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
+        await asyncio.sleep(delay=PEEK_REVEAL_DELAY_SECONDS)
 
     async def _record_history_later(
         self,

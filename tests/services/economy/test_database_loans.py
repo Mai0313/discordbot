@@ -4,22 +4,26 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import text, select, update
 
 from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
+    VIP_PURCHASE_COST,
     MAX_LOAN_MONTHLY_RATE_BPS,
     CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanProposalStatus,
 )
+from discordbot.services.economy.holds import hold_stake, release_stake
 from discordbot.services.economy.database import (
     UserWallet,
     UserAccount,
     LoanContract,
     LoanProposal,
+    buy_vip,
     transfer,
     get_balance,
     open_session,
@@ -865,3 +869,158 @@ async def test_a_loan_request_stores_a_rate_past_the_maximum_as_the_maximum() ->
 
     assert proposal is not None
     assert proposal.monthly_rate_bps == MAX_LOAN_MONTHLY_RATE_BPS
+
+
+async def test_portfolio_and_list_contracts_accrue_interest_in_memory_without_writing_db() -> None:
+    """Read paths compute accrued interest in memory without flushing ORM writes to SQLite."""
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 500)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    assert await buy_vip(user_id=1, name="alice") is not None
+    contract = await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=400
+    )
+    await _backdate_contract(contract_id=contract.contract_id, days=60)
+
+    async with open_session() as session:
+        stored_before = await session.get(LoanContract, contract.contract_id)
+        assert stored_before is not None
+        accrued_before = stored_before.interest_due
+        last_accrued_before = stored_before.last_interest_accrued_at
+
+    portfolio = await get_portfolio(user_id=1)
+    contracts = await list_loan_contracts(user_id=1)
+
+    assert portfolio.is_vip is True
+    assert portfolio.debt_interest > accrued_before
+    assert len(contracts) == 1
+    assert contracts[0].interest_due == portfolio.debt_interest
+
+    async with open_session() as session:
+        stored_after = await session.get(LoanContract, contract.contract_id)
+        assert stored_after is not None
+        assert stored_after.interest_due == accrued_before
+        assert stored_after.last_interest_accrued_at == last_accrued_before
+
+
+async def test_partial_voluntary_repayment_accrues_all_contracts_for_remaining_interest() -> None:
+    """Repaying part of the first contract still accrues later contracts so remaining_interest is exact."""
+    await seed_balance(user_id=1, name="alice", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=2_000)
+    first = await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    second = await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    await _backdate_contract(contract_id=first.contract_id, days=60)
+    await _backdate_contract(contract_id=second.contract_id, days=60)
+
+    before_contracts = await list_loan_contracts(user_id=1)
+    expected_total_interest = sum(contract.interest_due for contract in before_contracts)
+    assert expected_total_interest > 10
+
+    repayment = await repay_personal_loans(
+        borrower_id=1, borrower_name="alice", lender_id=2, amount=10
+    )
+
+    assert repayment is not None
+    assert repayment.interest_paid == 10
+    assert repayment.remaining_interest == expected_total_interest - 10
+
+
+class _ActiveSeatHolder(BaseModel):
+    """Minimal active table seat holder for testing hold floors."""
+
+    def holds_seats(self) -> bool:
+        """Returns True while seated."""
+        return True
+
+
+async def test_loan_repayment_and_call_never_eat_into_held_table_stake() -> None:
+    """Both voluntary repayment and lender call stop at `floor=held` and protect table stakes."""
+    await seed_balance(user_id=1, name="alice", amount=500)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=400
+    )
+    # Alice now holds 900 total; 700 is held on a live table, leaving 200 spendable.
+    holder = _ActiveSeatHolder()
+    hold_stake(user_id=1, holder=holder, amount=700)
+    try:
+        repayment = await repay_personal_loans(
+            borrower_id=1, borrower_name="alice", lender_id=2, amount=300
+        )
+        assert repayment is not None
+        assert repayment.paid_amount == 200
+        assert await get_balance(user_id=1) == 700
+
+        # Nothing spendable left above the 700 hold: a lender call cannot eat into the hold.
+        called = await call_personal_loans(
+            lender_id=2, borrower_id=1, borrower_name="alice", amount=300
+        )
+        assert called is None
+        assert await get_balance(user_id=1) == 700
+    finally:
+        release_stake(user_id=1, holder=holder)
+
+
+async def test_accept_central_bank_loan_reads_status_in_session_without_second_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approving a central bank loan computes `central_bank_status` inside the same session."""
+    await seed_participant(user_id=1, name="alice", amount=1_000)
+    proposal = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=100
+    )
+    assert proposal is not None
+
+    async def fail_get_status(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("accept_loan_proposal must not reopen a session for status")
+
+    monkeypatch.setattr(
+        "discordbot.services.economy.database.get_central_bank_status", fail_get_status
+    )
+
+    accepted = await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+
+    assert accepted is not None
+    assert accepted.central_bank_available_credit == CENTRAL_BANK_BASE_CAPACITY + 1_000 - 100
+
+
+async def test_loan_repayment_sql_floor_protects_hold_against_concurrent_balance_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even if a table settlement debits the wallet mid-repayment, SQL `floor=held` holds the line."""
+    await seed_balance(user_id=1, name="alice", amount=500)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=400
+    )
+    # Alice holds 900 total, 700 held on a table -> initial spendable = 200.
+    holder = _ActiveSeatHolder()
+    hold_stake(user_id=1, holder=holder, amount=700)
+    real_apply = repay_personal_loans.__globals__["_apply_loan_payment_in_session"]
+    dropped = False
+
+    async def drop_balance_before_debit(**kwargs: object) -> int:
+        nonlocal dropped
+        if not dropped:
+            dropped = True
+            # Simulates an out-of-band casino debit dropping wallet from 900 -> 750 mid-repayment.
+            await adjust_balance(user_id=1, name="alice", delta=-150)
+        return await real_apply(**kwargs)
+
+    monkeypatch.setattr(
+        "discordbot.services.economy.database._apply_loan_payment_in_session",
+        drop_balance_before_debit,
+    )
+    try:
+        repayment = await repay_personal_loans(
+            borrower_id=1, borrower_name="alice", lender_id=2, amount=200
+        )
+        assert repayment is not None
+        # Only 50 remained above the 700 hold, so repayment must stop at 50 and leave 700 intact.
+        assert repayment.paid_amount == 50
+        assert await get_balance(user_id=1) == 700
+    finally:
+        release_stake(user_id=1, holder=holder)

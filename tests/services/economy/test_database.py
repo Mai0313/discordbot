@@ -33,12 +33,14 @@ from discordbot.services.economy.database import (
     top_n,
     buy_vip,
     get_vip,
+    get_vips,
     transfer,
     get_admin,
     set_admin,
     top_losers,
     get_account,
     get_balance,
+    get_balances,
     open_session,
     adjust_balance,
     _taipei_midnight,
@@ -1395,3 +1397,66 @@ async def test_get_jackpot_pool_replenishes_drained_seed_pool() -> None:
     assert await get_jackpot_pool(game_id="dragon_gate") == seed
     snapshot = await get_jackpot_snapshot(game_id="dragon_gate")
     assert snapshot.generation == 1
+
+
+async def test_get_balances_and_get_vips_batch_lookup() -> None:
+    """Batch helpers return exact balances/VIP flags in one query and handle empty/missing IDs."""
+    assert await get_balances(user_ids=[]) == {}
+    assert await get_vips(user_ids=[]) == {}
+
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 250)
+    await seed_balance(user_id=2, name="bob", amount=700)
+    assert await buy_vip(user_id=1, name="alice") is not None
+
+    assert await get_balances(user_ids=[1, 2, 999]) == {1: 250, 2: 700, 999: 0}
+    assert await get_vips(user_ids=[1, 2, 999]) == {1: True, 2: False, 999: False}
+
+
+async def test_top_losers_reflects_updated_user_account_name() -> None:
+    """`top_losers` selects `UserAccount.name` so renamed players show their current username."""
+    await seed_balance(user_id=1, name="alice_old", amount=500)
+    await apply_blackjack_settlement(
+        player_id=1, player_account_name="alice_old", player_delta=-300, casino_delta=300
+    )
+    await adjust_balance(user_id=1, name="alice_new", delta=1)
+
+    rows = await top_losers(limit=10)
+    assert rows == [
+        LossLeaderboardEntry(user_id=1, name="alice_new", loss_amount=300, avatar_url="")
+    ]
+
+
+async def test_apply_jackpot_settlement_negative_refund_reverses_daily_win_without_daily_loss() -> (
+    None
+):
+    """Negative `refund=True` clawbacks reduce `daily_win`/`daily_net` without inflating `daily_loss`."""
+    await seed_balance(user_id=1, name="alice", amount=1_000)
+    await apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=500, game_id="dragon_gate"
+    )
+    await apply_jackpot_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-300,
+        game_id="dragon_gate",
+        refund=True,
+    )
+
+    await assert_daily_casino_stats(user_id=1, loss=0, win=200, net=200)
+    assert await top_losers(limit=10) == []
+
+
+async def test_apply_jackpot_settlement_batch_accumulates_deltas_for_same_player() -> None:
+    """Multiple batch entries for the same player accumulate in `applied_player_deltas`."""
+    await seed_balance(user_id=1, name="alice", amount=1_000)
+
+    result = await apply_jackpot_settlement_batch(
+        game_id="dragon_gate",
+        settlements=(
+            JackpotSettlementRequest(player_id=1, player_account_name="alice", player_delta=-100),
+            JackpotSettlementRequest(player_id=1, player_account_name="alice", player_delta=-250),
+        ),
+    )
+
+    assert result.applied_player_deltas == {1: -350}
+    assert result.player_balances[1] == 650

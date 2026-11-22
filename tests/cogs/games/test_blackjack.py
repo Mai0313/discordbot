@@ -942,3 +942,27 @@ def test_play_dealer_records_nothing_after_a_bust() -> None:
     assert round_state.dealer_played is True
     assert [step.action for step in steps] == ["hit"]
     assert (steps[0].total_before, steps[0].total_after) == (16, 26)
+
+
+def test_peek_active_player_skips_finished_seats_without_mutating_state() -> None:
+    """`peek_active_player` finds the next active seat without advancing indices or phase."""
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="9", suit="♥")],
+            [card(rank="6", suit="♣"), card(rank="7", suit="♦")],
+        ],
+        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
+    )
+    round_state.players[0].hands[0].finished = True
+    round_state.current_player_index = 0
+    round_state.current_hand_index = 0
+
+    assert round_state.peek_active_player() == round_state.players[1]
+    assert round_state.current_player_index == 0
+    assert round_state.current_hand_index == 0
+    assert round_state.phase == "player_actions"
+
+    round_state.players[1].hands[0].finished = True
+    assert round_state.peek_active_player() is None
+    assert round_state.current_player_index == 0
+    assert round_state.phase == "player_actions"

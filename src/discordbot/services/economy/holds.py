@@ -1,8 +1,9 @@
 """In-process wallet holds for players seated at active casino tables.
 
 While a player is seated, voluntary debits serialize on `spending` and see only the balance
-above active holds; money earned during the round remains spendable. Holds live in process
-only and vanish on restart along with unsettled rounds.
+above active holds; Blackjack holds the maximum round loss while 射龍門 tracks net positive
+table winnings so 逆贏不拿 cannot be spent away mid-round. Holds live in process only and
+vanish on restart along with unsettled rounds.
 """
 
 from typing import Protocol
