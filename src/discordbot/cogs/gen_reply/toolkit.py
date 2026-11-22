@@ -12,6 +12,7 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from google.genai.types import HttpOptions
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.services.memory.writer import MemoryWriterAI
@@ -36,12 +37,11 @@ class ReplyToolkit(BaseModel):
     openai_client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Shared LiteLLM-proxy client."
     )
-    gemini_api_key: str = Field(
+    config: LLMConfig = Field(
         ...,
         description=(
-            "Google AI Studio key for the direct-to-Google paths, or empty when the deployment "
-            "configured none. Empty leaves those paths unavailable, and the Gemini-only features "
-            "gate themselves off as they already do."
+            "Runtime LLM config supplying the Google AI Studio key for direct-to-Google paths "
+            "and the Files API kill-switch."
         ),
     )
     _memory_writer: MemoryWriterAI | None = PrivateAttr(default=None)
@@ -55,19 +55,19 @@ class ReplyToolkit(BaseModel):
     def gemini_client(self) -> genai.Client:
         """Returns the native Gemini client for direct-to-Google paths.
 
-        Raises at construction when `gemini_api_key` is empty; callers that can run without a key
-        use `gemini_client_if_configured` instead.
+        Raises at construction when `config.gemini_api_key` is empty; callers that can run without
+        a key use `gemini_client_if_configured` instead.
         """
         # `google-genai` defaults to `v1`, where `gemini-omni-*` and `lyria-*` 404 and `files.upload`
         # returns `/v1/files/` URIs that miss LiteLLM's `/v1beta/files/` pass-through prefix.
         return genai.Client(
-            api_key=self.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
+            api_key=self.config.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
         )
 
     @property
     def gemini_client_if_configured(self) -> genai.Client | None:
-        """Returns the direct Gemini client, or None when `gemini_api_key` is blank."""
-        if not self.gemini_api_key.strip():
+        """Returns the direct Gemini client, or None when `config.gemini_key_configured` is false."""
+        if not self.config.gemini_key_configured:
             return None
         return self.gemini_client
 
@@ -115,6 +115,7 @@ class ReplyToolkit(BaseModel):
             attachment_handler=build_attachment_handler(
                 model=self.runtime_models.slow_model,
                 gemini_client=lambda: self.gemini_client_if_configured,
+                file_api_enabled=self.config.file_api_enabled,
             ),
         )
 

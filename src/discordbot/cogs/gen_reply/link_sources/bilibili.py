@@ -24,7 +24,11 @@ from discordbot.services.platforms.ytdlp import (
     VideoDownloader,
     download_with_stop_signal,
 )
-from discordbot.cogs.gen_reply.link_sources import AI_INGEST_QUALITY, link_context_blocks
+from discordbot.cogs.gen_reply.link_sources import (
+    AI_INGEST_QUALITY,
+    link_context_blocks,
+    link_timeout_notice,
+)
 from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
 
@@ -72,10 +76,8 @@ BILIBILI_UNREADABLE_NOTICE = (
     "its contents. ===="
 )
 
-BILIBILI_TIMEOUT_NOTICE = (
-    "==== We tried to read the Bilibili link in the user's message but it did not respond in "
-    "time, so its content could not be read for this reply. Tell the user this plainly and "
-    "suggest they try again; do not invent the video's contents. ===="
+BILIBILI_TIMEOUT_NOTICE = link_timeout_notice(
+    platform="Bilibili", location="in the user's message", noun="video"
 )
 
 
@@ -125,11 +127,7 @@ async def _fetch_and_upload(url: str, gemini_client: genai.Client) -> list[Respo
 
 
 async def build_bilibili_context_messages(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Bilibili video URL.
 
@@ -138,10 +136,8 @@ async def build_bilibili_context_messages(
 
     Args:
         url (str): The Bilibili URL found in the current message.
-        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API URI.
-        gemini_client (genai.Client | None): Direct-to-Google client for Files API uploads, or
-            `None` when unconfigured.
-        allow_media_ingest (bool): Whether video ingestion is enabled for Bilibili.
+        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
+            video ingestion is active, or `None` to build text-only context.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span("gen_reply bilibili context"):
@@ -178,7 +174,7 @@ async def build_bilibili_context_messages(
 
         text = _render_video_text(metadata=metadata, url=url)
         media_parts: list[ResponseInputFileParam] = []
-        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
+        if media_client is not None:
             too_long = (
                 metadata.is_live
                 or metadata.duration_seconds > MAX_BILIBILI_INGEST_DURATION_SECONDS
@@ -192,7 +188,7 @@ async def build_bilibili_context_messages(
                 )
                 return link_context_blocks(separator=BILIBILI_TOO_LONG_SEPARATOR, text=text)
             media_parts = await bounded_media_step(
-                step=_fetch_and_upload(url=url, gemini_client=gemini_client),
+                step=_fetch_and_upload(url=url, gemini_client=media_client),
                 subject="Bilibili media",
                 fallback="the text",
                 degraded=[],

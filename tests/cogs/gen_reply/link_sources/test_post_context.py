@@ -162,15 +162,11 @@ commented_sources = pytest.mark.parametrize(
 )
 
 
-async def _build(
-    source: _PostSource, gemini: bool = False, allow_media_ingest: bool = True
-) -> list[Any]:
-    """Runs the source's builder on its URL, with a stub Gemini client when `gemini` is set."""
+async def _build(source: _PostSource, media: bool = False) -> list[Any]:
+    """Runs the source's builder on its URL, with a stub media client when `media` is set."""
     return await source.build(
         url=source.url,
-        answer_model_is_gemini=gemini,
-        gemini_client=make_stub_gemini_client() if gemini else None,
-        allow_media_ingest=allow_media_ingest,
+        media_client=make_stub_gemini_client() if media else None,
         deadline=link_build_deadline(),
     )
 
@@ -206,7 +202,7 @@ async def test_the_images_ride_as_uploaded_parts_inside_the_trailer(
     )
     fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
-    blocks = await _build(source=source, gemini=True)
+    blocks = await _build(source=source, media=True)
 
     assert fetched == ["https://cdn.test/a.jpg"]
     assert block_separator(blocks=blocks) == source.separators.attached
@@ -220,14 +216,14 @@ async def test_the_images_ride_as_uploaded_parts_inside_the_trailer(
 
 
 @every_source
-async def test_media_ingest_off_keeps_the_text_and_skips_the_upload(
+async def test_without_media_client_keeps_the_text_and_skips_the_upload(
     monkeypatch: pytest.MonkeyPatch, source: _PostSource
 ) -> None:
-    """The kill-switch gates the fetch and the upload, never the read."""
+    """Passing `media_client=None` gates the fetch and the upload, never the read."""
     serve_conversation(monkeypatch, downloader=source.downloader, post=source.post())
     fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
-    blocks = await _build(source=source, gemini=True, allow_media_ingest=False)
+    blocks = await _build(source=source, media=False)
 
     assert fetched == []
     assert block_separator(blocks=blocks) == source.separators.text_only
@@ -252,7 +248,7 @@ async def test_one_refused_image_does_not_cost_the_others(
     )
     accept_image_uploads(monkeypatch=monkeypatch, refused=lambda image: image == first)
 
-    blocks = await _build(source=source, gemini=True)
+    blocks = await _build(source=source, media=True)
 
     assert block_separator(blocks=blocks) == source.separators.attached
     assert [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"] == [
@@ -493,7 +489,7 @@ async def test_the_block_says_how_many_images_it_actually_carries(
     )
     fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
-    blocks = await _build(source=source, gemini=True)
+    blocks = await _build(source=source, media=True)
 
     assert len(fetched) == source.image_cap
     assert image_count_line(carried=carried, attached=source.image_cap) in block_body(

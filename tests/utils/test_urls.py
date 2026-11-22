@@ -1,6 +1,8 @@
 """Tests for pulling a URL out of pasted text and checking whose host it names."""
 
-from discordbot.utils.urls import normalized_host, extract_first_url, host_matches_domain
+import re
+
+from discordbot.utils.urls import PostLink, normalized_host, extract_first_url, host_matches_domain
 from discordbot.services.platforms.douyin import DOUYIN_URL_RE
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
@@ -39,7 +41,8 @@ def test_every_url_pattern_shares_the_generic_start_anchor() -> None:
     # The shared sample table's one coverage guard: a new source fails here until it has a URL.
     assert set(SAMPLE_POST_URLS) == {source.name for source in LINK_CONTEXT_SOURCES}
     patterns = [
-        (source.url_pattern, SAMPLE_POST_URLS[source.name]) for source in LINK_CONTEXT_SOURCES
+        (source.post_link.pattern, SAMPLE_POST_URLS[source.name])
+        for source in LINK_CONTEXT_SOURCES
     ]
     patterns.append((YOUTUBE_URL_RE, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
 
@@ -80,3 +83,37 @@ def test_a_link_typed_flush_against_chinese_is_found() -> None:
 def test_unparseable_input_is_passed_through() -> None:
     """Text with no URL is handed on unchanged, so it fails downstream as it always did."""
     assert extract_first_url(text="  not a url  ", patterns=()) == "not a url"
+
+
+def test_post_link_skips_rejected_matches_and_scans_spans_in_order() -> None:
+    """`PostLink.first_in` skips matches `accept` refuses and advances across text spans."""
+    link = PostLink(
+        pattern=re.compile(pattern=r"https://example\.test/[a-z0-9/]+"),
+        accept=lambda url: "/post/" in url,
+    )
+
+    assert not link.accepts(url="https://example.test/profile/alice")
+    assert link.accepts(url="https://example.test/post/42")
+    assert (
+        link.first_in(
+            texts=(
+                "see https://example.test/profile/alice first",
+                "then https://example.test/profile/bob and https://example.test/post/42",
+                "later https://example.test/post/99",
+            )
+        )
+        == "https://example.test/post/42"
+    )
+    assert link.first_in(texts=("only https://example.test/profile/alice",)) is None
+
+
+def test_post_link_without_filter_accepts_every_pattern_match() -> None:
+    """A `PostLink` with no `accept` filter returns the first regex match directly."""
+    link = PostLink(pattern=re.compile(pattern=r"https://example\.test/\d+"))
+
+    assert link.accepts(url="https://example.test/1")
+    assert (
+        link.first_in(texts=("no link here", "pick https://example.test/1"))
+        == "https://example.test/1"
+    )
+    assert link.first_in(texts=("nothing",)) is None

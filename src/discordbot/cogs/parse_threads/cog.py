@@ -38,7 +38,7 @@ from discordbot.utils.media_delivery import (
     build_media_delivery_planner,
 )
 from discordbot.services.platforms.threads import (
-    THREADS_URL_RE,
+    THREADS_POST_LINK,
     ThreadsURL,
     ThreadsOutput,
     ThreadsDownloader,
@@ -99,7 +99,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
     SOURCE = "threads"
     PLATFORM = "Threads"
-    URL_PATTERN = THREADS_URL_RE
+    POST_LINK = THREADS_POST_LINK
     PLACEHOLDER_TEXT = "-# 正在讀取 Threads 貼文⋯"
 
     def __init__(self, bot: commands.Bot):
@@ -361,8 +361,8 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         """
         await interaction.response.defer(ephemeral=True)
         # Search the full option text so pasted share blobs work.
-        match = THREADS_URL_RE.search(string=url)
-        if not match:
+        raw_url = self.POST_LINK.first_in(texts=(url,))
+        if raw_url is None:
             await interaction.followup.send(
                 content="這裡面沒有 Threads 貼文連結。", ephemeral=True
             )
@@ -370,7 +370,6 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
         # `resolve_clean_url` writes nothing to disk.
         downloader = self.downloader_factory(output_folder="")
-        raw_url = match.group(0)
         try:
             async with asyncio.timeout(delay=THREADS_PAGE_TIMEOUT_SECONDS):
                 clean_url = await asyncio.to_thread(downloader.resolve_clean_url, url=raw_url)

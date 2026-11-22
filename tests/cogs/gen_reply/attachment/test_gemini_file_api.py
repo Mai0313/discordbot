@@ -174,10 +174,13 @@ async def test_a_stalled_pending_repoll_falls_back_to_a_fresh_upload(
     """A re-poll read that never returns costs a re-upload, as a failed re-poll does."""
     files = FakeGeminiFiles()
     uploader = _fake_uploader(files=files)
-    uploader._pending_uploads["vid"] = PendingUpload(
-        name="files/vid",
-        uri="https://files.test/files/vid",
-        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    uploader._pending_uploads.set(
+        key="vid",
+        value=PendingUpload(
+            name="files/vid",
+            uri="https://files.test/files/vid",
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        ),
     )
     monkeypatch.setattr(files, "get", _stalled(call=files.get))
     monkeypatch.setattr(
@@ -196,3 +199,48 @@ async def test_a_stalled_pending_repoll_falls_back_to_a_fresh_upload(
     )
     assert files.upload_calls == [("v.mp4", "video/mp4")]
     assert "vid" not in uploader._pending_uploads
+
+
+async def test_pending_uploads_lru_evicts_oldest_and_refreshes_on_repoll_and_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_pending_uploads` is capped at 128 and moves re-polled or overwritten entries to most recent."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
+    _jump_files_api_clock(monkeypatch=monkeypatch)
+    files = FakeGeminiFiles(processing_rounds=99)
+    uploader = _fake_uploader(files=files)
+
+    for index in range(128):
+        assert (
+            await uploader._upload_file(
+                cache_key=f"k{index}",
+                filename=f"v{index}.mp4",
+                data=b"x",
+                content_type="video/mp4",
+                kind="file",
+            )
+            is None
+        )
+
+    # Re-polling k0 while still PROCESSING and overwriting k1 refresh both ahead of k2.
+    repoll = await uploader._repoll_pending_upload(cache_key="k0")
+    assert repoll.handled is True
+    assert repoll.uploaded is None
+    assert (
+        await uploader._upload_file(
+            cache_key="k1", filename="v1.mp4", data=b"x", content_type="video/mp4", kind="file"
+        )
+        is None
+    )
+    assert (
+        await uploader._upload_file(
+            cache_key="k128", filename="v128.mp4", data=b"x", content_type="video/mp4", kind="file"
+        )
+        is None
+    )
+
+    assert len(uploader._pending_uploads) == 128
+    assert "k0" in uploader._pending_uploads
+    assert "k1" in uploader._pending_uploads
+    assert "k2" not in uploader._pending_uploads
+    assert "k128" in uploader._pending_uploads

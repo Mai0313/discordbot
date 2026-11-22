@@ -1,31 +1,30 @@
 """Inline attachment renderer for whenever attachments cannot go by Gemini Files URI."""
 
+from typing import TYPE_CHECKING, cast
 from datetime import UTC, datetime, timedelta
-from collections import OrderedDict
 
 import logfire
-from nextcord import Attachment, StickerItem
 from pydantic import PrivateAttr
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import LoadedMedia, RenderedAttachment
 from discordbot.utils.llm_transcript import defuse_separator_fences
 from discordbot.cogs.gen_reply.images import to_data_uri
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 from discordbot.cogs.gen_reply.attachment.base import (
     FileBytesLoader,
+    AttachmentSource,
     AttachmentRenderer,
     media_semaphore,
     loggable_cache_key,
 )
-from discordbot.cogs.gen_reply.attachment.loaders import (
-    attachment_mime,
-    load_image_bytes,
-    load_attachment_bytes,
-    resolve_source_filename,
-)
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, load_attachment_bytes
+
+if TYPE_CHECKING:
+    from nextcord import Attachment
 
 
 def _inline_expiry() -> datetime:
@@ -44,26 +43,24 @@ class InlineRenderer(AttachmentRenderer):
     dropped_modalities = frozenset({"video", "audio"})
 
     # Per-instance LRU (max 128) of unreadable non-PDF/non-UTF-8 keys refused by `carries`.
-    _unreadable: OrderedDict[int | str, None] = PrivateAttr(default_factory=OrderedDict)
+    _unreadable: BoundedLRU[int | str, None] = PrivateAttr(default_factory=BoundedLRU)
 
-    def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
-        """Returns whether `content_type`, `size`, and `cache_key` are eligible for inline rendering.
+    def carries(self, source: AttachmentSource) -> bool:
+        """Returns whether `source` is eligible for inline rendering.
 
         Refuses fonts, Android packages, files exceeding `MAX_INLINE_ATTACHMENT_BYTES`, and files
         previously recorded in `_unreadable`.
 
         Args:
-            content_type (str): Resolved lowercase MIME type of the source.
-            cache_key (int | str): Per-source identifier checked against `_unreadable`.
-            size (int | None): Byte size reported by Discord, or `None` when unknown.
+            source (AttachmentSource): Classified attachment metadata to check.
         """
-        if content_type.startswith("font/") or (
-            content_type == "application/vnd.android.package-archive"
+        if source.content_type.startswith("font/") or (
+            source.content_type == "application/vnd.android.package-archive"
         ):
             return False
-        if size is not None and size > MAX_INLINE_ATTACHMENT_BYTES:
+        if source.size is not None and source.size > MAX_INLINE_ATTACHMENT_BYTES:
             return False
-        return cache_key not in self._unreadable
+        return source.cache_key not in self._unreadable
 
     async def _load_source_bytes(
         self,
@@ -82,22 +79,19 @@ class InlineRenderer(AttachmentRenderer):
             )
 
     async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
         """Returns `source` downscaled and inlined as a base64 `input_image` part, or `None`.
 
         Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to inline.
-            cache_key (int | str): Per-source identifier for logging.
+            source (AttachmentSource): Classified image attachment, sticker, or URL to inline.
             allow_dead_cache (bool): Ignored; inline renders do not use the dead-source cache.
         """
+        del allow_dead_cache
         loaded = await self._load_source_bytes(
-            cache_key=cache_key,
-            filename=resolve_source_filename(source=source, url_fallback="image.png"),
-            load_data=lambda: load_image_bytes(source=source),
+            cache_key=source.cache_key,
+            filename=source.filename,
+            load_data=lambda: load_image_bytes(source=source.handle),
             allow_dead_cache=False,
         )
         if loaded is None:
@@ -110,45 +104,39 @@ class InlineRenderer(AttachmentRenderer):
         return RenderedAttachment(part=image_part, expires_at=_inline_expiry())
 
     async def render_file(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
-        """Returns `attachment` inlined as a PDF `input_file` or UTF-8 `input_text` part, or `None`.
+        """Returns `source` inlined as a PDF `input_file` or UTF-8 `input_text` part, or `None`.
 
         Args:
-            attachment (Attachment): Discord file attachment to inline.
-            cache_key (int | str): Per-source identifier recorded in `_unreadable` if non-UTF-8.
+            source (AttachmentSource): Classified Discord file attachment to inline.
             allow_dead_cache (bool): Ignored; inline renders do not use the dead-source cache.
         """
-        mime_type = attachment_mime(attachment=attachment)
-        if not mime_type:
-            logfire.warn(
-                "skipping attachment with unknown MIME type",
-                filename=attachment.filename,
-                url=loggable_cache_key(cache_key=attachment.url),
-            )
-            return None
-        if mime_type.partition("/")[0] in self.dropped_modalities:
+        del allow_dead_cache
+        if source.content_type.partition("/")[0] in self.dropped_modalities:
             # The modality gate already keeps these out, so only a direct caller gets here;
             # `_inline_file_part` would drop the clip too, but only after downloading all of it.
             logfire.warn(
                 "dropping video / audio attachment the inline renderer cannot carry",
-                filename=attachment.filename,
-                mime_type=mime_type,
+                filename=source.filename,
+                mime_type=source.content_type,
             )
             return None
+        # Only attachments are classified as `kind="file"`; stickers and embeds are images.
+        attachment = cast("Attachment", source.handle)
         loaded = await self._load_source_bytes(
-            cache_key=cache_key,
-            filename=attachment.filename,
+            cache_key=source.cache_key,
+            filename=source.filename,
             load_data=lambda: load_attachment_bytes(attachment=attachment),
             allow_dead_cache=False,
         )
         if loaded is None:
             return None
         return self._inline_file_part(
-            filename=attachment.filename,
+            filename=source.filename,
             data=loaded.data,
-            mime_type=mime_type,
-            cache_key=cache_key,
+            mime_type=source.content_type,
+            cache_key=source.cache_key,
         )
 
     def _inline_file_part(
@@ -172,9 +160,7 @@ class InlineRenderer(AttachmentRenderer):
                 cache_key=loggable_cache_key(cache_key=cache_key),
                 _exc_info=True,
             )
-            self._unreadable[cache_key] = None
-            if len(self._unreadable) > 128:
-                self._unreadable.popitem(last=False)
+            self._unreadable.set(key=cache_key, value=None)
             return None
         text_part = ResponseInputTextParam(
             type="input_text",

@@ -94,13 +94,11 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
     return resolved_uploads, recorded
 
 
-async def _build(gemini: bool = True, ingest: bool = True) -> list[EasyInputMessageParam]:
-    """Runs the builder with the flags most tests share."""
+async def _build(media: bool = True) -> list[EasyInputMessageParam]:
+    """Runs the builder with the defaults most tests share."""
     return await build_bilibili_context_messages(
         url=_URL,
-        answer_model_is_gemini=gemini,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=ingest,
+        media_client=make_stub_gemini_client() if media else None,
         deadline=link_build_deadline(),
     )
 
@@ -214,44 +212,16 @@ async def test_a_failed_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyPa
     assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
 
 
-async def test_the_kill_switch_skips_the_media_but_keeps_the_text(
+async def test_without_media_client_skips_the_media_and_keeps_the_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ingestion off the metadata still rides, and the model is told it has not watched."""
+    """With no media client the metadata still rides, and no clip is downloaded or uploaded."""
     uploads, recorded = _stub_bilibili(monkeypatch)
 
-    blocks = await _build(ingest=False)
+    blocks = await _build(media=False)
 
     assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert recorded["downloads"] == []
-    assert uploads.calls == []
-
-
-async def test_a_missing_key_reads_the_text_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No key means no client to upload with, which is a text-only read, not a failure."""
-    uploads, _ = _stub_bilibili(monkeypatch)
-
-    blocks = await build_bilibili_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=None,
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
-    )
-
-    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
-    assert uploads.calls == []
-
-
-async def test_a_non_gemini_answer_model_skips_the_upload(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Files uri is Gemini-only, so another model gets the text and no wasted upload."""
-    uploads, _ = _stub_bilibili(monkeypatch)
-
-    blocks = await _build(gemini=False)
-
-    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -286,11 +256,7 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
     short_url = "https://b23.tv/abc123X"
 
     blocks = await build_bilibili_context_messages(
-        url=short_url,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=short_url, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
 
     text = block_body(blocks=blocks)
@@ -370,9 +336,7 @@ async def test_the_media_step_timeout_degrades_to_the_text(
 
     blocks = await build_bilibili_context_messages(
         url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
+        media_client=make_stub_gemini_client(),
         deadline=link_build_deadline(media_seconds=0.05),
     )
 
@@ -413,11 +377,7 @@ async def test_a_read_that_spent_the_media_budget_starts_no_download(
     try:
         blocks = await run_until_deadline(
             awaitable=build_bilibili_context_messages(
-                url=_URL,
-                answer_model_is_gemini=True,
-                gemini_client=make_stub_gemini_client(),
-                allow_media_ingest=True,
-                deadline=deadline,
+                url=_URL, media_client=make_stub_gemini_client(), deadline=deadline
             ),
             deadline=deadline,
         )
@@ -524,9 +484,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         other = await asyncio.wait_for(
             build_bilibili_context_messages(
                 url="https://www.bilibili.com/video/av170001",
-                answer_model_is_gemini=True,
-                gemini_client=make_stub_gemini_client(),
-                allow_media_ingest=True,
+                media_client=make_stub_gemini_client(),
                 deadline=link_build_deadline(),
             ),
             timeout=5.0,

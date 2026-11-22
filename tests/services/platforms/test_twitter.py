@@ -228,7 +228,7 @@ def test_every_form_of_a_post_url_names_the_same_post(url: str) -> None:
     ],
 )
 def test_a_url_that_names_no_post_is_refused(url: str) -> None:
-    """The pattern is path-anchored, so the registry needs no `url_filter` on top of it.
+    """The pattern is path-anchored, so `TWITTER_POST_LINK` needs no accept filter on top of it.
 
     The last two are the host-confusion pair every pattern in this package is anchored against:
     a lookalike domain and the real one buried in another site's path.

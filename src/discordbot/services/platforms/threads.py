@@ -20,7 +20,7 @@ from pydantic import (
 import requests
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 
-from discordbot.utils.urls import URL_START_ANCHOR
+from discordbot.utils.urls import URL_START_ANCHOR, PostLink
 from discordbot.typings.timeouts import (
     THREADS_PAGE_TIMEOUT_SECONDS,
     THREADS_MEDIA_READ_TIMEOUT_SECONDS,
@@ -45,6 +45,7 @@ THREADS_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
     r"[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]/?"
 )
+THREADS_POST_LINK = PostLink(pattern=THREADS_URL_RE)
 
 # Canonical post path only; `/share/<code>` carries an unrelated code resolved via redirect.
 _POST_PATH_RE = re.compile(pattern=r"^/@[^/]+/post/([^/]+)/?$")
@@ -510,6 +511,11 @@ class ThreadsConversation(PlatformConversation[ThreadsOutput]):
 
     `selected_comment_id` is always empty; every Threads reply has its own post URL.
     """
+
+    @property
+    def is_readable(self) -> bool:
+        """Returns whether `chain` is non-empty; textless quote posts still show the quoted post."""
+        return bool(self.chain)
 
 
 _SJS_PATTERN = re.compile(

@@ -112,11 +112,7 @@ class ReplyGeneratorCogs(commands.Cog):
     @cached_property
     def toolkit(self) -> ReplyToolkit:
         """Returns the process-wide `ReplyToolkit` shared across turns."""
-        return ReplyToolkit(
-            bot=self.bot,
-            openai_client=self.openai_client,
-            gemini_api_key=self.config.gemini_api_key,
-        )
+        return ReplyToolkit(bot=self.bot, openai_client=self.openai_client, config=self.config)
 
     @cached_property
     def media_delivery(self) -> MediaDeliveryPlanner:

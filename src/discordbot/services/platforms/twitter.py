@@ -20,7 +20,7 @@ import logfire
 from pydantic import Field, BaseModel, ValidationError, computed_field
 import requests
 
-from discordbot.utils.urls import URL_START_ANCHOR
+from discordbot.utils.urls import URL_START_ANCHOR, PostLink
 from discordbot.typings.timeouts import (
     TWITTER_PAGE_TIMEOUT_SECONDS,
     FXTWITTER_CONVERSATION_TIMEOUT_SECONDS,
@@ -32,7 +32,7 @@ from discordbot.services.platforms.base import (
     PlatformConversation,
     thread_branches,
 )
-from discordbot.services.platforms.page_json import time_of
+from discordbot.services.platforms.page_json import BROWSER_HEADERS, time_of
 
 # Path-anchored to `/status/<digits>` (no post filter needed); handle is untrusted and rebuilt
 # from the payload, and the ASCII query tail stops before CJK punctuation.
@@ -42,6 +42,7 @@ TWITTER_URL_RE = re.compile(
     r"(?:/(?:photo|video)/\d+)?/?"
     r"(?:\?[A-Za-z0-9=&%_.-]*[A-Za-z0-9_-])?"
 )
+TWITTER_POST_LINK = PostLink(pattern=TWITTER_URL_RE)
 
 _STATUS_PATH_RE = re.compile(pattern=r"/status(?:es)?/(?P<id>\d+)")
 
@@ -53,13 +54,7 @@ _FXTWITTER_CONVERSATION_URL = "https://api.fxtwitter.com/2/conversation/{status_
 _CANONICAL_TWITTER_ORIGIN = "https://x.com"
 
 # Syndication returns 400 without User-Agent and `{}` without a non-empty `token`.
-_REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
-}
+_REQUEST_HEADERS = {"User-Agent": BROWSER_HEADERS["User-Agent"], "Accept": "application/json"}
 _REQUEST_TOKEN = "a"  # noqa: S105 — a parameter the endpoint requires and never reads, not a secret
 
 # Bare `pbs.twimg.com` URLs serve medium size; `?name=orig` fetches full resolution.

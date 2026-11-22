@@ -1,10 +1,9 @@
 """Builds Responses API input messages from Discord messages."""
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
 from mimetypes import guess_type
-from collections import OrderedDict
 
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem, MessageSnapshot
@@ -13,6 +12,7 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import (
     VOICE_REPLY_FILENAME,
     LoadedMedia,
@@ -29,11 +29,16 @@ from discordbot.utils.llm_transcript import (
     defuse_separator_fences,
 )
 from discordbot.typings.context_budgets import HISTORY_EARLIER_REPLY_MAX_CHARS
-from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
+from discordbot.cogs.gen_reply.attachment.base import (
+    AttachmentSource,
+    AttachmentRenderer,
+    loggable_cache_key,
+)
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
     load_attachment_bytes,
+    resolve_source_filename,
 )
 
 if TYPE_CHECKING:
@@ -49,54 +54,6 @@ def shorten_earlier_reply(text: str) -> str:
     if len(text) <= HISTORY_EARLIER_REPLY_MAX_CHARS:
         return text
     return f"{text[:HISTORY_EARLIER_REPLY_MAX_CHARS].rstrip()} [… rest of this reply omitted]"
-
-
-class AttachmentSource(BaseModel):
-    """One renderable attachment source classified from message metadata.
-
-    Collected once per message and shared by every render of it. Carries only metadata (no
-    bytes, no network) so it is safe to build on the route critical path.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    handle: SkipValidation[Attachment | StickerItem | str] = Field(
-        ..., description="The attachment, sticker, or image URL the loaders consume."
-    )
-    kind: Literal["image", "file"] = Field(
-        ..., description="Whether the source renders as an image or a generic file."
-    )
-    is_sticker: bool = Field(
-        default=False,
-        description=(
-            "Whether the source is a Discord sticker. Separate from `kind`, which stays the "
-            "render path a sticker shares with every other image; this is what the text-only "
-            "marker names it."
-        ),
-    )
-    content_type: str = Field(
-        ...,
-        description=(
-            "Resolved MIME type; empty when the sent type is blank or parameter-only, or when "
-            "none is sent and the filename is unguessable."
-        ),
-    )
-    cache_key: int | str = Field(
-        ...,
-        description="Stable identity (attachment/sticker id or chosen embed URL) for the cache.",
-    )
-    size: int | None = Field(
-        default=None,
-        description=(
-            "Bytes Discord reports for an attachment; None for a sticker or an embed image, "
-            "which report none."
-        ),
-    )
-
-    @property
-    def marker_kind(self) -> str:
-        """The name an `[attachment: ...]` marker gives this source: a sticker as such, else its kind."""
-        return "sticker" if self.is_sticker else self.kind
 
 
 class MessageInputBuilder(BaseModel):
@@ -115,9 +72,9 @@ class MessageInputBuilder(BaseModel):
     )
     # Per-message rendered parts keyed on (message_id, edited_at, source_keys) with earliest
     # handle expiry, so edits and late embed unfurls re-render and handles refresh before expiry.
-    _attachment_cache: OrderedDict[
+    _attachment_cache: BoundedLRU[
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
-    ] = PrivateAttr(default_factory=OrderedDict)
+    ] = PrivateAttr(default_factory=BoundedLRU)
 
     def get_user_prompt(self, content: str) -> str:
         """Returns `content` with bot mention syntax removed and surrounding whitespace stripped.
@@ -269,6 +226,7 @@ class MessageInputBuilder(BaseModel):
                     kind="image" if content_type.startswith("image/") else "file",
                     content_type=content_type,
                     cache_key=attachment.id,
+                    filename=attachment.filename,
                     size=attachment.size,
                 )
             )
@@ -280,6 +238,7 @@ class MessageInputBuilder(BaseModel):
                     is_sticker=True,
                     content_type=guess_type(sticker.url)[0] or "image/png",
                     cache_key=sticker.id,
+                    filename=resolve_source_filename(source=sticker, url_fallback="image.png"),
                 )
             )
         for embed in embeds:
@@ -291,6 +250,7 @@ class MessageInputBuilder(BaseModel):
                             kind="image",
                             content_type=guess_type(url)[0] or "image/png",
                             cache_key=url,
+                            filename="image.png",
                         )
                     )
         return sources
@@ -307,9 +267,7 @@ class MessageInputBuilder(BaseModel):
         rejected: list[tuple[AttachmentSource, str, bool]] = []
         for source in sources:
             required = self.required_modality(content_type=source.content_type)
-            carried = self.attachment_handler.carries(
-                content_type=source.content_type, cache_key=source.cache_key, size=source.size
-            )
+            carried = self.attachment_handler.carries(source=source)
             if required in modalities and carried:
                 accepted.append(source)
             else:
@@ -404,29 +362,36 @@ class MessageInputBuilder(BaseModel):
         )
         return [loaded for group in groups for loaded in group]
 
-    async def get_video_sources(self, message: Message) -> list[LoadedMedia]:
-        """Returns a single-element list with the first readable video attachment on `message`, or `[]`.
+    async def get_turn_video_source(
+        self, message: Message, replied_to: Message | None
+    ) -> LoadedMedia | None:
+        """Returns the first readable direct video attachment on `message` or `replied_to`, or None.
 
-        Downloads at most the first usable direct video attachment for video editing, skipping
-        failed reads and trying the next attachment.
+        Checks `message` before `replied_to` so a newly attached clip takes precedence, skipping
+        failed reads and trying the next video attachment.
 
         Args:
-            message (Message): Message to inspect for direct video attachments.
+            message (Message): Current message being answered.
+            replied_to (Message | None): Referenced message being replied to, or None.
         """
-        for source in self.collect_attachment_sources(message=message):
-            if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
-                try:
-                    return [await load_attachment_bytes(attachment=source.handle)]
-                except Exception as exc:
-                    # Broad: a Discord/transport read failure degrades to trying the next clip.
-                    logfire.warn(
-                        "failed to read a source video attachment; trying the next",
-                        message_id=message.id,
-                        filename=source.handle.filename,
-                        error_type=type(exc).__name__,
-                        _exc_info=exc,
-                    )
-        return []
+        messages = [message] if replied_to is None else [message, replied_to]
+        for source_message in messages:
+            for source in self.collect_attachment_sources(message=source_message):
+                if source.content_type.startswith("video/") and isinstance(
+                    source.handle, Attachment
+                ):
+                    try:
+                        return await load_attachment_bytes(attachment=source.handle)
+                    except Exception as exc:
+                        # Broad: a Discord/transport read failure degrades to trying the next clip.
+                        logfire.warn(
+                            "failed to read a source video attachment; trying the next",
+                            message_id=source_message.id,
+                            filename=source.filename,
+                            error_type=type(exc).__name__,
+                            _exc_info=exc,
+                        )
+        return None
 
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
@@ -490,18 +455,13 @@ class MessageInputBuilder(BaseModel):
             if source.kind == "image":
                 tasks.append(
                     self.attachment_handler.render_image(
-                        source=source.handle,
-                        cache_key=source.cache_key,
-                        allow_dead_cache=allow_dead_cache,
+                        source=source, allow_dead_cache=allow_dead_cache
                     )
                 )
             else:
-                # Only attachments are ever classified as files; stickers and embeds are images.
                 tasks.append(
                     self.attachment_handler.render_file(
-                        attachment=cast("Attachment", source.handle),
-                        cache_key=source.cache_key,
-                        allow_dead_cache=allow_dead_cache,
+                        source=source, allow_dead_cache=allow_dead_cache
                     )
                 )
         return list(await asyncio.gather(*tasks))
@@ -524,9 +484,9 @@ class MessageInputBuilder(BaseModel):
         cache_key = (message.id, message.edited_at, source_keys)
         # Refresh handles before expiry; a borderline-expired URI 400s the whole answer.
         cache_safety_margin = timedelta(hours=2)
-        cached = self._attachment_cache.get(cache_key)
+        cached = self._attachment_cache.peek(key=cache_key)
         if cached is not None and datetime.now(tz=UTC) < cached[0] - cache_safety_margin:
-            self._attachment_cache.move_to_end(cache_key)
+            self._attachment_cache.touch(key=cache_key)
             logfire.debug(
                 "gen_reply attachment cache hit", message_id=message.id, source_count=len(sources)
             )
@@ -549,9 +509,9 @@ class MessageInputBuilder(BaseModel):
         # Skip caching if any source failed so the next turn retries; expire at earliest handle.
         if None not in rendered:
             expires_at = min(item.expires_at for item in rendered if item is not None)
-            self._attachment_cache[cache_key] = (expires_at, [part.copy() for part in resolved])
-            if len(self._attachment_cache) > 128:
-                self._attachment_cache.popitem(last=False)
+            self._attachment_cache.set(
+                key=cache_key, value=(expires_at, [part.copy() for part in resolved])
+            )
         # Keep a placeholder so an attachment-only message does not read as blank.
         return [
             item.part

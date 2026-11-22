@@ -315,7 +315,7 @@ def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
     """
     assert cog.PLATFORM
     assert cog.PLACEHOLDER_TEXT
-    assert cog.URL_PATTERN.pattern
+    assert cog.POST_LINK.pattern.pattern
     assert cog.read is not ExpansionCog.read
     assert cog.build_delivery is not ExpansionCog.build_delivery
     if issubclass(cog, ConversationExpansionCog):
@@ -442,7 +442,7 @@ async def test_a_link_the_cog_refuses_does_not_hide_a_post_after_it(
     """A refused link is skipped rather than ending the scan, so a post after it is read (#854)."""
     refused, post, pattern_matches_refused = _REFUSED_THEN_POST[cog.SOURCE]
     # A pattern narrowed past the refused link would leave this passing without testing the skip.
-    assert (cog.URL_PATTERN.search(string=refused) is not None) is pattern_matches_refused
+    assert (cog.POST_LINK.pattern.search(string=refused) is not None) is pattern_matches_refused
     staged = _stage(cog=cog, outcome="readable")
     staged.message.content = f"{refused} 跟這篇 {post}"
     read = staged.cog.read
@@ -493,7 +493,8 @@ async def test_a_hidden_link_does_not_hide_the_open_one_after_it(
     hidden = [f"{post}?h=1", f"{post}?h=2"]
     # A hidden copy the pattern cut back to `post`, or one it refuses, could not tell which was read.
     assert all(
-        cog.URL_PATTERN.fullmatch(string=url) and cog.url_is_expandable(url=url) for url in hidden
+        cog.POST_LINK.pattern.fullmatch(string=url) and cog.POST_LINK.accepts(url=url)
+        for url in hidden
     )
     staged.message.content = f"||{hidden[0]}|| 跟 <{hidden[1]}> 跟 <@42>{post}"
     read = staged.cog.read

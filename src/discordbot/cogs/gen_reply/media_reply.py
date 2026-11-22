@@ -5,7 +5,6 @@ delivered, the persona reply (`answer.py`) is best-effort and leaves the media o
 """
 
 import time
-from typing import TYPE_CHECKING
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
@@ -33,9 +32,6 @@ from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import discard_task
-
-if TYPE_CHECKING:
-    from discordbot.typings.media import LoadedMedia
 
 
 class MediaReplyRoutes(BaseModel):
@@ -185,14 +181,10 @@ class MediaReplyRoutes(BaseModel):
         async with self._delivery_window(context_task=context_task) as window:
             async with window:
                 replied_to = replied_to_message(message=message)
-                source_messages = [message, *([replied_to] if replied_to is not None else [])]
                 # Check for a source video first (current, then replied-to) before fetching images.
-                source_video: LoadedMedia | None = None
-                for source_message in source_messages:
-                    videos = await toolkit.input_builder.get_video_sources(message=source_message)
-                    if videos:
-                        source_video = videos[0]
-                        break
+                source_video = await toolkit.input_builder.get_turn_video_source(
+                    message=message, replied_to=replied_to
+                )
                 # Prompt refinement is best-effort; failures past here belong to video_model.
                 dispatched_model.set(toolkit.runtime_models.video_model.name)
                 if source_video is not None:
@@ -251,6 +243,7 @@ class MediaReplyRoutes(BaseModel):
             mime_type="video/mp4",
             filename=INLINE_VIDEO_FILENAME,
             timeout_seconds=GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS,
+            file_api_enabled=self.answer.config.file_api_enabled,
         )
         if video_part is None:
             await discard_task(task=context_task, label="prep", message_id=self.message.id)

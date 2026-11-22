@@ -124,6 +124,15 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
         """Returns every post and reply on the page: `chain` oldest first, then `comments` in page order."""
         return [*self.chain, *self.comments]
 
+    @property
+    def is_readable(self) -> bool:
+        """Returns whether the linked target post exists and carries showable content.
+
+        Plain property rather than a `computed_field` so it stays out of dumps. Subclasses whose
+        readability rule differs override it.
+        """
+        return self.target is not None and self.target.is_readable
+
 
 class LinkableCommentOutput(PlatformOutput):
     """One post or comment on a platform whose links can name a single comment."""

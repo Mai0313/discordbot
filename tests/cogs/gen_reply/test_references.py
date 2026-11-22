@@ -119,7 +119,7 @@ def test_link_url_for_source_prefers_the_current_message() -> None:
 def test_link_url_for_source_skips_a_link_the_source_refuses(name: str, refused: str) -> None:
     """A profile or live-room link ahead of a post must not cost the answer the post (#854)."""
     source = _link_source(name=name)
-    assert source.url_pattern.search(string=refused) is not None
+    assert source.post_link.pattern.search(string=refused) is not None
     message = FakeMessage(content=f"<@999> {refused} 跟這篇 {SAMPLE_POST_URLS[name]}")
 
     found = link_url_for_source(source=source, message=as_message(fake=message))

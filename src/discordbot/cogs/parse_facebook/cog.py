@@ -13,11 +13,10 @@ from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.services.platforms.ytdlp import VideoDownloader, download_with_stop_signal
 from discordbot.services.platforms.facebook import (
-    FACEBOOK_URL_RE,
+    FACEBOOK_POST_LINK,
     FacebookOutput,
     FacebookDownloader,
     FacebookConversation,
-    is_facebook_post_url,
 )
 
 
@@ -26,25 +25,13 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
 
     SOURCE = "facebook"
     PLATFORM = "Facebook"
-    URL_PATTERN = FACEBOOK_URL_RE
+    POST_LINK = FACEBOOK_POST_LINK
     PLACEHOLDER_TEXT = "-# 正在讀取 Facebook 貼文⋯"
     READ_TIMEOUT_SECONDS = FACEBOOK_EXPAND_TIMEOUT_SECONDS
     EMBED_COLOR = 0x1877F2
     DOWNLOAD_VIDEOS = True
     downloader_factory = FacebookDownloader
     video_downloader_factory: Callable[..., VideoDownloader] = VideoDownloader
-
-    @staticmethod
-    def url_is_expandable(url: str) -> bool:
-        """Returns whether `url` names a Facebook post.
-
-        `FACEBOOK_URL_RE` matches the host rather than the path, so profile and group home pages
-        are filtered here before the read.
-
-        Args:
-            url (str): The URL matched by `URL_PATTERN`.
-        """
-        return is_facebook_post_url(url=url)
 
     async def _download_one_clip(  # noqa: PLR0913 -- one argument per clip download context field
         self, index: int, video_url: str, base_dir: Path, max_bytes: int, url: str, message_id: int

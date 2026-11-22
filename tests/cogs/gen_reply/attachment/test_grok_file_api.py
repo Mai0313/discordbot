@@ -13,7 +13,7 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import (
     GrokFileUploader,
 )
 
-from tests.helpers.reply_fakes import _att, _png_bytes
+from tests.helpers.reply_fakes import _png_bytes, _att_source
 from tests.helpers.logfire_capture import capture_levels
 
 if TYPE_CHECKING:
@@ -71,8 +71,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     renderer = _fake_grok_uploader(files=files)
 
     file_rendered = await renderer.render_file(
-        attachment=_att(filename="notes.txt", content_type="text/plain", payload=b"hello world"),
-        cache_key="notes.txt",
+        source=_att_source(filename="notes.txt", content_type="text/plain", payload=b"hello world")
     )
     assert file_rendered is not None
     file_part = file_rendered.part
@@ -84,8 +83,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
 
     # xAI resolves no file id for image input, so an image is inlined instead of uploaded.
     image_rendered = await renderer.render_image(
-        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
-        cache_key="pic.png",
+        source=_att_source(filename="pic.png", content_type="image/png", payload=_png_bytes())
     )
     assert image_rendered is not None
     image_part = image_rendered.part

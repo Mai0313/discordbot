@@ -1,24 +1,19 @@
 """The attachment renderer strategy interface, and the Files API upload renderer built on it."""
 
 import time
-from typing import TYPE_CHECKING, Literal, ClassVar
+from typing import TYPE_CHECKING, Literal, ClassVar, cast
 from datetime import UTC, datetime, timedelta
-from collections import OrderedDict
 
 import logfire
 from nextcord import Attachment, StickerItem
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
-from discordbot.cogs.gen_reply.attachment.loaders import (
-    attachment_mime,
-    load_image_bytes,
-    load_attachment_bytes,
-    resolve_source_filename,
-)
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, load_attachment_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
@@ -49,12 +44,67 @@ def loggable_cache_key(cache_key: int | str) -> int | str:
     return cache_key
 
 
+class AttachmentSource(BaseModel):
+    """One renderable attachment source classified from message metadata.
+
+    Collected once per message and shared by every render of it. Carries only metadata (no
+    bytes, no network) so it is safe to build on the route critical path.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    handle: SkipValidation[Attachment | StickerItem | str] = Field(
+        ..., description="The attachment, sticker, or image URL the loaders consume."
+    )
+    kind: Literal["image", "file"] = Field(
+        ..., description="Whether the source renders as an image or a generic file."
+    )
+    is_sticker: bool = Field(
+        default=False,
+        description=(
+            "Whether the source is a Discord sticker. Separate from `kind`, which stays the "
+            "render path a sticker shares with every other image; this is what the text-only "
+            "marker names it."
+        ),
+    )
+    content_type: str = Field(
+        ...,
+        description=(
+            "Resolved MIME type; empty when the sent type is blank or parameter-only, or when "
+            "none is sent and the filename is unguessable."
+        ),
+    )
+    cache_key: int | str = Field(
+        ...,
+        description="Stable identity (attachment/sticker id or chosen embed URL) for the cache.",
+    )
+    filename: str = Field(
+        ...,
+        description=(
+            "Resolved upload filename with its extension (attachment filename, `<sticker>.png`, "
+            "or a fallback for embed URLs)."
+        ),
+    )
+    size: int | None = Field(
+        default=None,
+        description=(
+            "Bytes Discord reports for an attachment; None for a sticker or an embed image, "
+            "which report none."
+        ),
+    )
+
+    @property
+    def marker_kind(self) -> str:
+        """The name an `[attachment: ...]` marker gives this source: a sticker as such, else its kind."""
+        return "sticker" if self.is_sticker else self.kind
+
+
 class AttachmentRenderer(BaseModel):
-    """Strategy that turns one Discord attachment source into a Responses API content part.
+    """Strategy that turns one classified `AttachmentSource` into a Responses API content part.
 
     `render_image` and `render_file` return a `RenderedAttachment` with its cache expiry, or
-    `None` when the source is unsupported or fails. `cache_key` and `allow_dead_cache` drive
-    the per-instance dead-source cache.
+    `None` when the source is unsupported or fails. `source.cache_key` and `allow_dead_cache`
+    drive the per-instance dead-source cache.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -63,66 +113,56 @@ class AttachmentRenderer(BaseModel):
     dropped_modalities: ClassVar[frozenset[str]] = frozenset()
 
     # Per-instance LRU (max 128) of `cache_key -> first_failure_at` for dead-source skipping.
-    _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
+    _dead_sources: BoundedLRU[int | str, datetime] = PrivateAttr(default_factory=BoundedLRU)
 
-    def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
-        """Returns whether this renderer can carry the unfetched source.
+    def carries(self, source: AttachmentSource) -> bool:
+        """Returns whether this renderer can carry the unfetched `source`.
 
         Checked alongside `dropped_modalities` before downloading so the route marker, history
         media budget, and render cache skip sources the answer cannot use.
 
         Args:
-            content_type (str): Resolved lowercase MIME type of the source.
-            cache_key (int | str): Per-source identifier.
-            size (int | None): Byte size reported by Discord, or `None` when unknown.
+            source (AttachmentSource): Classified attachment metadata to check.
         """
-        del content_type, cache_key, size
+        del source
         return True
 
     async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
         """Returns an image source rendered to a Responses API content part, or `None` if dropped.
 
         Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to render.
-            cache_key (int | str): Per-source identifier for upload and dead-source caching.
+            source (AttachmentSource): Classified image attachment, sticker, or URL to render.
             allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
         """
         raise NotImplementedError
 
     async def render_file(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
         """Returns a non-image attachment rendered to a Responses API content part, or `None`.
 
         Args:
-            attachment (Attachment): Discord file attachment to render.
-            cache_key (int | str): Per-source identifier for upload and dead-source caching.
+            source (AttachmentSource): Classified Discord file attachment to render.
             allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
         """
         raise NotImplementedError
 
     def _is_known_dead(self, cache_key: int | str) -> bool:
         """Returns whether `cache_key` failed a fetch within `DEAD_SOURCE_TTL`, evicting expired entries."""
-        dead_at = self._dead_sources.get(cache_key)
+        dead_at = self._dead_sources.peek(key=cache_key)
         if dead_at is None:
             return False
         if datetime.now(tz=UTC) - dead_at < DEAD_SOURCE_TTL:
-            self._dead_sources.move_to_end(cache_key)
+            self._dead_sources.touch(key=cache_key)
             return True
-        self._dead_sources.pop(cache_key, None)
+        self._dead_sources.pop(key=cache_key)
         return False
 
     def _mark_dead(self, cache_key: int | str) -> None:
         """Records a source's fetch failure so it is skipped for DEAD_SOURCE_TTL."""
-        self._dead_sources[cache_key] = datetime.now(tz=UTC)
-        self._dead_sources.move_to_end(cache_key)
-        if len(self._dead_sources) > 128:
-            self._dead_sources.popitem(last=False)
+        self._dead_sources.set(key=cache_key, value=datetime.now(tz=UTC))
 
     async def _load_source_bytes(
         self,
@@ -161,23 +201,18 @@ class FileUploadRenderer(AttachmentRenderer):
     """
 
     async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
         """Returns `source` uploaded to the provider's Files API as an `input_image` part, or `None`.
 
         Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
-            cache_key (int | str): Per-source identifier for dead-source caching.
+            source (AttachmentSource): Classified image attachment, sticker, or URL to upload.
             allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
         """
-        source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=source_name,
-            load_data=lambda: load_image_bytes(source=source),
+            cache_key=source.cache_key,
+            filename=source.filename,
+            load_data=lambda: load_image_bytes(source=source.handle),
             kind="image",
             allow_dead_cache=allow_dead_cache,
         )
@@ -187,26 +222,19 @@ class FileUploadRenderer(AttachmentRenderer):
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def render_file(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
-        """Returns `attachment` uploaded to the provider's Files API as an `input_file` part, or `None`.
+        """Returns `source` uploaded to the provider's Files API as an `input_file` part, or `None`.
 
         Args:
-            attachment (Attachment): Discord file attachment to upload.
-            cache_key (int | str): Per-source identifier for upload and dead-source caching.
+            source (AttachmentSource): Classified Discord file attachment to upload.
             allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
         """
-        mime_type = attachment_mime(attachment=attachment)
-        if not mime_type:
-            logfire.warn(
-                "skipping attachment with unknown MIME type",
-                filename=attachment.filename,
-                url=loggable_cache_key(cache_key=attachment.url),
-            )
-            return None
+        # Only attachments are classified as `kind="file"`; stickers and embeds are images.
+        attachment = cast("Attachment", source.handle)
         uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=attachment.filename,
+            cache_key=source.cache_key,
+            filename=source.filename,
             load_data=lambda: load_attachment_bytes(attachment=attachment),
             kind="file",
             allow_dead_cache=allow_dead_cache,
@@ -214,7 +242,7 @@ class FileUploadRenderer(AttachmentRenderer):
         if uploaded is None:
             return None
         part = ResponseInputFileParam(
-            type="input_file", file_id=uploaded.uri, filename=attachment.filename
+            type="input_file", file_id=uploaded.uri, filename=source.filename
         )
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 

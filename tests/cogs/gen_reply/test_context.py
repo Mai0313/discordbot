@@ -263,11 +263,11 @@ def test_history_media_budget_counts_only_the_supported_half_of_a_mixed_post() -
 
 @pytest.mark.parametrize(
     ("file_api_enabled", "budget", "kept"),
-    [("true", 5_000, 3), ("false", 5_000, 1), ("false", 2_000, 0)],
+    [(True, 5_000, 3), (False, 5_000, 1), (False, 2_000, 0)],
     ids=["files-api", "inline", "inline-newest-alone-over"],
 )
 async def test_render_history_holds_inlined_attachment_bytes_to_the_budget(
-    monkeypatch: pytest.MonkeyPatch, file_api_enabled: str, budget: int, kept: int
+    monkeypatch: pytest.MonkeyPatch, file_api_enabled: bool, budget: int, kept: int
 ) -> None:
     """History files that fit one at a time may not add up past the inline byte budget.
 
@@ -280,13 +280,12 @@ async def test_render_history_holds_inlined_attachment_bytes_to_the_budget(
         "slow_model",
         property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
     )
-    monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image"},
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.context.MAX_HISTORY_INLINE_BYTES", budget)
-    cog = _cog()
+    cog = _cog(file_api_enabled=file_api_enabled)
     posts = [FakeMessage(content=f"notes {i}", author=FakeAuthor(user_id=1)) for i in range(3)]
     for index, post in enumerate(posts):
         post.attachments = [
@@ -522,7 +521,6 @@ async def test_an_earlier_reply_degraded_to_markers_is_still_shortened(
         "slow_model",
         property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
     )
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image"},
@@ -534,7 +532,8 @@ async def test_an_earlier_reply_degraded_to_markers_is_still_shortened(
     latest = _said(content="latest" + FOOTER, author_id=BOT_ID)
 
     rendered = await _context_builder(
-        cog=_cog(bot_user_id=BOT_ID), message=as_message(fake=_said(content="hi"))
+        cog=_cog(bot_user_id=BOT_ID, file_api_enabled=False),
+        message=as_message(fake=_said(content="hi")),
     ).render_history(hist_messages=[as_message(fake=m) for m in (earlier, latest)])
 
     assert _text(block=rendered[1]) == (
@@ -551,7 +550,6 @@ async def test_render_history_logs_unsupported_attachment_once_when_payload_capp
         "slow_model",
         property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
     )
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image"},
@@ -571,7 +569,8 @@ async def test_render_history_logs_unsupported_attachment_once_when_payload_capp
     logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     rendered = await _context_builder(
-        cog=_cog(bot_user_id=BOT_ID), message=as_message(fake=_said(content="hi"))
+        cog=_cog(bot_user_id=BOT_ID, file_api_enabled=False),
+        message=as_message(fake=_said(content="hi")),
     ).render_history(hist_messages=[as_message(fake=post)])
 
     assert "[attachment: file]" in _text(block=rendered[1])

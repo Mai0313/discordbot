@@ -8,9 +8,10 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
-from nextcord import Embed, Message
+from nextcord import Embed, Message, Attachment
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import LoadedMedia, RenderedPart, RenderedAttachment
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -28,9 +29,9 @@ from tests.helpers.reply_fakes import (
     FakeSnapshot,
     FakeReference,
     FakeAttachment,
-    _att,
     _cog,
     _png_bytes,
+    _att_source,
     _image_post,
     _fake_uploader,
     _media_builder,
@@ -40,6 +41,8 @@ from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from discordbot.cogs.gen_reply.attachment.base import AttachmentSource
 
 
 def _pin_gemini_slow_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -280,8 +283,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     )
 
     file_rendered = await cog.toolkit.input_builder.attachment_handler.render_file(
-        attachment=_att(filename="note.txt", content_type="text/plain", payload=b"abc"),
-        cache_key="note.txt",
+        source=_att_source(filename="note.txt", content_type="text/plain", payload=b"abc")
     )
     assert file_rendered is not None
     file_part = file_rendered.part
@@ -291,8 +293,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
     image_rendered = await cog.toolkit.input_builder.attachment_handler.render_image(
-        source=_att(filename="pixel.png", content_type="image/png", payload=_png_bytes()),
-        cache_key="pixel.png",
+        source=_att_source(filename="pixel.png", content_type="image/png", payload=_png_bytes())
     )
     assert image_rendered is not None
     image_part = image_rendered.part
@@ -337,7 +338,7 @@ async def test_a_keyless_deployment_inlines_attachments_instead_of_dropping_them
     )
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
     bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
-    toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
+    toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), config=LLMConfig.model_construct())
     builder = toolkit.input_builder
     pic = FakeAttachment(
         filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
@@ -659,11 +660,11 @@ async def test_a_failed_attachment_reaches_the_model_as_a_notice(
 
 @pytest.mark.parametrize(
     ("file_api_enabled", "markers"),
-    [("true", ["[attachment: image]", "[attachment: file]"]), ("false", ["[attachment: image]"])],
+    [(True, ["[attachment: image]", "[attachment: file]"]), (False, ["[attachment: image]"])],
     ids=["files-api", "inline"],
 )
 async def test_the_gate_passes_only_what_the_selected_renderer_carries(
-    monkeypatch: pytest.MonkeyPatch, file_api_enabled: str, markers: list[str]
+    monkeypatch: pytest.MonkeyPatch, file_api_enabled: bool, markers: list[str]
 ) -> None:
     """A clip the inline renderer drops is not marked or budgeted, nor keeps its message uncached.
 
@@ -673,12 +674,11 @@ async def test_the_gate_passes_only_what_the_selected_renderer_carries(
     download the image beside it again on every reply.
     """
     _pin_gemini_slow_model(monkeypatch=monkeypatch)
-    monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image", "audio", "video"},
     )
-    builder = _cog().toolkit.input_builder
+    builder = _cog(file_api_enabled=file_api_enabled).toolkit.input_builder
     pic = FakeAttachment(
         filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
     )
@@ -720,12 +720,11 @@ async def test_the_inline_gate_stops_passing_a_file_the_renderer_cannot_read(
     others, and the message caches on the next render rather than downloading the image beside it
     on every reply.
     """
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image", "audio", "video"},
     )
-    builder = _cog().toolkit.input_builder
+    builder = _cog(file_api_enabled=False).toolkit.input_builder
     pic = FakeAttachment(
         filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
     )
@@ -758,9 +757,9 @@ async def test_the_inline_gate_stops_passing_a_file_the_renderer_cannot_read(
 @pytest.mark.parametrize(
     ("file_api_enabled", "markers", "big_reads", "skipped"),
     [
-        ("true", ["[attachment: image]", "[attachment: file]", "[attachment: image]"], 1, []),
+        (True, ["[attachment: image]", "[attachment: file]", "[attachment: image]"], 1, []),
         (
-            "false",
+            False,
             ["[attachment: image]"],
             0,
             [
@@ -773,7 +772,7 @@ async def test_the_inline_gate_stops_passing_a_file_the_renderer_cannot_read(
 )
 async def test_the_inline_gate_refuses_an_attachment_too_large_to_inline(
     monkeypatch: pytest.MonkeyPatch,
-    file_api_enabled: str,
+    file_api_enabled: bool,
     markers: list[str],
     big_reads: int,
     skipped: list[tuple[str, int]],
@@ -785,12 +784,11 @@ async def test_the_inline_gate_refuses_an_attachment_too_large_to_inline(
     size too. An upload sends a handle rather than the bytes, so the Files API path takes all three.
     """
     _pin_gemini_slow_model(monkeypatch=monkeypatch)
-    monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image"},
     )
-    builder = _cog().toolkit.input_builder
+    builder = _cog(file_api_enabled=file_api_enabled).toolkit.input_builder
     pic = FakeAttachment(
         filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
     )
@@ -970,13 +968,13 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     rendered_urls: list[str] = []
 
     async def fake_render_image(
-        self: object, source: object, cache_key: object, allow_dead_cache: bool = False
+        self: object, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment:
         """Records each rendered source instead of hitting the network."""
-        del self, cache_key, allow_dead_cache
-        rendered_urls.append(str(source))
+        del self, allow_dead_cache
+        rendered_urls.append(str(source.handle))
         return RenderedAttachment(
-            part={"type": "input_image", "image_url": str(source), "detail": "auto"},
+            part={"type": "input_image", "image_url": str(source.handle), "detail": "auto"},
             expires_at=datetime(2099, 1, 1, tzinfo=UTC),
         )
 
@@ -1019,3 +1017,83 @@ async def test_get_image_sources_with_mime_propagates_cancellation(
 
     with pytest.raises(asyncio.CancelledError):
         await builder.get_image_sources_with_mime(message=as_message(fake=message))
+
+
+async def test_attachment_cache_evicts_least_recently_used_entry() -> None:
+    """`_attachment_cache` is capped at 128 and moves hits to most recent before evicting."""
+    cog = _cog()
+    builder = cog.toolkit.input_builder
+    messages: list[tuple[FakeMessage, FakeAttachment]] = []
+    for index in range(129):
+        attachment = FakeAttachment(
+            filename=f"f{index}.txt", content_type="text/plain", attachment_id=index + 1
+        )
+        msg = FakeMessage(content=f"doc {index}", author=FakeAuthor(user_id=2))
+        msg.id = index + 1
+        msg.attachments = [attachment]
+        messages.append((msg, attachment))
+
+    for msg, _ in messages[:128]:
+        await _attachment_parts(builder=builder, message=msg)
+
+    # Touch entry 0 so entry 1 becomes the least recently used when entry 128 enters.
+    await _attachment_parts(builder=builder, message=messages[0][0])
+    await _attachment_parts(builder=builder, message=messages[128][0])
+
+    assert len(builder._attachment_cache) == 128
+    # Entry 0 stays cached (no second read); entry 1 was evicted and must re-read.
+    await _attachment_parts(builder=builder, message=messages[0][0])
+    await _attachment_parts(builder=builder, message=messages[1][0])
+    assert messages[0][1].read_count == 1
+    assert messages[1][1].read_count == 2
+
+
+async def test_get_turn_video_source_checks_current_then_replied_to_and_skips_failed_reads() -> (
+    None
+):
+    """Returns the first readable direct video clip, preferring current over replied-to."""
+
+    class _VideoAttachment(Attachment):
+        """Real `Attachment` subclass so `isinstance(source.handle, Attachment)` matches."""
+
+        def __init__(self, filename: str, payload: bytes, fail: bool = False) -> None:
+            self.id = hash((filename, payload))
+            self.filename = filename
+            self.content_type = "video/mp4"
+            self.size = len(payload)
+            self._payload = payload
+            self._fail = fail
+
+        async def read(self, use_cached: bool = False) -> bytes:
+            del use_cached
+            if self._fail:
+                raise RuntimeError("cdn down")
+            return self._payload
+
+    builder = _media_builder()
+    empty = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
+    assert (
+        await builder.get_turn_video_source(message=as_message(fake=empty), replied_to=None)
+        is None
+    )
+
+    replied = FakeMessage(content="old", author=FakeAuthor(user_id=2))
+    replied.attachments = [
+        cast("FakeAttachment", _VideoAttachment(filename="replied.mp4", payload=b"old-clip"))
+    ]
+    current = FakeMessage(content="edit", author=FakeAuthor(user_id=1))
+    current.attachments = [
+        cast("FakeAttachment", _VideoAttachment(filename="broken.mp4", payload=b"", fail=True))
+    ]
+    loaded = await builder.get_turn_video_source(
+        message=as_message(fake=current), replied_to=as_message(fake=replied)
+    )
+    assert loaded == LoadedMedia(data=b"old-clip", mime_type="video/mp4")
+
+    current.attachments.append(
+        cast("FakeAttachment", _VideoAttachment(filename="new.mp4", payload=b"new-clip"))
+    )
+    loaded = await builder.get_turn_video_source(
+        message=as_message(fake=current), replied_to=as_message(fake=replied)
+    )
+    assert loaded == LoadedMedia(data=b"new-clip", mime_type="video/mp4")

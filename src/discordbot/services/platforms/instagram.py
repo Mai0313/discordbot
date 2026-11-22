@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import logfire
 from pydantic import Field, BaseModel, computed_field
 
-from discordbot.utils.urls import URL_START_ANCHOR
+from discordbot.utils.urls import URL_START_ANCHOR, PostLink
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
 from discordbot.services.platforms.base import (
     LinkableComments,
@@ -67,6 +67,9 @@ def is_instagram_post_url(url: str) -> bool:
         url (str): A URL `INSTAGRAM_URL_RE` matched.
     """
     return bool(InstagramURL(raw_url=url).shortcode)
+
+
+INSTAGRAM_POST_LINK = PostLink(pattern=INSTAGRAM_URL_RE, accept=is_instagram_post_url)
 
 
 class InstagramURL(BaseModel):

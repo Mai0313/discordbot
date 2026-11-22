@@ -30,7 +30,7 @@ from discordbot.utils.discord_embeds import (
     clip_to_utf16_limit,
 )
 from discordbot.services.platforms.twitter import (
-    TWITTER_URL_RE,
+    TWITTER_POST_LINK,
     TwitterOutput,
     TwitterDownloader,
     TwitterConversation,
@@ -51,7 +51,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
 
     SOURCE = "twitter"
     PLATFORM = "Twitter"
-    URL_PATTERN = TWITTER_URL_RE
+    POST_LINK = TWITTER_POST_LINK
     PLACEHOLDER_TEXT = "-# 正在讀取 Twitter 貼文⋯"
     READ_TIMEOUT_SECONDS = TWITTER_EXPAND_TIMEOUT_SECONDS
     # Twitter blue rather than X black so the left embed bar stays visible on dark theme.

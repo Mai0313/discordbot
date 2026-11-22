@@ -29,11 +29,7 @@ async def test_the_post_names_both_the_handle_and_the_display_name(
     serve_conversation(monkeypatch, downloader=InstagramDownloader, post=instagram_post())
 
     blocks = await build_instagram_context_messages(
-        url=INSTAGRAM_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=INSTAGRAM_URL, media_client=None, deadline=link_build_deadline()
     )
 
     body = block_body(blocks=blocks)
@@ -60,11 +56,7 @@ async def test_the_comment_cap_bounds_what_rides_and_the_header_says_how_many(
     )
 
     blocks = await build_instagram_context_messages(
-        url=INSTAGRAM_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=INSTAGRAM_URL, media_client=None, deadline=link_build_deadline()
     )
 
     body = block_body(blocks=blocks)
@@ -85,18 +77,10 @@ async def test_both_separators_stop_short_of_promising_the_whole_comment_section
     accept_image_uploads(monkeypatch=monkeypatch)
 
     with_media = await build_instagram_context_messages(
-        url=INSTAGRAM_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=INSTAGRAM_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
     text_only = await build_instagram_context_messages(
-        url=INSTAGRAM_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=INSTAGRAM_URL, media_client=None, deadline=link_build_deadline()
     )
 
     caveat = "the first page rather than every reply"

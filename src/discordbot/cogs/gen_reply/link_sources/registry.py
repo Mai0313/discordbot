@@ -16,13 +16,13 @@ from google import genai
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.services.platforms.douyin import DOUYIN_URL_RE, is_douyin_post_url
-from discordbot.services.platforms.threads import THREADS_URL_RE
-from discordbot.services.platforms.twitter import TWITTER_URL_RE
+from discordbot.services.platforms.douyin import DOUYIN_POST_LINK
+from discordbot.services.platforms.threads import THREADS_POST_LINK
+from discordbot.services.platforms.twitter import TWITTER_POST_LINK
 from discordbot.cogs.gen_reply.link_sources import LinkContextSource
-from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
-from discordbot.services.platforms.facebook import FACEBOOK_URL_RE, is_facebook_post_url
-from discordbot.services.platforms.instagram import INSTAGRAM_URL_RE, is_instagram_post_url
+from discordbot.services.platforms.bilibili import BILIBILI_POST_LINK
+from discordbot.services.platforms.facebook import FACEBOOK_POST_LINK
+from discordbot.services.platforms.instagram import INSTAGRAM_POST_LINK
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_TIMEOUT_NOTICE,
     build_douyin_context_messages,
@@ -50,104 +50,56 @@ from discordbot.cogs.gen_reply.link_sources.instagram import (
 
 
 async def _build_threads_link_context(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Adapts the Threads builder to the registry signature (a straight pass-through)."""
     return await build_threads_context_messages(
-        url=url,
-        answer_model_is_gemini=answer_model_is_gemini,
-        gemini_client=gemini_client,
-        allow_media_ingest=allow_media_ingest,
-        deadline=deadline,
+        url=url, media_client=media_client, deadline=deadline
     )
 
 
 async def _build_douyin_link_context(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Adapts the Douyin builder to the registry signature (a straight pass-through)."""
     return await build_douyin_context_messages(
-        url=url,
-        answer_model_is_gemini=answer_model_is_gemini,
-        gemini_client=gemini_client,
-        allow_media_ingest=allow_media_ingest,
-        deadline=deadline,
+        url=url, media_client=media_client, deadline=deadline
     )
 
 
 async def _build_bilibili_link_context(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Adapts the Bilibili builder to the registry signature (a straight pass-through)."""
     return await build_bilibili_context_messages(
-        url=url,
-        answer_model_is_gemini=answer_model_is_gemini,
-        gemini_client=gemini_client,
-        allow_media_ingest=allow_media_ingest,
-        deadline=deadline,
+        url=url, media_client=media_client, deadline=deadline
     )
 
 
 async def _build_facebook_link_context(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Adapts the Facebook builder to the registry signature (a straight pass-through)."""
     return await build_facebook_context_messages(
-        url=url,
-        answer_model_is_gemini=answer_model_is_gemini,
-        gemini_client=gemini_client,
-        allow_media_ingest=allow_media_ingest,
-        deadline=deadline,
+        url=url, media_client=media_client, deadline=deadline
     )
 
 
 async def _build_twitter_link_context(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Adapts the Twitter builder to the registry signature (a straight pass-through)."""
     return await build_twitter_context_messages(
-        url=url,
-        answer_model_is_gemini=answer_model_is_gemini,
-        gemini_client=gemini_client,
-        allow_media_ingest=allow_media_ingest,
-        deadline=deadline,
+        url=url, media_client=media_client, deadline=deadline
     )
 
 
 async def _build_instagram_link_context(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Adapts the Instagram builder to the registry signature (a straight pass-through)."""
     return await build_instagram_context_messages(
-        url=url,
-        answer_model_is_gemini=answer_model_is_gemini,
-        gemini_client=gemini_client,
-        allow_media_ingest=allow_media_ingest,
-        deadline=deadline,
+        url=url, media_client=media_client, deadline=deadline
     )
 
 
@@ -167,11 +119,10 @@ def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
 
 
 # Sources with `search_replied_to_message=True` fetch comments/replies omitted by auto-expansion.
-# Host-level regexes pair with a `url_filter`; path-anchored ones (`twitter`, `bilibili`) do not.
 LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="threads",
-        url_pattern=THREADS_URL_RE,
+        post_link=THREADS_POST_LINK,
         search_replied_to_message=True,
         build=_build_threads_link_context,
         timeout_notice=THREADS_TIMEOUT_NOTICE,
@@ -179,8 +130,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="facebook",
-        url_pattern=FACEBOOK_URL_RE,
-        url_filter=is_facebook_post_url,
+        post_link=FACEBOOK_POST_LINK,
         search_replied_to_message=True,
         build=_build_facebook_link_context,
         timeout_notice=FACEBOOK_TIMEOUT_NOTICE,
@@ -188,8 +138,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="instagram",
-        url_pattern=INSTAGRAM_URL_RE,
-        url_filter=is_instagram_post_url,
+        post_link=INSTAGRAM_POST_LINK,
         search_replied_to_message=True,
         build=_build_instagram_link_context,
         timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,
@@ -197,7 +146,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="twitter",
-        url_pattern=TWITTER_URL_RE,
+        post_link=TWITTER_POST_LINK,
         search_replied_to_message=True,
         build=_build_twitter_link_context,
         timeout_notice=TWITTER_TIMEOUT_NOTICE,
@@ -205,15 +154,14 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="douyin",
-        url_pattern=DOUYIN_URL_RE,
-        url_filter=is_douyin_post_url,
+        post_link=DOUYIN_POST_LINK,
         build=_build_douyin_link_context,
         timeout_notice=DOUYIN_TIMEOUT_NOTICE,
         media_ingest_allowed=_douyin_media_ingest_allowed,
     ),
     LinkContextSource(
         name="bilibili",
-        url_pattern=BILIBILI_URL_RE,
+        post_link=BILIBILI_POST_LINK,
         build=_build_bilibili_link_context,
         timeout_notice=BILIBILI_TIMEOUT_NOTICE,
         media_ingest_allowed=_bilibili_media_ingest_allowed,

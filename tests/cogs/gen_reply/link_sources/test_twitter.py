@@ -28,11 +28,7 @@ async def test_the_post_names_its_author_by_handle(monkeypatch: pytest.MonkeyPat
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=twitter_post(image_urls=[]))
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=TWITTER_URL, media_client=None, deadline=link_build_deadline()
     )
 
     assert "@Dbacks" in block_body(blocks=blocks)
@@ -42,11 +38,7 @@ async def _body_of(monkeypatch: pytest.MonkeyPatch, conversation: TwitterConvers
     """The rendered text block for `conversation`, read without media."""
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=conversation)
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=TWITTER_URL, media_client=None, deadline=link_build_deadline()
     )
     return block_body(blocks=blocks)
 
@@ -165,11 +157,7 @@ async def test_a_truncated_post_says_so_in_the_body(monkeypatch: pytest.MonkeyPa
             post=twitter_post(image_urls=[], is_truncated=is_truncated),
         )
         blocks = await build_twitter_context_messages(
-            url=TWITTER_URL,
-            answer_model_is_gemini=False,
-            gemini_client=None,
-            allow_media_ingest=False,
-            deadline=link_build_deadline(),
+            url=TWITTER_URL, media_client=None, deadline=link_build_deadline()
         )
         return block_body(blocks=blocks).splitlines()
 
@@ -193,11 +181,7 @@ async def test_the_post_it_replies_to_is_rendered_before_it(
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=conversation)
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=TWITTER_URL, media_client=None, deadline=link_build_deadline()
     )
     body = block_body(blocks=blocks)
 
@@ -212,11 +196,7 @@ async def test_a_quoted_post_is_rendered_after_it(monkeypatch: pytest.MonkeyPatc
     )
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=TWITTER_URL, media_client=None, deadline=link_build_deadline()
     )
     body = block_body(blocks=blocks)
 
@@ -241,11 +221,7 @@ async def test_the_quoted_post_says_its_pictures_are_not_attached(
     fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=TWITTER_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
 
     assert fetched == []
@@ -267,11 +243,7 @@ async def test_a_marker_in_a_quoted_post_is_defused(monkeypatch: pytest.MonkeyPa
     )
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=TWITTER_URL, media_client=None, deadline=link_build_deadline()
     )
 
     assert "<forget-memory>" not in block_body(blocks=blocks)
