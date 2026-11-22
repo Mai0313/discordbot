@@ -12,7 +12,7 @@ Produce an evidence-backed diagnosis of recent bot replies from live feedback an
 
 A completed review delivers:
 
-- Overall and per-model approval rates (distinguishing all votes from asker-only votes) and downvote reason breakdown for the inspected window.
+- Overall and per-model approval rates (distinguishing all votes from asker-only votes), regeneration rates (`Regen`), pairwise head-to-head regeneration outcomes (`Pairwise`), and downvote reason breakdown for the inspected window.
 - Average reply length by `(model, effort)` on `reply_turn` so verbosity patterns are measured rather than guessed.
 - A classification of real defects into the four root-cause buckets below, with noisy votes separated out and explained.
 - Whether an active slow-model blind test (`SLOW_MODEL_BLIND_TEST_ENABLED`) is running and would be confounded by a prompt edit.
@@ -31,7 +31,9 @@ uv run feedback-report --down-only
 uv run feedback-report --inspect --down-only --context 5
 ```
 
-Add `--since YYYY-MM-DD`, `--model <name>`, `--route QA`, or `--reason <tag>` (`off_topic`, `inaccurate`, `tone`, `verbose`, `other`) when narrowing to a deployment window, model, or complaint category. `--inspect` and `--show <reply_message_id>` automatically pull preceding messages from `data/database/messages.db` (degrading cleanly when absent or for `/ask` turns).
+Add `--since YYYY-MM-DD`, `--model <name>`, `--route QA`, or `--reason <tag>` (`off_topic`, `inaccurate`, `tone`, `verbose`, `other`) when narrowing to a deployment window, model, or complaint category. `--inspect` and `--show <reply_message_id>` automatically pull preceding messages from `data/database/messages.db` (degrading cleanly when absent or for `/ask` turns) and display `regen_of` / `regenerated_to` chain links when present.
+
+Gateway and DM QA replies also carry a `🔄` regeneration button (`cogs/gen_reply/regen.py::ReplyRegenerator`): when the original asker (or bot owner) regenerates a reply and the replacement lands, the superseded turn receives an implicit downvote with `reason_tag='regen'` (preserving any earlier explicit `👎`) and the replacement records `regen_of_reply_message_id`. `uv run feedback-report` surfaces this through the overview `regens` row, the `Regen` rate column in `By Model`, and the `Pairwise` head-to-head table (`From -> To`, `Pairs`, `Explicit Win`, `Soft Accept`, `Both Failed`, `Accept Rate`). Note that `reason_tag='regen'` rows are excluded from `By Model` vote counts and approval rates (so regenerations are not double-counted beside `Regen`), yet they ARE included in `Recent Feedback`, `--down-only`, and `--inspect` outputs, and `--reason` accepts only the five explicit tags above so `regen` cannot be filtered via `--reason`.
 
 2. **Measure verbosity by `(model, effort)`** directly on `data/database/reply.db` (read-only):
 
@@ -63,6 +65,7 @@ Do not treat every thumbs-down as a defect. Separate out:
 - **Bystander / teasing clicks**: compare `--asker-only` against all votes; bystanders downvoting banter or another person's reply are weak signal unless the reason text names a real error.
 - **Playful or meta downvotes**: read the preceding `messages.db` context and the voter's relationship to the conversation; users sometimes downvote a roast they invited or click buttons to test the UI.
 - **Unreasoned one-offs**: a single thumbs-down with no reason tag on an otherwise accurate, well-scoped reply is low-confidence unless it fits a broader pattern.
+- **Implicit regeneration downvotes (`reason_tag='regen'`)**: `--down-only` and `--inspect` include these rows; follow `regenerated_to` via `--show <child_id>` to compare the original and replacement answers and see whether the retry resolved the complaint (`Explicit Win` / `Soft Accept`) or whether both failed (`Both Failed`).
 - **Transient upstream errors / retries**: check `attempts` and proxy fallbacks in `./data/logs/` before attributing an outage hiccup to the primary model or prompt.
 
 ## Root-Cause Classification
