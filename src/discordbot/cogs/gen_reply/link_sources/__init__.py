@@ -4,10 +4,9 @@
 message lookup via `search_replied_to_message`, builder adapter, media-ingest gate, and timeout
 notice). Sources are built only after the router selects them for QA.
 
-Also provides the shared block builders (`marker_block`, `link_context_blocks`,
-`post_context_blocks`), inline-marker defusing (`defuse_markers`), comment formatting
-(`comment_lines`), and the shared `read_post` / `build_post_context` flow. Instances live in
-`registry.py`.
+Also provides the shared block builders (`link_context_blocks`, `post_context_blocks`),
+inline-marker defusing (`defuse_markers`), comment formatting (`comment_lines`), and the shared
+`read_post` / `build_post_context` flow. Instances live in `registry.py`.
 """
 
 import re
@@ -26,7 +25,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
 from discordbot.utils.link_errors import LinkUnavailableError
-from discordbot.utils.llm_transcript import defuse_separator_fences
+from discordbot.utils.llm_transcript import marker_block, defuse_separator_fences
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
 from discordbot.services.platforms.base import (
     PlatformOutput,
@@ -38,20 +37,6 @@ from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_imag
 
 # Lowest preset: the model downsamples frames, so higher resolution only adds transfer latency.
 AI_INGEST_QUALITY: VideoQuality = "low"
-
-
-def marker_block(text: str) -> EasyInputMessageParam:
-    """Returns `text` wrapped as a `role="user"` input block marking a section boundary.
-
-    Uses `role="user"` rather than `role="system"` so markers stay in position; `====` fences
-    distinguish them from user text sanitized by `defuse_separator_fences`.
-
-    Args:
-        text (str): Separator or notice text to wrap.
-    """
-    return EasyInputMessageParam(
-        role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
-    )
 
 
 def link_context_blocks(

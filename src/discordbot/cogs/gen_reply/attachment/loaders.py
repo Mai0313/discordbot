@@ -8,8 +8,8 @@ from mimetypes import guess_type
 
 from nextcord import Attachment, StickerItem
 
-from discordbot.utils.images import get_image_data, shrink_image_bytes
 from discordbot.typings.media import LoadedMedia
+from discordbot.cogs.gen_reply.images import get_image_data, shrink_image_bytes
 
 
 async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedia:

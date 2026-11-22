@@ -100,7 +100,8 @@ async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
         )
     )
     assert streamer.reasoning == "aaabbb"
-    assert streamer._editor_task is None  # the cadence editor is always stopped in finally
+    assert streamer._editor is not None
+    assert not streamer._editor.is_running  # the cadence editor is always stopped in finally
 
 
 class _FailingStatusMessage:
@@ -140,7 +141,9 @@ async def test_a_status_message_that_can_no_longer_be_edited_stops_the_preview(
         name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
     }
 
-    await asyncio.wait_for(streamer._preview_editor(), timeout=5)
+    editor = streamer._preview_editor()
+    assert editor is not None
+    await asyncio.wait_for(editor.run(), timeout=5)
 
     assert status.attempts == 1
     assert [(name, fields) for name, found in records.items() for _, fields in found] == [
@@ -158,9 +161,11 @@ async def test_a_failing_preview_edit_is_logged_once_and_the_editor_keeps_going(
     )
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
-    streamer._ensure_editor_started()
+    editor = streamer._preview_editor()
+    assert editor is not None
+    editor.start()
     await asyncio.wait_for(status.seen.wait(), timeout=5)
-    await streamer._stop_editor()
+    await editor.stop()
 
     assert [fields["error_type"] for _, fields in warns] == ["HTTPException"]
     assert warns[0][1]["_exc_info"] is not None

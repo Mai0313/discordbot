@@ -15,6 +15,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.utils.llm_transcript import marker_block
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 from discordbot.services.platforms.douyin import (
@@ -28,11 +29,7 @@ from discordbot.services.platforms.douyin import (
     douyin_url_locks,
     douyin_fetch_semaphore,
 )
-from discordbot.cogs.gen_reply.link_sources import (
-    AI_INGEST_QUALITY,
-    marker_block,
-    link_context_blocks,
-)
+from discordbot.cogs.gen_reply.link_sources import AI_INGEST_QUALITY, link_context_blocks
 from discordbot.cogs.gen_reply.link_sources.image_ingest import (
     bounded_media_step,
     gather_media_parts,

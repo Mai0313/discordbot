@@ -2,6 +2,9 @@
 
 import re
 
+from openai.types.responses.response_input_param import EasyInputMessageParam
+from openai.types.responses.response_input_text_param import ResponseInputTextParam
+
 from discordbot.utils.model_pricing import get_token_rates
 
 # Strips bot usage footers (plus optional leading ✏️/🩹 memory notes from
@@ -89,3 +92,17 @@ def render_server_identity(server_name: str, server_id: int) -> str:
     """
     safe_name = " ".join(sanitize_identity(value=server_name).split())
     return f"{safe_name} [id: {server_id}]"
+
+
+def marker_block(text: str) -> EasyInputMessageParam:
+    """Returns `text` wrapped as a `role="user"` input block marking a section boundary.
+
+    Uses `role="user"` rather than `role="system"` so markers stay in position; `====` fences
+    distinguish them from user text sanitized by `defuse_separator_fences`.
+
+    Args:
+        text (str): Separator or notice text to wrap.
+    """
+    return EasyInputMessageParam(
+        role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
+    )

@@ -25,7 +25,7 @@ from discordbot.cogs.gen_reply.input import (
     MessageInputBuilder,
     shorten_earlier_reply,
 )
-from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, render_author_identity
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, marker_block, render_author_identity
 from discordbot.cogs.gen_reply.recall import (
     NO_STORED_MEMORY,
     UserMemory,
@@ -60,7 +60,6 @@ from discordbot.typings.context_budgets import (
 from discordbot.utils.channel_visibility import channel_is_public
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
-from discordbot.cogs.gen_reply.link_sources import marker_block
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -187,7 +186,7 @@ def latest_reply_ids(messages: list[Message], bot_user_id: int | None) -> set[in
     """
     own = {message.id: message for message in messages if message.author.id == bot_user_id}
     # The blank line put back in front: a footer that followed its answer in a message of its own
-    # lost the one it anchors on to Discord's trim (`ResponseStreamer._split_reply_for_discord`).
+    # lost the one it anchors on to Discord's trim (`chunking.split_reply_for_discord`).
     current = next(
         (
             message

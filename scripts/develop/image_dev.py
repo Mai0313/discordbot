@@ -8,8 +8,8 @@ from openai import OpenAI, AsyncOpenAI
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.images import to_data_uri
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.cogs.gen_reply.images import to_data_uri
 from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
 from discordbot.cogs.gen_reply.generation import ImageGenerator
 

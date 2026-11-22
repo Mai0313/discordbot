@@ -8,15 +8,15 @@ final report delivery (`agent.py` and `delivery.py`). Does not reuse `ResponseSt
 
 import time
 from typing import TYPE_CHECKING
-import asyncio
 from collections.abc import AsyncIterator
 
 import logfire
-from nextcord import Message, NotFound, Forbidden, AllowedMentions
+from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
+from discordbot.utils.preview_editor import CadencePreviewEditor
 
 if TYPE_CHECKING:
     from google.genai.interactions import InteractionSSEEvent
@@ -55,10 +55,8 @@ class ResearchProgressStreamer(BaseModel):
         default_factory=time.monotonic,
         description="Monotonic start time, for the elapsed timer in the header.",
     )
-    _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
-    _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
+    _editor: CadencePreviewEditor | None = PrivateAttr(default=None)
     _displayed: str = PrivateAttr(default="")
-    _preview_error_logged: bool = PrivateAttr(default=False)
 
     def _feed(self, event: "InteractionSSEEvent") -> None:
         """Appends `thought_summary` delta text from `event` and starts the editor if needed."""
@@ -70,7 +68,9 @@ class ResearchProgressStreamer(BaseModel):
         text = getattr(delta.content, "text", "") if delta.content is not None else ""
         if text:
             self.reasoning += text
-            self._ensure_editor_started()
+            editor = self._preview_editor()
+            if editor is not None:
+                editor.start()
 
     def _render_preview(self) -> str:
         """Returns the elapsed-time header and the newest `-#` reasoning lines that fit one message."""
@@ -101,71 +101,21 @@ class ResearchProgressStreamer(BaseModel):
         await self.status.edit(content=preview, allowed_mentions=AllowedMentions.none())
         self._displayed = preview
 
-    async def _preview_editor(self) -> None:
-        """Edits `status` on a fixed cadence until `_editor_stop` is set.
-
-        Stopped via event rather than cancellation so an in-flight edit finishes before
-        `deliver_report` reuses `status`.
-        """
-        message_id = self.status.id if self.status is not None else None
-        while True:
-            try:
-                await asyncio.wait_for(
-                    self._editor_stop.wait(), timeout=self.preview_interval_seconds
-                )
-            except TimeoutError:
-                try:
-                    await self._write_preview_snapshot()
-                except NotFound:
-                    logfire.info(
-                        "research status message deleted; stopping preview edits",
-                        message_id=message_id,
-                    )
-                    return
-                except Forbidden:
-                    logfire.warn(
-                        "research thread refused the preview edit; stopping preview edits",
-                        message_id=message_id,
-                    )
-                    return
-                except Exception as exc:
-                    # Broad: live preview is best-effort; log once since _displayed stays unchanged
-                    # across ticks.
-                    if not self._preview_error_logged:
-                        self._preview_error_logged = True
-                        logfire.warn(
-                            "research preview edit failed; continuing the run",
-                            message_id=message_id,
-                            error_type=type(exc).__name__,
-                            _exc_info=exc,
-                        )
-            else:
-                return
-
-    def _ensure_editor_started(self) -> None:
-        """Starts the cadence editor task once, only when there is a status message to edit."""
+    def _preview_editor(self) -> CadencePreviewEditor | None:
+        """Returns the cadence editor for `status`, or None when live preview is disabled."""
         if self.status is None:
-            return
-        if self._editor_task is None:
-            self._editor_task = asyncio.create_task(coro=self._preview_editor())
-
-    async def _stop_editor(self) -> None:
-        """Signals the editor to stop and waits out any in-flight Discord write."""
-        if self._editor_task is None:
-            return
-        self._editor_stop.set()
-        try:
-            await self._editor_task
-        except Exception as exc:
-            # Broad: keep preview best-effort while letting cancellation propagate.
-            logfire.warn(
-                "research preview editor ended with an error",
-                message_id=self.status.id if self.status is not None else None,
-                label=self.label,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
+            return None
+        if self._editor is None:
+            self._editor = CadencePreviewEditor(
+                write_snapshot=self._write_preview_snapshot,
+                interval_seconds=self.preview_interval_seconds,
+                message_id=self.status.id,
+                deleted_log="research status message deleted; stopping preview edits",
+                forbidden_log="research thread refused the preview edit; stopping preview edits",
+                error_log="research preview edit failed; continuing the run",
+                crash_log="research preview editor ended with an error",
             )
-        self._editor_task = None
+        return self._editor
 
     async def stream(self, events: AsyncIterator["InteractionSSEEvent"]) -> None:
         """Paints reasoning onto `status` until `events` ends, stopping the editor in `finally`.
@@ -173,10 +123,13 @@ class ResearchProgressStreamer(BaseModel):
         Args:
             events (AsyncIterator[InteractionSSEEvent]): Stream of interaction SSE events.
         """
-        self._ensure_editor_started()
+        editor = self._preview_editor()
+        if editor is not None:
+            editor.start()
         try:
             async for event in events:
                 self._feed(event=event)
         finally:
-            await self._stop_editor()
+            if self._editor is not None:
+                await self._editor.stop()
         logfire.debug("research progress stream ended", reasoning_chars=len(self.reasoning))

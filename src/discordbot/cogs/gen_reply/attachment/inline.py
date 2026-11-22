@@ -10,9 +10,9 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import LoadedMedia, RenderedAttachment
 from discordbot.utils.llm_transcript import defuse_separator_fences
+from discordbot.cogs.gen_reply.images import to_data_uri
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 from discordbot.cogs.gen_reply.attachment.base import (
     FileBytesLoader,

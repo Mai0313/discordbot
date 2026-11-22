@@ -13,7 +13,12 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.typings.media import LoadedMedia, RenderedPart, RenderedAttachment
+from discordbot.typings.media import (
+    VOICE_REPLY_FILENAME,
+    LoadedMedia,
+    RenderedPart,
+    RenderedAttachment,
+)
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.mentions import bot_mention_pattern
 from discordbot.utils.model_pricing import get_supported_modalities
@@ -24,7 +29,6 @@ from discordbot.utils.llm_transcript import (
     defuse_separator_fences,
 )
 from discordbot.typings.context_budgets import HISTORY_EARLIER_REPLY_MAX_CHARS
-from discordbot.cogs.gen_reply.generation import VOICE_REPLY_FILENAME
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,

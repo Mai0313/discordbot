@@ -11,7 +11,8 @@ from google.genai import types
 from google.genai.errors import APIError
 
 from discordbot.utils.llm_errors import extract_friendly_error, is_retryable_llm_error
-from discordbot.cogs.gen_reply.streaming import AnswerToolUse, stream_answer_with_retry
+from discordbot.cogs.gen_reply.tool_use import AnswerToolUse
+from discordbot.cogs.gen_reply.streaming import stream_answer_with_retry
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     adapt_interactions_stream,

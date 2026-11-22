@@ -23,7 +23,6 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.llm import output_text_or_empty
-from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.timeouts import (
@@ -34,6 +33,7 @@ from discordbot.typings.timeouts import (
     VIDEO_RENDER_TIMEOUT_SECONDS,
     PROMPT_REFINE_TIMEOUT_SECONDS,
 )
+from discordbot.cogs.gen_reply.images import to_data_uri
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_until_active
 
@@ -46,44 +46,12 @@ TTS_VOICE = "Despina"
 TTS_STYLE_DIRECTIVE = "Using a natural 18-year-old woman's voice that fits the following text:"
 TTS_SPEED = 1.5
 
-# Shared with input.py so history rendering skips the bot's own spoken clip.
-VOICE_REPLY_FILENAME = "reply.wav"
-
-INLINE_IMAGE_FILENAME = "generated.png"
-
-INLINE_VIDEO_FILENAME = "generated.mp4"
-
 # Sent as Lyria's system_instruction (in English per Lyria's prompt surface).
 MUSIC_STYLE_DIRECTIVE = (
     "Compose in a Japanese anime / J-pop style with Japanese-language vocals by default; if the "
     "description clearly asks for a different genre, style, or lyric language, or for an "
     "instrumental, follow the description instead."
 )
-
-
-def music_filename(mime_type: str | None) -> str:
-    """Returns the Discord attachment filename for a generated music clip from `mime_type`.
-
-    Args:
-        mime_type (str | None): Audio MIME type reported by the model, or None.
-    """
-    # Discord's inline audio player keys off the file extension; map non-obvious MIME subtypes
-    # (audio/mpeg, audio/l16) explicitly and default unmapped values to .mp3.
-    audio_mime_extensions = {
-        "audio/mp3": ".mp3",
-        "audio/mpeg": ".mp3",
-        "audio/wav": ".wav",
-        "audio/l16": ".wav",
-        "audio/m4a": ".m4a",
-        "audio/aac": ".m4a",
-        "audio/ogg": ".ogg",
-        "audio/opus": ".ogg",
-        "audio/flac": ".flac",
-        "audio/aiff": ".aiff",
-    }
-    extension = audio_mime_extensions.get((mime_type or "").lower(), ".mp3")
-    return f"music{extension}"
-
 
 _MENTION_RE = re.compile(r"<(?:@[!&]?|#)(\d+)>")
 _CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")

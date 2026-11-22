@@ -35,7 +35,7 @@ from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_content_param import ResponseInputContentParam
 
-from discordbot.cogs.gen_reply.streaming import AnswerToolUse
+from discordbot.cogs.gen_reply.tool_use import AnswerToolUse
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_file_param import ResponseInputFileParam

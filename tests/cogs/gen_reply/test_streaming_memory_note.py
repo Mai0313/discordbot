@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from discordbot.typings.memory import MemoryWriteSummary
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
+from discordbot.utils.media_delivery import MediaItem, MediaPlan, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.answer import memory_report_for
-from discordbot.cogs.gen_reply.streaming import MEMORY_PENDING_NOTE, DISCORD_MESSAGE_LIMIT
+from discordbot.cogs.gen_reply.streaming import MEMORY_PENDING_NOTE
 from discordbot.cogs.gen_reply.references import message_link_texts, authored_link_texts
+from discordbot.cogs.gen_reply.inline_media import InlineMediaAttacher
 
 from tests.helpers.casting import as_message
 from tests.helpers.reply_fakes import (
@@ -98,11 +101,14 @@ async def test_the_outcome_note_replaces_the_pending_one() -> None:
     assert content.count("-# ✏️") == 1
 
 
-async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
+async def test_the_pending_note_survives_a_hosted_media_splice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A hosted-URL line lands between the note and the footer, so the note is no longer last.
 
-    `_finalize_media_edit` rebuilds the content as body + hosted-URL line + footer, which puts
-    the pending note mid-string. Removing it off the end would then leave both notes on screen.
+    `InlineMediaAttacher.apply_media_edit` rebuilds the content as body + hosted-URL line + footer,
+    which puts the pending note mid-string. Removing it off the end would then leave both notes on
+    screen.
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
@@ -115,11 +121,18 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
             ]
         ),
     )
-    await streamer._finalize_media_edit(
-        reply=as_message(fake=message.replies[0]),
-        files=[],
-        hosted_urls=["https://media.example/x.mp4"],
-    )
+
+    async def fake_collect(self: InlineMediaAttacher) -> list[MediaItem]:
+        del self
+        return [MediaItem(source=b"mp4", filename="x.mp4")]
+
+    async def fake_plan(self: MediaDeliveryPlanner, **_kwargs: object) -> MediaPlan:
+        del self
+        return MediaPlan(hosted_urls=["https://media.example/x.mp4"])
+
+    monkeypatch.setattr(InlineMediaAttacher, "_collect_generated_media", fake_collect)
+    monkeypatch.setattr(MediaDeliveryPlanner, "plan", fake_plan)
+    await streamer._attach_generated_media()
 
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
