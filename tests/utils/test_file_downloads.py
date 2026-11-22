@@ -1,8 +1,9 @@
 """Tests for the shared primitive that streams one remote file to disk.
 
-What `stream_to_file` promises a caller is pinned here once: the size cap, the partial file it
-removes, and the directory it never re-creates. A caller's own tests keep only what it decides on
-top: what is retried, and what a failure is called.
+What `stream_to_file` promises a caller is pinned here once: the size cap, empty-body handling,
+connection closure, the partial file it removes, and the directory it never re-creates. A
+caller's own tests keep only what it decides on top: what is retried, and what a failure is
+called.
 """
 
 import shutil
@@ -13,8 +14,8 @@ from collections.abc import Iterator
 import pytest
 import requests
 
-from discordbot.services.platforms import file_downloads
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError, stream_to_file
+from discordbot.utils import file_downloads
+from discordbot.utils.file_downloads import DownloadTooLargeError, stream_to_file
 
 _URL = "https://cdn.test/clip.mp4"
 
@@ -30,6 +31,15 @@ class _Response:
         self.headers = headers or {}
         self.stall = stall
         self.body_reads = 0
+        self.closed = False
+
+    def __enter__(self) -> Self:
+        """Enters the response context."""
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        """Leaves the response context, releasing the connection."""
+        self.close()
 
     def raise_for_status(self) -> None:
         """Accepts the transfer."""
@@ -43,7 +53,8 @@ class _Response:
             raise requests.ConnectionError("read timed out")
 
     def close(self) -> None:
-        """Releases the connection, as a refusal on the header does."""
+        """Releases the connection."""
+        self.closed = True
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, response: _Response) -> list[str]:
@@ -70,25 +81,29 @@ def _serve(monkeypatch: pytest.MonkeyPatch, response: _Response) -> list[str]:
     return requested
 
 
-def _stream(filepath: Path, max_bytes: int | None = None) -> Path:
-    """Streams `_URL` into `filepath` under the given cap."""
+def _stream(filepath: Path, max_bytes: int | None = None, allow_empty: bool = True) -> Path:
+    """Streams `_URL` into `filepath` under the given cap and empty-body policy."""
     return stream_to_file(
-        url=_URL, filepath=filepath, headers={}, timeout=1.0, max_bytes=max_bytes
+        url=_URL,
+        filepath=filepath,
+        headers={},
+        timeout=1.0,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
     )
 
 
-def test_a_file_under_the_cap_is_written_whole(
+def test_a_file_under_the_cap_is_written_whole_and_closes_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A file inside the cap downloads exactly as it does with no cap at all."""
-    _serve(
-        monkeypatch=monkeypatch,
-        response=_Response(body=b"video-bytes", headers={"Content-Length": "11"}),
-    )
+    """A file inside the cap downloads whole and releases its streamed HTTP response."""
+    response = _Response(body=b"video-bytes", headers={"Content-Length": "11"})
+    _serve(monkeypatch=monkeypatch, response=response)
 
     written = _stream(filepath=tmp_path / "clip.mp4", max_bytes=1024)
 
     assert written.read_bytes() == b"video-bytes"
+    assert response.closed
 
 
 def test_an_oversize_content_length_is_refused_before_the_body_is_read(
@@ -96,7 +111,8 @@ def test_an_oversize_content_length_is_refused_before_the_body_is_read(
 ) -> None:
     """The guard exists to spend a couple of seconds instead of a whole time budget.
 
-    So the raise alone proves nothing: the body must never have been read, and no file opened.
+    So the raise alone proves nothing: the body must never have been read, no file opened, and
+    the response closed.
     """
     response = _Response(body=b"x" * 100, headers={"Content-Length": "100"})
     _serve(monkeypatch=monkeypatch, response=response)
@@ -105,19 +121,51 @@ def test_an_oversize_content_length_is_refused_before_the_body_is_read(
         _stream(filepath=tmp_path / "clip.mp4", max_bytes=10)
 
     assert response.body_reads == 0
+    assert response.closed
     assert list(tmp_path.iterdir()) == []
+
+
+def test_non_decimal_content_length_falls_through_to_stream_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unicode digits like `'²'` pass `.isdigit()` but not `int()`; `.isdecimal()` skips them."""
+    _serve(
+        monkeypatch=monkeypatch,
+        response=_Response(body=b"ok", headers={"Content-Length": "\u00b2"}),
+    )
+
+    written = _stream(filepath=tmp_path / "clip.mp4", max_bytes=10)
+
+    assert written.read_bytes() == b"ok"
 
 
 def test_an_oversize_stream_without_a_content_length_is_still_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A missing or lying Content-Length is caught mid-stream, and the partial file is removed."""
-    _serve(monkeypatch=monkeypatch, response=_Response(body=b"x" * 100))
+    response = _Response(body=b"x" * 100)
+    _serve(monkeypatch=monkeypatch, response=response)
 
     with pytest.raises(DownloadTooLargeError):
         _stream(filepath=tmp_path / "clip.mp4", max_bytes=10)
 
+    assert response.closed
     assert list(tmp_path.iterdir()) == []
+
+
+def test_empty_body_behavior_follows_allow_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Empty bodies succeed when `allow_empty=True` and raise `ValueError` with cleanup when False."""
+    _serve(monkeypatch=monkeypatch, response=_Response(body=b""))
+
+    allowed = _stream(filepath=tmp_path / "allowed.mp4", max_bytes=100, allow_empty=True)
+    assert allowed.read_bytes() == b""
+
+    refused = tmp_path / "refused.mp4"
+    with pytest.raises(ValueError, match="empty"):
+        _stream(filepath=refused, max_bytes=100, allow_empty=False)
+    assert not refused.exists()
 
 
 def test_a_transfer_dying_mid_body_leaves_no_partial_file(
@@ -128,11 +176,13 @@ def test_a_transfer_dying_mid_body_leaves_no_partial_file(
     The transfer dies after a chunk was written, so a partial file really was on disk; one that
     failed before the first chunk would pass whether or not the cleanup exists.
     """
-    _serve(monkeypatch=monkeypatch, response=_Response(body=b"half-a-video", stall=True))
+    response = _Response(body=b"half-a-video", stall=True)
+    _serve(monkeypatch=monkeypatch, response=response)
 
     with pytest.raises(requests.ConnectionError):
         _stream(filepath=tmp_path / "clip.mp4")
 
+    assert response.closed
     assert list(tmp_path.iterdir()) == []
 
 

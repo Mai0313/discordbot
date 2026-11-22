@@ -17,11 +17,11 @@ from yt_dlp.utils import DownloadError
 
 from discordbot.utils.expansion_cog import VIDEO_HINT, omitted_videos_note
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME
+from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.ytdlp import DownloadResult, DownloadStoppedError
 from discordbot.services.platforms.facebook import FacebookOutput
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError
 
 from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
@@ -343,7 +343,7 @@ async def test_direct_timeout_error_propagates_out_of_video_download_loop(
 ) -> None:
     """A `TimeoutError` from the downloader is never swallowed as a per-clip error."""
     clips = ["https://www.facebook.com/attn/videos/1/", "https://www.facebook.com/attn/videos/2/"]
-    calls = _stub_video_downloads(
+    _stub_video_downloads(
         monkeypatch=monkeypatch, outcomes={clips[0]: TimeoutError("socket timed out")}
     )
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
@@ -352,10 +352,88 @@ async def test_direct_timeout_error_propagates_out_of_video_download_loop(
         cog_type=FacebookCogs, outcome=facebook_post(image_urls=[], video_urls=clips)
     )
 
-    assert {call["url"] for call in calls} == {clips[0]}
     assert _media_uploads(message=message) == {}
     assert VIDEO_HINT.format(url=clips[0]) in (
         expansion_embeds(message=message)[0].description or ""
     )
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
     assert any("timed out" in msg for msg, _ in warns)
+
+
+async def test_multi_clip_facebook_videos_download_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two clips rendezvous on a barrier, proving `_download_videos` runs them concurrently."""
+    clips = ["https://www.facebook.com/attn/videos/a/", "https://www.facebook.com/attn/videos/b/"]
+    barrier = threading.Barrier(parties=2, timeout=2.0)
+
+    class _ConcurrentDownloader:
+        def __init__(self, output_folder: str) -> None:
+            self.output_folder = output_folder
+
+        def download(self, url: str, **kwargs: object) -> DownloadResult:
+            del kwargs
+            barrier.wait()
+            out_file = Path(self.output_folder) / "clip.mp4"
+            out_file.write_bytes(url.encode())
+            return DownloadResult(filenames=[out_file])
+
+    monkeypatch.setattr(
+        target=FacebookCogs, name="video_downloader_factory", value=_ConcurrentDownloader
+    )
+
+    message, _ = await expand(
+        cog_type=FacebookCogs, outcome=facebook_post(image_urls=[], video_urls=clips)
+    )
+
+    uploads = _media_uploads(message=message)
+    assert uploads == {"video_0.mp4": clips[0].encode(), "video_1.mp4": clips[1].encode()}
+
+
+async def test_multi_clip_timeout_lets_slow_sibling_finish_stop_join_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timeout cancellation must not double-cancel a sibling while it is joining its worker thread."""
+    clips = [
+        "https://www.facebook.com/attn/videos/fast/",
+        "https://www.facebook.com/attn/videos/slow/",
+    ]
+    slow_joined = threading.Event()
+    slow_dir_existed_on_exit = False
+
+    class _SlowSiblingDownloader:
+        def __init__(self, output_folder: str) -> None:
+            self.output_folder = output_folder
+
+        def download(
+            self, url: str, stop_signal: threading.Event | None = None, **kwargs: object
+        ) -> DownloadResult:
+            nonlocal slow_dir_existed_on_exit
+            del kwargs
+            assert stop_signal is not None
+            if not stop_signal.wait(timeout=5.0):
+                raise AssertionError("stop_signal was never set")
+            if url == clips[1]:
+                # Stay alive briefly past clip 0's fast exit so a double-cancel would abort our join.
+                threading.Event().wait(timeout=0.08)
+                slow_dir_existed_on_exit = Path(self.output_folder).exists()
+                slow_joined.set()
+            raise DownloadStoppedError("stopped by caller")
+
+    monkeypatch.setattr(
+        target=FacebookCogs, name="video_downloader_factory", value=_SlowSiblingDownloader
+    )
+    cog, _ = stub_conversation_cog(
+        cog_type=FacebookCogs, outcome=facebook_post(image_urls=[], video_urls=clips)
+    )
+    cog.__dict__["VIDEO_DOWNLOAD_TIMEOUT_SECONDS"] = 0.05
+    message = guild_message(content=FACEBOOK_URL)
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert slow_joined.is_set()
+    assert slow_dir_existed_on_exit
+    assert _media_uploads(message=message) == {}
+    assert VIDEO_HINT.format(url=clips[0]) in (
+        expansion_embeds(message=message)[0].description or ""
+    )

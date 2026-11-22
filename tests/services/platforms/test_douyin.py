@@ -135,6 +135,14 @@ class _FakeResponse:
         """Yields the canned body."""
         yield self._body
 
+    def __enter__(self) -> Self:
+        """Matches the context manager API of `requests.Response`."""
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        """Closes the response on context exit."""
+        self.close()
+
     def close(self) -> None:
         """Matches the Response API used by the redirect probe."""
 

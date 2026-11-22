@@ -38,8 +38,8 @@ from discordbot.utils.link_errors import (
     is_retryable_fetch_failure,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
+from discordbot.utils.file_downloads import DownloadTooLargeError, stream_to_file
 from discordbot.services.platforms.base import PlatformDownloader
-from discordbot.services.platforms.file_downloads import DownloadTooLargeError, stream_to_file
 
 # Whole-label host anchor; ASCII path ending on [A-Za-z0-9_/-] stops before CJK share punctuation.
 DOUYIN_URL_RE = re.compile(

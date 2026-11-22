@@ -331,14 +331,19 @@ def card_videos_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Autouse because video-downloading conversation cogs fetch `video_urls` before delivery,
     which would otherwise reach past loopback; a test about video delivery stubs
-    `fetch_card_video` or `FacebookCogs.video_downloader_factory` itself.
+    `stream_to_file` on `expansion_cog` or `FacebookCogs.video_downloader_factory` itself.
     """
 
-    def unreachable(
-        url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int
+    def unreachable(  # noqa: PLR0913 -- mirrors stream_to_file signature
+        url: str,
+        filepath: Path,
+        headers: dict[str, str],
+        timeout: float,
+        max_bytes: int | None = None,
+        allow_empty: bool = True,
     ) -> Path:
         """Refuses the download as an unreachable CDN does."""
-        del filepath, headers, timeout, max_bytes
+        del filepath, headers, timeout, max_bytes, allow_empty
         raise requests.ConnectionError(f"card video downloads are refused in tests: {url}")
 
     class _UnreachableVideoDownloader:
@@ -351,7 +356,7 @@ def card_videos_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
             del kwargs
             raise requests.ConnectionError(f"card video downloads are refused in tests: {url}")
 
-    monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_video", unreachable)
+    monkeypatch.setattr("discordbot.utils.expansion_cog.stream_to_file", unreachable)
     monkeypatch.setattr(
         "discordbot.cogs.parse_facebook.cog.FacebookCogs.video_downloader_factory",
         _UnreachableVideoDownloader,

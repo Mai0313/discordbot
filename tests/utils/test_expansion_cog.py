@@ -9,7 +9,7 @@ line, and where its links point.
 from typing import Any, Self
 from pathlib import Path
 from datetime import UTC, datetime
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 
 import pytest
 from nextcord import Embed
@@ -20,10 +20,8 @@ from discordbot.utils.expansion_cog import (
     TRUNCATION_NOTICE,
     POST_CARD_MAX_IMAGES,
     ExpansionDelivery,
-    VideoTooLargeError,
     ConversationExpansionCog,
     fetch_card_image,
-    fetch_card_video,
     omitted_images_note,
     omitted_videos_note,
 )
@@ -786,104 +784,3 @@ async def test_download_videos_defaults_to_off_on_base_conversation_cog(
     assert VIDEO_HINT.partition("{url}")[0] in (
         expansion_embeds(message=message)[0].description or ""
     )
-
-
-def _install_fake_video_session(
-    monkeypatch: pytest.MonkeyPatch, chunks: list[bytes], headers: dict[str, str] | None = None
-) -> list[bool]:
-    """Replaces `requests.Session` for `fetch_card_video` tests, recording whether body was read."""
-    read_body: list[bool] = []
-
-    class _Response:
-        def __init__(self) -> None:
-            self.headers = headers or {}
-
-        def __enter__(self) -> Self:
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            del exc
-
-        def raise_for_status(self) -> None:
-            pass
-
-        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-            del chunk_size
-            read_body.append(True)
-            yield from chunks
-
-    class _Session:
-        def __enter__(self) -> Self:
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            del exc
-
-        def get(self, **kwargs: object) -> _Response:
-            del kwargs
-            return _Response()
-
-    monkeypatch.setattr("discordbot.utils.expansion_cog.requests.Session", _Session)
-    return read_body
-
-
-def test_fetch_card_video_rejects_oversize_content_length_before_writing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A `Content-Length` over `max_bytes` fails before opening the file or reading any chunk."""
-    read_body = _install_fake_video_session(
-        monkeypatch=monkeypatch, chunks=[b"x" * 200], headers={"Content-Length": "200"}
-    )
-    target = tmp_path / "video_0.mp4"
-
-    with pytest.raises(VideoTooLargeError):
-        fetch_card_video(
-            url="https://cdn.test/big.mp4", filepath=target, headers={}, timeout=5.0, max_bytes=100
-        )
-
-    assert read_body == []
-    assert not target.exists()
-
-
-def test_fetch_card_video_rejects_chunked_overflow_and_unlinks_partial_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """When `Content-Length` is absent, streaming stops past `max_bytes` and removes the partial."""
-    _install_fake_video_session(monkeypatch=monkeypatch, chunks=[b"a" * 60, b"b" * 60])
-    target = tmp_path / "video_0.mp4"
-
-    with pytest.raises(VideoTooLargeError):
-        fetch_card_video(
-            url="https://cdn.test/chunked.mp4",
-            filepath=target,
-            headers={},
-            timeout=5.0,
-            max_bytes=100,
-        )
-
-    assert not target.exists()
-
-
-def test_fetch_card_video_rejects_empty_body_and_writes_valid_stream(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An empty response raises `ValueError` with no leftover file; valid bytes write cleanly."""
-    _install_fake_video_session(monkeypatch=monkeypatch, chunks=[b""])
-    empty_target = tmp_path / "empty.mp4"
-    with pytest.raises(ValueError, match="empty"):
-        fetch_card_video(
-            url="https://cdn.test/empty.mp4",
-            filepath=empty_target,
-            headers={},
-            timeout=5.0,
-            max_bytes=100,
-        )
-    assert not empty_target.exists()
-
-    _install_fake_video_session(monkeypatch=monkeypatch, chunks=[b"mp4-", b"data"])
-    ok_target = tmp_path / "ok.mp4"
-    written = fetch_card_video(
-        url="https://cdn.test/ok.mp4", filepath=ok_target, headers={}, timeout=5.0, max_bytes=100
-    )
-    assert written == ok_target
-    assert ok_target.read_bytes() == b"mp4-data"

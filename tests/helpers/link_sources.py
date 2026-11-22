@@ -27,7 +27,8 @@ from discordbot.typings.timeouts import (
     LINK_MEDIA_TIMEOUT_SECONDS,
     LINK_MEDIA_DEGRADE_MARGIN_SECONDS,
 )
-from discordbot.utils.expansion_cog import VideoTooLargeError, ConversationExpansionCog
+from discordbot.utils.expansion_cog import ConversationExpansionCog
+from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.base import PlatformDownloader, PlatformConversation
 from discordbot.services.platforms.douyin import DouyinDownload, DouyinMetadata
@@ -301,8 +302,13 @@ def serve_card_videos(
     """
     calls: list[dict[str, Any]] = []
 
-    def fetch(
-        url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int
+    def fetch(  # noqa: PLR0913 -- mirrors stream_to_file signature
+        url: str,
+        filepath: Path,
+        headers: dict[str, str],
+        timeout: float,
+        max_bytes: int | None = None,
+        allow_empty: bool = True,
     ) -> Path:
         """Writes a stub MP4 into `filepath`, or raises on refused/oversize."""
         calls.append({
@@ -311,17 +317,18 @@ def serve_card_videos(
             "timeout": timeout,
             "max_bytes": max_bytes,
             "filepath": filepath,
+            "allow_empty": allow_empty,
         })
         if url in refused:
             raise requests.ConnectionError(f"refused: {url}")
         target_size = (sizes or {}).get(url, size)
-        if url in oversize or target_size > max_bytes:
-            raise VideoTooLargeError(f"{url} exceeds {max_bytes} bytes")
+        if url in oversize or (max_bytes is not None and target_size > max_bytes):
+            raise DownloadTooLargeError(f"{url} exceeds {max_bytes} bytes")
         payload = url.encode().ljust(target_size, b"\0")[:target_size]
         filepath.write_bytes(payload)
         return filepath
 
-    monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_video", fetch)
+    monkeypatch.setattr("discordbot.utils.expansion_cog.stream_to_file", fetch)
     return calls
 
 

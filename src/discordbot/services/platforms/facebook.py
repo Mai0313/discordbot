@@ -9,7 +9,8 @@ import re
 import base64
 from typing import Any
 from functools import cached_property
-from urllib.parse import parse_qs, urlparse, urlunparse
+from urllib.parse import ParseResult, parse_qs, urlparse, urlencode, urlunparse
+from collections.abc import Iterator
 
 import logfire
 from pydantic import Field, BaseModel, computed_field
@@ -37,7 +38,7 @@ from discordbot.services.platforms.page_json import (
 
 # `fb.watch` is excluded: logged-out redirects land on `/<page>/videos/<id>` with no post payload.
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com"})
-_CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
+_CANONICAL_FACEBOOK_HOST = "www.facebook.com"
 
 # Host-anchored (`is_facebook_post_url` filters non-posts); excludes `/<page>/videos/` (no
 # logged-out payload), with an ASCII tail ending on `[A-Za-z0-9_-]` to stop at CJK punctuation.
@@ -88,6 +89,11 @@ class FacebookURL(BaseModel):
 
     raw_url: str = Field(..., description="Original Facebook URL provided by the caller")
 
+    @cached_property
+    def _parsed(self) -> ParseResult:
+        """Parsed form of `raw_url`, cached across URL properties."""
+        return urlparse(url=self.raw_url)
+
     @computed_field
     @cached_property
     def clean_url(self) -> str:
@@ -95,32 +101,30 @@ class FacebookURL(BaseModel):
 
         Strips per-share tracking parameters (`rdid`, `share_url`), making the URL safe to publish.
         """
-        parsed = urlparse(self.raw_url)
-        kept: list[str] = []
-        query = parse_qs(parsed.query)
-        for name in (*_POST_ID_PARAMS, *_OWNER_ID_PARAMS, _COMMENT_ID_PARAM):
-            values = query.get(name)
-            if values and values[0]:
-                kept.append(f"{name}={values[0]}")
+        parsed = self._parsed
+        query = parse_qs(qs=parsed.query)
+        kept = [
+            (name, values[0])
+            for name in (*_POST_ID_PARAMS, *_OWNER_ID_PARAMS, _COMMENT_ID_PARAM)
+            if (values := query.get(name)) and values[0]
+        ]
         host = (parsed.hostname or "").lower()
-        origin = (
-            _CANONICAL_FACEBOOK_ORIGIN
-            if any(host_matches_domain(host=host, domain=d) for d in _FACEBOOK_DOMAINS)
-            else f"{parsed.scheme}://{parsed.netloc}"
-        )
+        is_facebook = any(host_matches_domain(host=host, domain=d) for d in _FACEBOOK_DOMAINS)
+        scheme = "https" if is_facebook else parsed.scheme
+        netloc = _CANONICAL_FACEBOOK_HOST if is_facebook else parsed.netloc
         path = parsed.path if parsed.path == "/" else parsed.path.rstrip("/")
-        return urlunparse(("", "", f"{origin}{path}", "", "&".join(kept), ""))
+        return urlunparse((scheme, netloc, path, "", urlencode(query=kept), ""))
 
     @computed_field
     @cached_property
     def post_id(self) -> str:
         """Returns the numeric post id the URL names, or an empty string for a share or `pfbid` link."""
-        parsed = urlparse(self.raw_url)
+        parsed = self._parsed
         for pattern in (_GROUP_POST_PATH_RE, _NUMERIC_POST_PATH_RE, _PAGE_POST_PATH_RE):
             match = pattern.match(string=parsed.path)
             if match:
                 return match.group("post")
-        query = parse_qs(parsed.query)
+        query = parse_qs(qs=parsed.query)
         for name in _POST_ID_PARAMS:
             values = query.get(name)
             if values and values[0].isdigit():
@@ -131,31 +135,32 @@ class FacebookURL(BaseModel):
     @cached_property
     def group_id(self) -> str:
         """Returns the group id the post sits in, or an empty string for a page or profile post."""
-        match = _GROUP_POST_PATH_RE.match(string=urlparse(self.raw_url).path)
+        path = self._parsed.path
+        match = _GROUP_POST_PATH_RE.match(string=path)
         if match:
             return match.group("group")
-        feed = re.match(pattern=r"^/groups/(?P<group>[^/?]+)", string=urlparse(self.raw_url).path)
+        feed = re.match(pattern=r"^/groups/(?P<group>[^/?]+)", string=path)
         return feed.group("group") if feed else ""
 
     @computed_field
     @cached_property
     def comment_id(self) -> str:
         """Returns the comment id the URL singles out, or an empty string when it names no comment."""
-        values = parse_qs(urlparse(self.raw_url).query).get(_COMMENT_ID_PARAM)
+        values = parse_qs(qs=self._parsed.query).get(_COMMENT_ID_PARAM)
         return values[0] if values and values[0].isdigit() else ""
 
     @computed_field
     @cached_property
     def is_share_link(self) -> bool:
         """Returns whether the URL is the post share form, which names its post only through the redirect."""
-        return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
+        return bool(_SHARE_PATH_RE.match(string=self._parsed.path))
 
     @computed_field
     @cached_property
     def is_pfbid_link(self) -> bool:
         """Returns whether the URL uses a `pfbid` post id (excludes group `multi_permalinks`)."""
-        parsed = urlparse(self.raw_url)
-        values = parse_qs(parsed.query).get("story_fbid")
+        parsed = self._parsed
+        values = parse_qs(qs=parsed.query).get("story_fbid")
         return bool(values and values[0].startswith("pfbid")) or bool(
             re.match(pattern=r"^/[^/]+/posts/pfbid[0-9A-Za-z]+", string=parsed.path)
         )
@@ -245,27 +250,17 @@ class FacebookDownloader(PlatformDownloader):
         """Returns `(image_urls, video_urls)` extracted from `story`'s attachments."""
         image_urls: list[str] = []
         video_urls: list[str] = []
-        for attachment in story.get("attachments") or []:
-            style = deep_get(attachment, "styles", "attachment")
-            nodes = deep_get(style, "all_subattachments", "nodes")
-            single = deep_get(style, "media")
-            items: list[JsonValue] = list(nodes) if isinstance(nodes, list) else []
-            if single is not None:
-                items.append({"media": single})
-            for item in items:
-                media = item.get("media") if isinstance(item, dict) else None
-                if not isinstance(media, dict):
-                    continue
-                if media.get("__typename") == "Video":
-                    permalink = media.get("permalink_url") or media.get("url")
-                    if isinstance(permalink, str) and permalink:
-                        video_urls.append(permalink)
-                    continue
-                # Prefer full-resolution `viewer_image` over feed thumbnail `image`.
-                rendition = media.get("viewer_image") or media.get("image") or {}
-                uri = rendition.get("uri") if isinstance(rendition, dict) else None
-                if isinstance(uri, str) and uri and uri not in image_urls:
-                    image_urls.append(uri)
+        for media in _iter_attachment_media(story=story):
+            if media.get("__typename") == "Video":
+                permalink = str_of(value=media.get("permalink_url") or media.get("url"))
+                if permalink:
+                    video_urls.append(permalink)
+                continue
+            # Prefer full-resolution `viewer_image` over feed thumbnail `image`.
+            rendition = media.get("viewer_image") or media.get("image") or {}
+            uri = str_of(value=rendition.get("uri")) if isinstance(rendition, dict) else ""
+            if uri and uri not in image_urls:
+                image_urls.append(uri)
         return image_urls, video_urls
 
     @staticmethod
@@ -389,6 +384,22 @@ class FacebookDownloader(PlatformDownloader):
         )
 
 
+def _iter_attachment_media(story: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Yields each attachment media dict from `story`'s subattachments and top-level media."""
+    for attachment in story.get("attachments") or []:
+        style = deep_get(attachment, "styles", "attachment")
+        nodes = deep_get(style, "all_subattachments", "nodes")
+        sub_media = [
+            media
+            for item in (nodes if isinstance(nodes, list) else ())
+            if isinstance(item, dict) and isinstance(media := item.get("media"), dict)
+        ]
+        yield from sub_media
+        single = deep_get(style, "media")
+        if isinstance(single, dict):
+            yield single
+
+
 def _comment_total(story: dict[str, Any]) -> int:
     """Returns the post's total comment count across Facebook's feedback paths."""
     for path in (
@@ -397,7 +408,7 @@ def _comment_total(story: dict[str, Any]) -> int:
         ("comet_sections", "feedback", "story", "feedback_context", "total_comment_count"),
     ):
         value = deep_get(story, *path)
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool):
             return value
     return 0
 

@@ -32,6 +32,7 @@ from discordbot.services.platforms.base import (
     PlatformConversation,
     thread_branches,
 )
+from discordbot.services.platforms.page_json import time_of
 
 # Path-anchored to `/status/<digits>` (no post filter needed); handle is untrusted and rebuilt
 # from the payload, and the ASCII query tail stops before CJK punctuation.
@@ -73,7 +74,7 @@ def _time_of(value: str) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+        return datetime.fromisoformat(value).astimezone(UTC)
     except ValueError:
         return None
 
@@ -439,11 +440,7 @@ def _fx_output(status: _FxStatus) -> TwitterOutput:
         video_poster_urls=posters,
         like_count=status.likes,
         comment_count=status.replies,
-        taken_at=(
-            datetime.fromtimestamp(status.created_timestamp, tz=UTC)
-            if status.created_timestamp
-            else None
-        ),
+        taken_at=time_of(value=status.created_timestamp),
     )
 
 
@@ -484,47 +481,53 @@ class TwitterDownloader(PlatformDownloader):
         description="Whether the replies are read; without them FxTwitter is asked only for a reply, a quote or a long post",
     )
 
-    def _fetch_tweet(self, status_id: str) -> dict[str, Any]:
-        """Returns the syndication JSON payload for `status_id`."""
+    @staticmethod
+    def _fetch_json(  # noqa: PLR0913 -- url, timeout, source label, post id, plus optional params/error_url
+        url: str,
+        timeout: float,
+        source: str,
+        status_id: str,
+        params: dict[str, str] | None = None,
+        error_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetches a JSON object from `url`, classifying transport failures and validating the shape."""
         try:
-            response = requests.get(
-                _SYNDICATION_URL,
-                params={"id": status_id, "lang": "en", "token": _REQUEST_TOKEN},
-                headers=_REQUEST_HEADERS,
-                timeout=TWITTER_PAGE_TIMEOUT_SECONDS,
+            response = (
+                requests.get(url=url, params=params, headers=_REQUEST_HEADERS, timeout=timeout)
+                if params is not None
+                else requests.get(url=url, headers=_REQUEST_HEADERS, timeout=timeout)
             )
             response.raise_for_status()
         except requests.RequestException as error:
-            raise link_fetch_error(
-                error=error, url=f"{_SYNDICATION_URL}?id={status_id}"
-            ) from error
+            raise link_fetch_error(error=error, url=error_url or url) from error
         # Decode outside `RequestException`: `requests.JSONDecodeError` subclasses it.
         try:
             payload = response.json()
         except ValueError as error:
-            raise RuntimeError(f"Twitter served a non-JSON body for post {status_id}") from error
+            raise RuntimeError(f"{source} served a non-JSON body for post {status_id}") from error
         if not isinstance(payload, dict):
-            raise RuntimeError(f"Twitter served an unexpected body for post {status_id}")
+            raise RuntimeError(f"{source} served an unexpected body for post {status_id}")
         return payload
+
+    def _fetch_tweet(self, status_id: str) -> dict[str, Any]:
+        """Returns the syndication JSON payload for `status_id`."""
+        return self._fetch_json(
+            url=_SYNDICATION_URL,
+            params={"id": status_id, "lang": "en", "token": _REQUEST_TOKEN},
+            timeout=TWITTER_PAGE_TIMEOUT_SECONDS,
+            source="Twitter",
+            status_id=status_id,
+            error_url=f"{_SYNDICATION_URL}?id={status_id}",
+        )
 
     def _fetch_conversation(self, status_id: str) -> dict[str, Any]:
         """Returns FxTwitter's `/2/conversation` JSON payload for `status_id`."""
-        url = _FXTWITTER_CONVERSATION_URL.format(status_id=status_id)
-        try:
-            response = requests.get(
-                url, headers=_REQUEST_HEADERS, timeout=FXTWITTER_CONVERSATION_TIMEOUT_SECONDS
-            )
-            response.raise_for_status()
-        except requests.RequestException as error:
-            raise link_fetch_error(error=error, url=url) from error
-        # Decode outside `RequestException`: `requests.JSONDecodeError` subclasses it.
-        try:
-            payload = response.json()
-        except ValueError as error:
-            raise RuntimeError(f"FxTwitter served a non-JSON body for post {status_id}") from error
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"FxTwitter served an unexpected body for post {status_id}")
-        return payload
+        return self._fetch_json(
+            url=_FXTWITTER_CONVERSATION_URL.format(status_id=status_id),
+            timeout=FXTWITTER_CONVERSATION_TIMEOUT_SECONDS,
+            source="FxTwitter",
+            status_id=status_id,
+        )
 
     def _read_conversation(
         self, status_id: str
@@ -550,9 +553,9 @@ class TwitterDownloader(PlatformDownloader):
                 _exc_info=error,
             )
             return [], []
-        replies = {status.id: status for status in _fx_statuses(conversation.replies)}
+        replies = {status.id: status for status in _fx_statuses(items=conversation.replies)}
         return (
-            _fx_statuses(conversation.thread),
+            _fx_statuses(items=conversation.thread),
             thread_branches(
                 comments={
                     reply_id: _fx_output(status=reply) for reply_id, reply in replies.items()
