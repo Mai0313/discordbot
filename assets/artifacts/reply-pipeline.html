@@ -1,4 +1,4 @@
-<!-- This file is the source: edit it, republish it over its published page when you can, and never copy that page back over it. Published at https://claude.ai/artifact/MGvh1gtT4V64Enbs3tGpnn -->
+<!-- This file is the source for the published artifact page (not the behavioral source of truth over src/): edit it, republish it over its published page when you can, and never copy that page back over it. Published at https://claude.ai/artifact/MGvh1gtT4V64Enbs3tGpnn -->
 <title>破貓回覆引擎</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -764,7 +764,7 @@ footer.end{
     <h3>送進答案模型的東西，順序是固定的</h3>
     <ol class="flow">
       <li><span class="st">能力說明文件</span><span class="sd">放最前面。同一個部署的每則回覆它都完全一樣，擺前面對前綴快取最划算。它照部署的開關與金鑰改寫：關掉的語音、音樂、影片，看不了的 YouTube、抖音、Bilibili，以及停用的深度研究，都不會被寫成做得到；全部開著又有金鑰時就是原文。這份英文文件是唯一描述「這隻 bot 會什麼」的地方，取代了被刪掉的 <code>/help</code>。只有 QA 帶它——交付一張生成圖時不是在回答「你會什麼」。</span></li>
-      <li><span class="st">頻道歷史</span><span class="sd">三個軸同時限制，誰先撞到算誰：最多 100 則、8000 字、每則額外算 40 字的開銷。從最新往回留，切在訊息邊界上。附件另有第三軸，最多 10 個真實檔案，超出的訊息退回純標記——一旦有一則被拒，比它更舊的全部一起拒，模型看到的檔案永遠是一段連到現在為止不中斷的區間。附件以內嵌送出時再多一道位元組預算（約 48 MB），超過的較舊訊息同樣退回標記；單一附件超過 20 MiB 則在模態閘就不內嵌。</span></li>
+      <li><span class="st">頻道歷史</span><span class="sd">三個軸同時限制，誰先撞到算誰：最多 50 則、4000 字、每則額外算 40 字的開銷。從最新往回留，切在訊息邊界上。附件另有第三軸，最多 5 個真實檔案，超出的訊息退回純標記——一旦有一則被拒，比它更舊的全部一起拒，模型看到的檔案永遠是一段連到現在為止不中斷的區間。附件以內嵌送出時再多一道位元組預算（約 24 MB），超過的較舊訊息同樣退回標記；單一附件超過 20 MiB 則在模態閘就不內嵌。</span></li>
       <li><span class="st">伺服器記憶</span><span class="sd">每個公會一份，直接讀檔沒有選取階段。私訊和 <code>/ask</code> 沒有。</span></li>
       <li><span class="st">使用者記憶</span><span class="sd">程式端固定解析：發話者、被回覆訊息的作者、當前訊息裡明確提及的人，再加上公開頻道裡分類挑中的第三人。目標 8 人：程式端確定的人不受限，挑中的人只補剩下的名額。</span></li>
       <li><span class="st">語氣偏好</span><span class="sd">只讀發話者一個人的，每一則回覆都無條件帶上，不做選取。它會覆蓋預設的嘴賤人格——但只管「怎麼講」，不管「講什麼」。</span></li>
@@ -807,11 +807,12 @@ footer.end{
       <dt>重抽與刪舊順序</dt><dd>僅限原發問者（或 bot 擁有者）點擊，同一則回覆以鎖序列化防連點。重抽時會重取原始發問訊息、保留原思考強度並強制走 QA 路線（仍執行分類以保留 YouTube、連結貼文與第三人記憶判定）。只有在新回覆順利落地並寫入 <code>reply.db</code> 後，才會對舊回合補記一筆 <code>regen</code> 隱含倒讚（若使用者原本已點過明確 👎 則保留原原因不覆寫）並由後往前刪除舊分段訊息；任何失敗都會保留舊回覆與評分原狀。</dd>
     </div>
 
-    <h3>唯一有 bot 端重試的呼叫</h3>
+    <h3>有 bot 端重試的呼叫</h3>
     <div class="note warn">
-      <span class="tag">為什麼只有這一支</span>
-      <p>LiteLLM 的 router 會對<strong>非串流</strong>路徑套用重試與 fallback，所以那些一次性呼叫失敗會自動降級。串流的 Responses 在 LiteLLM 1.103 以前完全沒有 fallback，provider 5xx 會原封不動打到客戶端——而那正好是使用者親眼看著它失敗的那一輪。實測某 12 小時窗口內 82 則回覆有 46 則死在這裡，同期一次性呼叫零失敗。1.104 起串流也會 fallback，不管是還沒吐字就 503，還是吐到一半才收到錯誤幀（備援模型會接著寫下去）。bot 端重試現在補的是 fallback 鏈蓋不到的部分：整條鏈一起失敗的時候，以及 YouTube 那條直連 Google、沒有 proxy 的串流。</p>
-      <p>所以答案串流最多開 <strong>3 次</strong>（重試 2 次），每次間隔 5 秒加最多 1 秒抖動。重試不是無聲的：來源訊息上會多一個 🔁，已經存在的回覆會被換成「Retrying… (n/3)」的字樣，次數用完而畫面上只剩這行字時再把它撤掉。在 <code>/ask</code> 上，三次嘗試全部綁在 token 剩下的時間裡，到點就不再試，改說明 Discord 視窗關了。</p>
+      <span class="tag">哪些路徑會由 bot 端重試</span>
+      <p>LiteLLM 的 router 會對<strong>非串流</strong>路徑套用重試與 fallback，所以多數一次性呼叫失敗會自動降級；唯一例外是圖像生成（<code>ImageGenerator</code>），回傳空結果時會自動重試一次才報錯。串流路徑則由 <code>stream_answer_with_retry</code> 承接：除了 QA 答案串流，IMAGE / VIDEO 交付後的人格化回話也走同一套串流重試。</p>
+      <p>串流的 Responses 在 LiteLLM 1.103 以前完全沒有 fallback，provider 5xx 會原封不動打到客戶端——而那正好是使用者親眼看著它失敗的那一輪。實測某 12 小時窗口內 82 則回覆有 46 則死在這裡，同期一次性呼叫零失敗。1.104 起串流也會 fallback，不管是還沒吐字就 503，還是吐到一半才收到錯誤幀（備援模型會接著寫下去）。bot 端重試現在補的是 fallback 鏈蓋不到的部分：整條鏈一起失敗的時候，以及 YouTube 那條直連 Google、沒有 proxy 的串流。</p>
+      <p>所以串流回覆最多開 <strong>3 次</strong>（重試 2 次），每次間隔 5 秒加最多 1 秒抖動。重試不是無聲的：來源訊息上會多一個 🔁，已經存在的回覆會被換成「Retrying… (n/3)」的字樣，次數用完而畫面上只剩這行字時再把它撤掉。在 <code>/ask</code> 上，三次嘗試全部綁在 token 剩下的時間裡，到點就不再試，改說明 Discord 視窗關了。</p>
       <p>判斷可不可以重試是看結構不是看訊息文字。中途失敗常常是一個裸的 API 錯誤，狀態碼是<strong>字串</strong> <code>"503"</code> 藏在 body 裡，只讀 <code>status_code</code> 什麼都抓不到。YouTube 那個後端丟的是 google-genai 另一套錯誤類別，判斷時一併認得，所以暫時性狀態碼與斷線一樣會重試；不重試的是它串流裡的 in-band 錯誤事件，因為照文件那裡的 code 是一個 URI 而不是狀態碼。</p>
     </div>
   </section>
@@ -940,7 +941,7 @@ footer.end{
     <ol class="flow">
       <li><span class="st">搶佔名額</span><span class="sd">一個人同時只能有一份研究在跑。已經有了就回覆現有討論串的連結。</span></li>
       <li class="px"><span class="st">生一個討論串標題</span><span class="sd">triage 模型，走 proxy，15 秒上限。失敗就退回用 brief 的第一行。</span></li>
-      <li><span class="st">開討論串、寫進資料庫、討論串掛的那則訊息上 🦕</span><span class="sd">🦕 這個表情刻意跟一般 QA 的表情不同，一眼就看得出這是研究而不是回覆。</span></li>
+      <li><span class="st">開討論串、寫進資料庫、討論串掛的那則訊息上 🔬</span><span class="sd">預設為 🔬（可用 <code>EMOJI_RESEARCH</code> 覆寫為自訂表情），刻意跟一般 QA 的表情不同，一眼就看得出這是研究而不是回覆。</span></li>
       <li class="dx"><span class="st">跑 agent</span><span class="sd"><code>antigravity-preview-09-2026</code>，推理模型指定為 <code>gemini-4-hydrogen</code>，開著網頁搜尋與 URL 讀取（<strong>刻意不開程式執行</strong>：agent 的 bash/python 呼叫會以原始文字漏進報告裡）。用 <code>background=true</code> + <code>store=true</code> + <code>stream=true</code>，所以它的思路會即時畫在討論串開頭那則狀態訊息上。</span></li>
       <li class="dx"><span class="st">串流斷了就重新接上</span><span class="sd">SDK 會在 agent 還在工作時把長連線關掉，所以會帶著續傳 token 重新掛回去。</span></li>
       <li class="dx"><span class="st">最終結果一律另外取一次</span><span class="sd">完成事件<strong>刻意不帶報告本體</strong>，串流出來的只是即時視圖。所以永遠用一次終態查詢把報告拿回來，順便把「串流死了但 agent 沒死」的情況也一起收尾。</span></li>
@@ -1101,7 +1102,7 @@ footer.end{
 
     <div class="note">
       <span class="tag">唯一不靠標記的寫入 · /memory server catchup</span>
-      <p>有人在公開頻道下 <code>/memory server catchup</code> 時，bot 讀這個頻道從上一則「跟上進度」結果訊息之後的對話（最多 100 則，略過 bot），由記憶模型<strong>自己提出</strong>關於社群的筆記，再交給同一個背景審查，通過的才寫進伺服器記憶。這裡沒有答案模型在場，所以它是「答案模型自己標」唯一的例外，而且只寫伺服器記憶，從不寫任何人的個人記憶。</p>
+      <p>有人在公開頻道下 <code>/memory server catchup</code> 時，bot 讀這個頻道從上一則「跟上進度」結果訊息之後的對話（最多 50 則，略過 bot），由記憶模型<strong>自己提出</strong>關於社群的筆記，再交給同一個背景審查，通過的才寫進伺服器記憶。這裡沒有答案模型在場，所以它是「答案模型自己標」唯一的例外，而且只寫伺服器記憶，從不寫任何人的個人記憶。</p>
       <p>它不走上面那條記憶排隊：那條隊伍會把同一伺服器的兩輪併成只剩較新的逐字稿，也會把審查失敗報成「沒記到」。這裡的結果訊息是下一次從哪裡開始讀的節點，失敗必須分得出來，所以失敗的那則不算節點，下次會重讀。同一個伺服器 10 分鐘冷卻，整段必須在互動 token 失效前回報，否則公開的開始訊息就收不回來。</p>
     </div>
   </section>
@@ -1165,7 +1166,7 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 15 -->
   <section id="s15">
     <div class="s-head"><span class="s-num">15</span><h2>使用者在畫面上會看到的訊號</h2></div>
-    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。</p>
+    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。狀態鏈、連結來源、YouTube（▶️）、研究（🔬）與語音（🗣️）預設為 Unicode，部署時可透過 <code>EMOJI_*</code> 環境變數覆寫為自訂應用程式表情；其餘提示標記（🔁、音樂 🎵、⏱️、⚠️、❓）為固定 Unicode。</p>
 
     <h4>狀態鏈（會被下一個取代）</h4>
     <div class="signals">
@@ -1183,12 +1184,12 @@ footer.end{
       <div class="sig"><span class="ic">📘</span><span><span class="sn">Facebook</span><span class="sx">讀過那則 Facebook 貼文了</span></span></div>
       <div class="sig"><span class="ic">📷</span><span><span class="sn">Instagram</span><span class="sx">讀過那則 Instagram 貼文了</span></span></div>
       <div class="sig"><span class="ic">🐦</span><span><span class="sn">Twitter</span><span class="sx">讀過那則 Twitter 貼文了</span></span></div>
-      <div class="sig"><span class="ic">🎶</span><span><span class="sn">抖音</span><span class="sx">讀過那則抖音貼文了</span></span></div>
+      <div class="sig"><span class="ic">🎵</span><span><span class="sn">抖音</span><span class="sx">讀過那則抖音貼文了</span></span></div>
       <div class="sig"><span class="ic">📺</span><span><span class="sn">Bilibili</span><span class="sx">讀過那支 Bilibili 影片了</span></span></div>
       <div class="sig"><span class="ic">▶️</span><span><span class="sn">YouTube</span><span class="sx">這則回覆是真的看過影片</span></span></div>
-      <div class="sig"><span class="ic">🦕</span><span><span class="sn">恐龍</span><span class="sx">開了一條深度研究討論串</span></span></div>
+      <div class="sig"><span class="ic">🔬</span><span><span class="sn">研究</span><span class="sx">開了一條深度研究討論串</span></span></div>
       <div class="sig"><span class="ic">🔁</span><span><span class="sn">重試</span><span class="sx">這則回覆花了不只一次嘗試</span></span></div>
-      <div class="sig"><span class="ic">🗣️🎵</span><span><span class="sn">生成中</span><span class="sx">語音、圖、片、音樂正在算</span></span></div>
+      <div class="sig"><span class="ic">🗣️🖼️🎬🎵</span><span><span class="sn">生成中</span><span class="sx">語音、圖、片、音樂正在算</span></span></div>
       <div class="sig"><span class="ic">⏱️</span><span><span class="sn">碼表</span><span class="sx">語音算太久，被放掉了（其他媒體逾時是 ⚠️）；<code>/ask</code> 視窗到期時還沒做好的任何媒體也標這個</span></span></div>
       <div class="sig"><span class="ic">⚠️</span><span><span class="sn">警告</span><span class="sx">語音以外的附加媒體沒生出來，逾時也算（<code>/ask</code> 視窗到期除外，那是 ⏱️）</span></span></div>
       <div class="sig"><span class="ic">❓</span><span><span class="sn">問號</span><span class="sx">訊息是空的，只回了一個 <code>?</code></span></span></div>
