@@ -28,7 +28,7 @@ class LoggingConfig(BaseSettings):
 
     log_level: Literal["trace", "debug", "info", "notice", "warn", "warning", "error", "fatal"] = (
         Field(
-            "debug",
+            default="debug",
             description="Lowest severity written to the console and to ./data/logs. Defaults to debug so the log file keeps the full trace; raise it to info on a deployment that only wants outcomes.",
             examples=["debug", "info"],
             validation_alias=AliasChoices("LOG_LEVEL"),

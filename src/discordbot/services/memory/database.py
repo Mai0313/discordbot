@@ -173,7 +173,7 @@ def new_token() -> int:
 async def _reserve_token_block(engine: AsyncEngine) -> int:
     """Atomically reserves a token range and returns its exclusive lower bound."""
     async with open_reply_session(engine=engine) as session:
-        await session.execute(statement=text("BEGIN IMMEDIATE"))
+        await session.execute(statement=text(text="BEGIN IMMEDIATE"))
         clock_high = await session.scalar(
             statement=select(MemoryTokenClockRow.high_watermark).where(MemoryTokenClockRow.id == 1)
         )
@@ -322,7 +322,7 @@ async def clear_job(scope: str, flavor: MemoryFlavor, token: int) -> bool:
     token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
-        await session.execute(statement=text("BEGIN IMMEDIATE"))
+        await session.execute(statement=text(text="BEGIN IMMEDIATE"))
         result = await session.execute(
             statement=select(MemoryJobRow.status, MemoryJobRow.token).where(
                 MemoryJobRow.scope == scope

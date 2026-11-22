@@ -179,7 +179,7 @@ def _history_record(row: BlackjackRoundResult) -> BlackjackHistoryRecord:
         bet=row.bet,
         outcome=cast("SettleOutcome", row.outcome),
         delta=row.delta,
-        payload=BlackjackHistoryPayload.model_validate_json(row.payload_json),
+        payload=BlackjackHistoryPayload.model_validate_json(json_data=row.payload_json),
         created_at=_as_taipei(dt=row.created_at),
     )
 
@@ -198,6 +198,6 @@ async def fetch_recent_blackjack_rounds(
             statement=select(BlackjackRoundResult)
             .where(BlackjackRoundResult.user_id == user_id)
             .order_by(BlackjackRoundResult.created_at.desc(), BlackjackRoundResult.id.desc())
-            .limit(limit)
+            .limit(limit=limit)
         )
         return tuple(_history_record(row=row) for row in result.scalars())

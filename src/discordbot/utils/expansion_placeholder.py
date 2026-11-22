@@ -6,7 +6,7 @@ deleted on failure; rows left by a restart are resumed on `on_ready` via
 `resume_expansion_placeholders`.
 """
 
-from typing import Final, Protocol, runtime_checkable
+from typing import Final, Protocol
 from datetime import datetime
 
 import logfire
@@ -16,7 +16,7 @@ from sqlalchemy import Text, Index, Integer, DateTime, delete, select
 from nextcord.ext import commands
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 
-from discordbot.typings.emojis import DONE_EMOJI, FAILED_EMOJI
+from discordbot.typings.emojis import DONE_EMOJI, FAILED_EMOJI, LinkSourceName
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
@@ -65,23 +65,12 @@ class PendingExpansionRow(Base):
 class PendingExpansion(BaseModel):
     """One interrupted expansion, read back for the restart sweep."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     message_id: int = Field(..., description="The placeholder message to deliver onto or remove.")
     channel_id: int = Field(..., description="The channel holding both messages.")
     source_message_id: int = Field(..., description="The message carrying the link.")
     url: str = Field(..., description="The URL the interrupted expansion was reading.")
-
-
-@runtime_checkable
-class MessageFetcher(Protocol):
-    """Channel protocol supporting `fetch_message`, excluding non-messageable channels."""
-
-    async def fetch_message(self, id: int, /) -> Message:  # noqa: A002 -- nextcord's own name
-        """Returns one message read back off the channel.
-
-        Args:
-            id (int): Discord message id to fetch.
-        """
-        ...
 
 
 class ExpansionRetry(Protocol):
@@ -102,13 +91,13 @@ class ExpansionRetry(Protocol):
 
 
 async def _record_pending(
-    placeholder: Message, source_message: Message, source: str, url: str
+    placeholder: Message, source_message: Message, source: LinkSourceName, url: str
 ) -> None:
     """Persists a posted placeholder so a restart can find it again, best-effort."""
     try:
         async with open_reply_session() as session, session.begin():
             session.add(
-                PendingExpansionRow(
+                instance=PendingExpansionRow(
                     message_id=placeholder.id,
                     channel_id=placeholder.channel.id,
                     source_message_id=source_message.id,
@@ -132,7 +121,9 @@ async def _forget_pending(message_id: int) -> None:
     try:
         async with open_reply_session() as session, session.begin():
             await session.execute(
-                delete(PendingExpansionRow).where(PendingExpansionRow.message_id == message_id)
+                statement=delete(PendingExpansionRow).where(
+                    PendingExpansionRow.message_id == message_id
+                )
             )
     # Broad on purpose: a row that outlives its placeholder costs one resume that finds the
     # message already gone and drops the row then, which is a path this already has.
@@ -145,11 +136,13 @@ async def _forget_pending(message_id: int) -> None:
         )
 
 
-async def _load_pending(source: str, created_before: datetime) -> list[PendingExpansion]:
+async def _load_pending(
+    source: LinkSourceName, created_before: datetime
+) -> list[PendingExpansion]:
     """Reads one cog's expansions recorded before `created_before`, oldest first."""
     async with open_reply_session() as session:
         rows = await session.scalars(
-            select(PendingExpansionRow)
+            statement=select(PendingExpansionRow)
             .where(
                 PendingExpansionRow.source == source,
                 # SQLite keeps the Taipei wall clock without its offset.
@@ -157,15 +150,7 @@ async def _load_pending(source: str, created_before: datetime) -> list[PendingEx
             )
             .order_by(PendingExpansionRow.created_at, PendingExpansionRow.message_id)
         )
-        return [
-            PendingExpansion(
-                message_id=row.message_id,
-                channel_id=row.channel_id,
-                source_message_id=row.source_message_id,
-                url=row.url,
-            )
-            for row in rows
-        ]
+        return [PendingExpansion.model_validate(obj=row) for row in rows]
 
 
 class ExpansionPlaceholder(BaseModel):
@@ -230,7 +215,7 @@ class ExpansionPlaceholder(BaseModel):
 
 
 async def send_expansion_placeholder(
-    message: Message, text: str, source: str, url: str
+    message: Message, text: str, source: LinkSourceName, url: str
 ) -> ExpansionPlaceholder | None:
     """Returns a posted placeholder replying to `message`, or None if refused or target is gone.
 
@@ -239,7 +224,7 @@ async def send_expansion_placeholder(
     Args:
         message (Message): Source message carrying the link.
         text (str): Temporary placeholder line.
-        source (str): Owning cog key from `typings/emojis.py::LINK_SOURCE_EMOJIS`.
+        source (LinkSourceName): Owning cog key from `typings/emojis.py::LINK_SOURCE_EMOJIS`.
         url (str): Post URL being expanded, stored for restart resumption.
     """
     try:
@@ -267,21 +252,14 @@ async def send_expansion_placeholder(
 
 async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: ExpansionRetry) -> None:
     """Re-runs one interrupted expansion or cleans up its placeholder if channel/source is gone."""
-    # Guild channels are cached by on_ready; fall back to fetch for DMs.
-    try:
-        channel = bot.get_channel(record.channel_id) or await bot.fetch_channel(record.channel_id)
-    # Drop row only on NotFound/Forbidden; transient errors keep it for the next restart.
-    except (NotFound, Forbidden):
-        await _forget_pending(message_id=record.message_id)
-        return
-    if not isinstance(channel, MessageFetcher):
-        await _forget_pending(message_id=record.message_id)
-        return
+    from discordbot.utils.message_cleanup import resolve_message_channel  # noqa: PLC0415 -- deferred so alembic -n reply does not import cleanup.db metadata
 
     try:
+        channel = await resolve_message_channel(bot=bot, channel_id=record.channel_id)
         placeholder_message = await channel.fetch_message(record.message_id)
-    # Placeholder already gone or channel unreadable; nothing left to clean up.
-    except (NotFound, Forbidden):
+    # Drop row only on NotFound/Forbidden/non-fetchable channel; transient errors keep it for
+    # the next restart.
+    except (NotFound, Forbidden, TypeError):
         await _forget_pending(message_id=record.message_id)
         return
     placeholder = ExpansionPlaceholder(message=placeholder_message)
@@ -316,13 +294,13 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
 
 
 async def resume_expansion_placeholders(
-    bot: commands.Bot, source: str, expand: ExpansionRetry, created_before: datetime
+    bot: commands.Bot, source: LinkSourceName, expand: ExpansionRetry, created_before: datetime
 ) -> None:
     """Resumes pending expansions for `source` recorded before `created_before`, sequentially.
 
     Args:
         bot (commands.Bot): Bot used to resolve channels and messages.
-        source (str): Cog key matching `PendingExpansionRow.source`.
+        source (LinkSourceName): Cog key matching `PendingExpansionRow.source`.
         expand (ExpansionRetry): Cog `_expand` callback.
         created_before (datetime): Process start timestamp; skips rows created by this process.
     """
@@ -345,8 +323,9 @@ async def resume_expansion_placeholders(
     for record in records:
         try:
             await _resume_one(bot=bot, record=record, expand=expand)
-        # Broad on purpose: one unresolvable channel or message must not strand the rest of
-        # the backlog, and the row survives for the next restart to try again.
+        # Broad on purpose: one failing resume must not strand the rest of the backlog; a
+        # transient channel or message fetch error leaves the row for the next restart, while
+        # an `expand` failure has already discarded its placeholder and row in `_resume_one`.
         except Exception as error:
             logfire.warn(
                 "Could not resume an interrupted expansion",

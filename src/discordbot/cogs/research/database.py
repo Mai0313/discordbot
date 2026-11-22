@@ -11,7 +11,7 @@ from typing import Literal
 from datetime import datetime
 from contextlib import AbstractAsyncContextManager
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import String, Integer, DateTime, insert, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,6 +67,8 @@ class ResearchSessionRow(Base):
 class PersistentResearchSession(BaseModel):
     """A research session row read back from `reply.db` for restart resume."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     thread_id: int = Field(..., description="Discord thread ID; primary key.")
     owner_id: int = Field(..., description="Discord user ID that launched the research.")
     agent: str = Field(..., description="The Gemini agent string currently running this session.")
@@ -78,16 +80,6 @@ class PersistentResearchSession(BaseModel):
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
     """Returns an async session context manager on the shared `reply.db` engine."""
     return open_reply_session()
-
-
-def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:
-    """Maps an ORM row to its pydantic snapshot."""
-    return PersistentResearchSession(
-        thread_id=row.thread_id,
-        owner_id=row.owner_id,
-        agent=row.agent,
-        interaction_id=row.interaction_id,
-    )
 
 
 async def insert_session(  # noqa: PLR0913 -- one row's columns are all per-call inputs
@@ -179,7 +171,9 @@ async def list_resumable(created_before: datetime) -> list[PersistentResearchSes
                 ResearchSessionRow.created_at < _as_taipei(dt=created_before),
             )
         )
-        return [_row_to_model(row=row) for row in result.scalars().all()]
+        return [
+            PersistentResearchSession.model_validate(obj=row) for row in result.scalars().all()
+        ]
 
 
 async def active_thread_for_owner(owner_id: int) -> int | None:

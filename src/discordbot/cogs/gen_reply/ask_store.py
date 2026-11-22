@@ -8,7 +8,7 @@ without ruff's TC rules hiding `datetime` under `TYPE_CHECKING`.
 
 from datetime import datetime
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import Text, Index, Integer, DateTime, delete, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 
@@ -56,6 +56,8 @@ class AskTurnRow(Base):
 class AskTurn(BaseModel):
     """One stored exchange, read back for rebuilding the conversation."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     message_id: int = Field(
         ..., description="The interaction snowflake the question was asked on."
     )
@@ -73,17 +75,14 @@ async def load_ask_turns(channel_id: int, user_id: int, limit: int) -> list[AskT
     """
     async with open_reply_session() as session:
         result = await session.execute(
-            select(AskTurnRow)
+            statement=select(AskTurnRow)
             .where(AskTurnRow.channel_id == channel_id, AskTurnRow.user_id == user_id)
             .order_by(AskTurnRow.id.desc())
-            .limit(limit)
+            .limit(limit=limit)
         )
         rows = list(result.scalars())
     rows.reverse()
-    return [
-        AskTurn(message_id=row.message_id, question=row.question, answer=row.answer)
-        for row in rows
-    ]
+    return [AskTurn.model_validate(obj=row) for row in rows]
 
 
 async def record_ask_turn(
@@ -100,7 +99,7 @@ async def record_ask_turn(
     """
     async with open_reply_session() as session, session.begin():
         session.add(
-            AskTurnRow(
+            instance=AskTurnRow(
                 channel_id=channel_id,
                 user_id=user_id,
                 message_id=message_id,
@@ -112,14 +111,14 @@ async def record_ask_turn(
         # Prune inside the same transaction as the insert, so a conversation is never left over
         # its bound by a crash between the two.
         keep = await session.execute(
-            select(AskTurnRow.id)
+            statement=select(AskTurnRow.id)
             .where(AskTurnRow.channel_id == channel_id, AskTurnRow.user_id == user_id)
             .order_by(AskTurnRow.id.desc())
-            .limit(ASK_TURN_RETENTION)
+            .limit(limit=ASK_TURN_RETENTION)
         )
         oldest_kept = min(keep.scalars())
         await session.execute(
-            delete(AskTurnRow).where(
+            statement=delete(AskTurnRow).where(
                 AskTurnRow.channel_id == channel_id,
                 AskTurnRow.user_id == user_id,
                 AskTurnRow.id < oldest_kept,

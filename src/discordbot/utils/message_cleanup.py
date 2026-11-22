@@ -1,6 +1,6 @@
 """Timed cleanup helpers for public Discord messages."""
 
-from typing import Any, Final
+from typing import Any, Final, Protocol, runtime_checkable
 import asyncio
 from datetime import UTC, datetime
 
@@ -8,7 +8,6 @@ import logfire
 from nextcord import Message, NotFound, Forbidden, Interaction, HTTPException
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, Table, Column, Integer, MetaData, text
-from nextcord.abc import Messageable
 from nextcord.ext import commands
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -190,15 +189,51 @@ async def list_pending_public_messages(
         return []
 
 
-async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage) -> Message:
-    """Fetches a tracked message from a concrete Discord channel."""
-    channel = bot.get_channel(record.channel_id)
-    if channel is None or not isinstance(channel, Messageable):
-        channel = await bot.fetch_channel(record.channel_id)
-    if not isinstance(channel, Messageable):
-        msg = f"Channel {record.channel_id} cannot fetch messages"
+@runtime_checkable
+class MessageFetcher(Protocol):
+    """Channel protocol supporting `fetch_message`, excluding non-messageable channels."""
+
+    async def fetch_message(self, id: int, /) -> Message:  # noqa: A002 -- nextcord's own name
+        """Returns one message read back off the channel.
+
+        Args:
+            id (int): Discord message id to fetch.
+        """
+        ...
+
+
+async def resolve_message_channel(bot: commands.Bot, channel_id: int) -> MessageFetcher:
+    """Resolves `channel_id` (cache first, then REST) into a channel that can fetch messages.
+
+    Raises `TypeError` when the resolved channel cannot fetch messages, and lets Discord
+    `HTTPException` subclasses (`NotFound`, `Forbidden`, 5xx) propagate.
+
+    Args:
+        bot (commands.Bot): Bot used to look up or fetch the channel.
+        channel_id (int): Stored Discord channel id.
+    """
+    channel = bot.get_channel(channel_id)
+    if not isinstance(channel, MessageFetcher):
+        channel = await bot.fetch_channel(channel_id)
+    if not isinstance(channel, MessageFetcher):
+        msg = f"Channel {channel_id} cannot fetch messages"
         raise TypeError(msg)
-    return await channel.fetch_message(record.message_id)
+    return channel
+
+
+async def fetch_stored_message(bot: commands.Bot, channel_id: int, message_id: int) -> Message:
+    """Resolves `channel_id` (cache first, then REST) and fetches `message_id`.
+
+    Raises `TypeError` when the resolved channel cannot fetch messages, and lets Discord
+    `HTTPException` subclasses (`NotFound`, `Forbidden`, 5xx) propagate.
+
+    Args:
+        bot (commands.Bot): Bot used to look up or fetch the channel.
+        channel_id (int): Stored Discord channel id.
+        message_id (int): Stored Discord message id.
+    """
+    channel = await resolve_message_channel(bot=bot, channel_id=channel_id)
+    return await channel.fetch_message(message_id)
 
 
 def report_press_failure(error: HTTPException, message: Message, action: str) -> None:
@@ -319,7 +354,9 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
     deleted_count = 0
     for record in records:
         try:
-            message = await _fetch_tracked_message(bot=bot, record=record)
+            message = await fetch_stored_message(
+                bot=bot, channel_id=record.channel_id, message_id=record.message_id
+            )
         except NotFound:
             await forget_public_message(message_id=record.message_id)
             deleted_count += 1
