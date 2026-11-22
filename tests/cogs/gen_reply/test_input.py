@@ -1019,3 +1019,32 @@ async def test_get_image_sources_with_mime_propagates_cancellation(
 
     with pytest.raises(asyncio.CancelledError):
         await builder.get_image_sources_with_mime(message=as_message(fake=message))
+
+
+async def test_attachment_cache_evicts_least_recently_used_entry() -> None:
+    """`_attachment_cache` is capped at 128 and moves hits to most recent before evicting."""
+    cog = _cog()
+    builder = cog.toolkit.input_builder
+    messages: list[tuple[FakeMessage, FakeAttachment]] = []
+    for index in range(129):
+        attachment = FakeAttachment(
+            filename=f"f{index}.txt", content_type="text/plain", attachment_id=index + 1
+        )
+        msg = FakeMessage(content=f"doc {index}", author=FakeAuthor(user_id=2))
+        msg.id = index + 1
+        msg.attachments = [attachment]
+        messages.append((msg, attachment))
+
+    for msg, _ in messages[:128]:
+        await _attachment_parts(builder=builder, message=msg)
+
+    # Touch entry 0 so entry 1 becomes the least recently used when entry 128 enters.
+    await _attachment_parts(builder=builder, message=messages[0][0])
+    await _attachment_parts(builder=builder, message=messages[128][0])
+
+    assert len(builder._attachment_cache) == 128
+    # Entry 0 stays cached (no second read); entry 1 was evicted and must re-read.
+    await _attachment_parts(builder=builder, message=messages[0][0])
+    await _attachment_parts(builder=builder, message=messages[1][0])
+    assert messages[0][1].read_count == 1
+    assert messages[1][1].read_count == 2

@@ -739,6 +739,62 @@ def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(douyin_module._PAYLOAD_CACHE) <= douyin_module._PAYLOAD_CACHE_MAX_ENTRIES
 
 
+def test_payload_cache_lru_evicts_oldest_and_refreshes_on_hit_and_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_PAYLOAD_CACHE` refreshes on cache hit and on re-insertion after expiry."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(target=douyin_module.time, name="monotonic", value=lambda: clock["now"])
+    calls = _install_session(
+        monkeypatch=monkeypatch,
+        handler=lambda url, kwargs: _FakeResponse(text=_ok_page(item=_VIDEO_ITEM)),
+    )
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+    base_id = 7000000000000000000
+
+    # Fill entry 1 first at t=1000 so it expires when clock advances; fill rest at t=1200.
+    downloader.parse_metadata(url=f"https://www.douyin.com/video/{base_id + 1}")
+    clock["now"] = 1200.0
+    downloader.parse_metadata(url=f"https://www.douyin.com/video/{base_id}")
+    for index in range(2, douyin_module._PAYLOAD_CACHE_MAX_ENTRIES):
+        downloader.parse_metadata(url=f"https://www.douyin.com/video/{base_id + index}")
+
+    # Advance past entry 1's TTL while keeping entry 0 and 2..127 fresh.
+    clock["now"] = 1350.0
+    # Hit entry 0 (fresh) and overwrite entry 1 (expired -> refetched): both move ahead of entry 2.
+    downloader.parse_metadata(url=f"https://www.douyin.com/video/{base_id}")
+    downloader.parse_metadata(url=f"https://www.douyin.com/video/{base_id + 1}")
+    before_evict = len(calls)
+
+    # Inserting a new entry evicts entry 2, leaving entries 0 and 1 cached.
+    downloader.parse_metadata(
+        url=f"https://www.douyin.com/video/{base_id + douyin_module._PAYLOAD_CACHE_MAX_ENTRIES}"
+    )
+    assert len(calls) == before_evict + 1
+    assert len(douyin_module._PAYLOAD_CACHE) == douyin_module._PAYLOAD_CACHE_MAX_ENTRIES
+    assert str(base_id) in douyin_module._PAYLOAD_CACHE
+    assert str(base_id + 1) in douyin_module._PAYLOAD_CACHE
+    assert str(base_id + 2) not in douyin_module._PAYLOAD_CACHE
+
+
+def test_link_id_cache_lru_evicts_oldest_and_refreshes_on_hit_and_overwrite() -> None:
+    """`_LINK_ID_CACHE` is capped at 512 and moves hit or overwritten entries to most recent."""
+    cap = douyin_module._LINK_ID_CACHE_MAX_ENTRIES
+    for index in range(cap):
+        douyin_module._remember_link_id(url=f"https://v.douyin.com/u{index}", aweme_id=str(index))
+
+    # Hit u0 and overwrite u1 so u2 becomes the least recently used entry.
+    assert douyin_module._cached_link_id(url="https://v.douyin.com/u0") == "0"
+    douyin_module._remember_link_id(url="https://v.douyin.com/u1", aweme_id="1001")
+    douyin_module._remember_link_id(url=f"https://v.douyin.com/u{cap}", aweme_id=str(cap))
+
+    assert len(douyin_module._LINK_ID_CACHE) == cap
+    assert douyin_module._cached_link_id(url="https://v.douyin.com/u0") == "0"
+    assert douyin_module._cached_link_id(url="https://v.douyin.com/u1") == "1001"
+    assert douyin_module._cached_link_id(url="https://v.douyin.com/u2") == ""
+    assert douyin_module._cached_link_id(url=f"https://v.douyin.com/u{cap}") == str(cap)
+
+
 @pytest.mark.parametrize(
     argnames="url",
     argvalues=[f"https://www.douyin.com/video/{_VIDEO_ID}", "https://v.douyin.com/AbCdEf12/"],

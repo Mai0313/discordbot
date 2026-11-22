@@ -78,3 +78,21 @@ async def test_file_upload_renderer_masks_signed_url_on_unknown_mime_warn(
         fields.get("url") == "https://cdn.discordapp.com/attachments/1/2/mystery"
         for _, fields in warns
     )
+
+
+def test_dead_sources_lru_evicts_oldest_and_refreshes_on_hit_and_overwrite() -> None:
+    """`_dead_sources` is capped at 128 and moves hit or overwritten entries to most recent."""
+    uploader = _fake_uploader()
+    for index in range(128):
+        uploader._mark_dead(cache_key=f"k{index}")
+
+    # Hitting k0 and overwriting k1 both refresh them ahead of k2, so k2 is evicted first.
+    assert uploader._is_known_dead(cache_key="k0")
+    uploader._mark_dead(cache_key="k1")
+    uploader._mark_dead(cache_key="k128")
+
+    assert len(uploader._dead_sources) == 128
+    assert "k0" in uploader._dead_sources
+    assert "k1" in uploader._dead_sources
+    assert "k2" not in uploader._dead_sources
+    assert "k128" in uploader._dead_sources

@@ -172,3 +172,23 @@ async def test_inline_renderer_masks_signed_url_and_attaches_decode_exc_info(
         fields.get("filename") == "blob.bin" and fields.get("_exc_info") is True
         for _, fields in warns
     )
+
+
+def test_unreadable_lru_evicts_oldest_entry_past_cap() -> None:
+    """`_unreadable` is capped at 128 and evicts the oldest recorded key when full."""
+    renderer = InlineRenderer()
+    for index in range(129):
+        assert (
+            renderer._inline_file_part(
+                filename=f"b{index}.bin",
+                data=b"\xff\xfe",
+                mime_type="application/octet-stream",
+                cache_key=f"k{index}",
+            )
+            is None
+        )
+
+    assert len(renderer._unreadable) == 128
+    assert renderer.carries(content_type="text/plain", cache_key="k0", size=None)
+    assert not renderer.carries(content_type="text/plain", cache_key="k1", size=None)
+    assert not renderer.carries(content_type="text/plain", cache_key="k128", size=None)
