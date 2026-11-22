@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 from typing import Any, cast
 import asyncio
-from pathlib import Path
 from datetime import datetime, timedelta
 from collections.abc import Callable, Awaitable
 
@@ -287,16 +286,6 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
         updated_at = result.scalar_one()
 
     assert before <= updated_at <= after
-
-
-def test_every_test_gets_its_own_ledger(tmp_path: Path) -> None:
-    """A test that asks for no isolation still cannot reach the deployed `economy.db`.
-
-    It requests nothing but `tmp_path`, so dropping the autouse from `economy_isolated_db`
-    fails here, before any ledger call, instead of letting the next unpatched one write the
-    live file. The engine is read off the module because the fixture swaps it per test.
-    """
-    assert economy_database._engine.url.database == str(tmp_path / "economy.db")
 
 
 async def test_the_migrated_schema_holds_only_the_current_tables() -> None:

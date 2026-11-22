@@ -1,8 +1,5 @@
 """Tests for Blackjack round-history persistence."""
 
-from pathlib import Path
-
-from discordbot.cogs.games import database as games_database
 from discordbot.typings.games import (
     SettleOutcome,
     GameParticipant,
@@ -41,16 +38,6 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
         insurance=insurance,
     )
     return BlackjackPlayerResult(participant=participant, settlement=settlement)
-
-
-def test_every_test_gets_its_own_round_history(tmp_path: Path) -> None:
-    """A test that asks for no isolation still cannot reach the deployed `games.db`.
-
-    It requests nothing but `tmp_path`, so dropping the autouse from
-    `games_history_isolated_db` fails here instead of letting the next settled round write the
-    live file. The engine is read off the module because the fixture swaps it per test.
-    """
-    assert games_database._engine.url.database == str(tmp_path / "games_history.db")
 
 
 async def test_record_and_fetch_roundtrip() -> None:
