@@ -7,7 +7,7 @@ truncated note tweets when FxTwitter is unavailable.
 
 from functools import partial
 
-from nextcord import Embed, Colour
+from nextcord import Color, Embed
 from nextcord.ext import commands
 
 from discordbot.typings.timeouts import TWITTER_EXPAND_TIMEOUT_SECONDS
@@ -93,7 +93,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         embed = Embed(
             description=f"{lead}{body}{hint}".strip() or None,
             url=post.url,
-            colour=Colour(value=CONTEXT_CARD_COLOR),
+            color=Color(value=CONTEXT_CARD_COLOR),
         )
         if image:
             embed.set_image(url=image)

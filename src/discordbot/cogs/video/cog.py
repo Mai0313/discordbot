@@ -19,11 +19,7 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
-from discordbot.utils.douyin_delivery import (
-    DouyinDelivery,
-    plan_douyin_delivery,
-    douyin_delivery_lines,
-)
+from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
 from discordbot.services.platforms.ytdlp import (
     DownloadResult,
     VideoDownloader,
@@ -238,18 +234,7 @@ class VideoCogs(commands.Cog):
             )
             lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
         lines.extend(plan.hosted_urls)
-
-        # Omit `files` when an all-hosted batch has no native attachments.
-        files = [item.to_file() for item in plan.native]
-        if files:
-            await interaction.edit_original_message(
-                content="\n".join(lines), files=files, allowed_mentions=AllowedMentions.none()
-            )
-            return
-
-        await interaction.edit_original_message(
-            content="\n".join(lines), allowed_mentions=AllowedMentions.none()
-        )
+        await self._edit_delivery(interaction=interaction, lines=lines, native=plan.native)
 
     async def _download_douyin(
         self,
@@ -287,31 +272,8 @@ class VideoCogs(commands.Cog):
                 return
 
             try:
-                delivery = await plan_douyin_delivery(
-                    planner=self.media_delivery, result=result, upload_limit=upload_limit
-                )
-                plan = delivery.plan
-
-                if not plan.native:
-                    # Only a single oversize file uses the bare-URL reply (for inline player);
-                    # galleries need all URLs plus omitted/dropped notices.
-                    if plan.hosted_urls and len(result.filenames) == 1:
-                        await self._deliver_url(
-                            interaction=interaction,
-                            file_size_mb=delivery.total_mb,
-                            public_url=plan.hosted_urls[0],
-                        )
-                        return
-                    if not plan.hosted_urls:
-                        await self._refuse_oversize(
-                            interaction=interaction,
-                            file_size_mb=delivery.total_mb,
-                            upload_limit=upload_limit,
-                        )
-                        return
-
                 await self._deliver_douyin(
-                    interaction=interaction, delivery=delivery, result=result, url=url
+                    interaction=interaction, result=result, url=url, upload_limit=upload_limit
                 )
             except Exception as error:
                 # Broad on purpose, for the same reason as the download step above: an escape
@@ -327,12 +289,31 @@ class VideoCogs(commands.Cog):
     async def _deliver_douyin(
         self,
         interaction: Interaction[commands.Bot],
-        delivery: DouyinDelivery,
         result: DouyinDownload,
         url: str,
+        upload_limit: int,
     ) -> None:
-        """Edits the deferred placeholder into the final Douyin response with size and source lines."""
+        """Attaches, hosts, or refuses a finished Douyin download."""
+        delivery = await plan_douyin_delivery(
+            planner=self.media_delivery, result=result, upload_limit=upload_limit
+        )
         plan = delivery.plan
+        if not plan.native and not plan.hosted_urls:
+            await self._refuse_oversize(
+                interaction=interaction, file_size_mb=delivery.total_mb, upload_limit=upload_limit
+            )
+            return
+
+        # Only a single oversize file uses the bare-URL reply (for inline player);
+        # galleries need all URLs plus omitted/dropped notices.
+        if not plan.native and len(result.filenames) == 1:
+            await self._deliver_url(
+                interaction=interaction,
+                file_size_mb=delivery.total_mb,
+                public_url=plan.hosted_urls[0],
+            )
+            return
+
         lines = [_file_header(file_size_mb=delivery.total_mb, url=url)]
         lines.extend(
             douyin_delivery_lines(
@@ -343,17 +324,23 @@ class VideoCogs(commands.Cog):
                 dropped_event="Douyin download dropped some media",
             )
         )
+        await self._edit_delivery(interaction=interaction, lines=lines, native=plan.native)
 
-        # Omit `files` when an all-hosted gallery has no native attachments.
-        files = [item.to_file() for item in plan.native]
-        if files:
+    async def _edit_delivery(
+        self, interaction: Interaction[commands.Bot], lines: list[str], native: list[MediaItem]
+    ) -> None:
+        """Edits the deferred placeholder with `lines` and optional native attachments."""
+        content = "\n".join(lines)
+        # Omit `files` when an all-hosted batch has no native attachments.
+        if native:
             await interaction.edit_original_message(
-                content="\n".join(lines), files=files, allowed_mentions=AllowedMentions.none()
+                content=content,
+                files=[item.to_file() for item in native],
+                allowed_mentions=AllowedMentions.none(),
             )
             return
-
         await interaction.edit_original_message(
-            content="\n".join(lines), allowed_mentions=AllowedMentions.none()
+            content=content, allowed_mentions=AllowedMentions.none()
         )
 
     async def _edit_quietly(self, interaction: Interaction[commands.Bot], content: str) -> None:
