@@ -268,7 +268,7 @@ async def adapt_interactions_stream(
             failure = event.error
             code = failure.code if failure is not None else None
             raise APIError(
-                code=int(code) if code is not None and code.isdigit() else 0,
+                code=int(code) if code is not None and code.isdecimal() else 0,
                 response_json={
                     "error": {
                         "message": (failure.message if failure is not None else None)

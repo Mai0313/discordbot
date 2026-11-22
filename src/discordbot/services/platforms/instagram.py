@@ -180,10 +180,10 @@ class InstagramDownloader(PlatformDownloader):
                 if "comment_like_count" not in node or "text" not in node:
                     continue
                 comment_id = str(node.get("pk") or "")
-                if not comment_id.isdigit() or comment_id in found:
+                if not comment_id.isdecimal() or comment_id in found:
                     continue
                 parent = str(node.get("parent_comment_id") or "")
-                if parent.isdigit():
+                if parent.isdecimal():
                     parents[comment_id] = parent
                 found[comment_id] = InstagramOutput(
                     text=str_of(value=node.get("text")),

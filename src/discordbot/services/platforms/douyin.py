@@ -84,7 +84,7 @@ def _extract_post_id(url: str) -> str:
     parsed = urlparse(url=normalized_url(url=url))
     # `modal_id` wins over the path: `/user/<sec_uid>?modal_id=<id>` carries both.
     modal_ids = parse_qs(qs=parsed.query).get("modal_id")
-    if modal_ids and modal_ids[0].isdigit():
+    if modal_ids and modal_ids[0].isdecimal():
         return modal_ids[0]
 
     match = _PATH_ID_RE.search(string=parsed.path)

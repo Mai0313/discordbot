@@ -123,7 +123,7 @@ def _head_content_length(session: Session, url: str, headers: dict[str, str]) ->
         if not response.ok:
             return None
         declared = response.headers.get("Content-Length")
-        if declared is not None and declared.isdigit():
+        if declared is not None and declared.isdecimal():
             size = int(declared)
             return size if size > 0 else None
         return None

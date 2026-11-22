@@ -147,7 +147,7 @@ def count_of(value: JsonValue) -> int:
         return value
     if isinstance(value, str):
         digits = value.replace(",", "").strip()
-        return int(digits) if digits.isdigit() else 0
+        return int(digits) if digits.isdecimal() else 0
     return 0
 
 
