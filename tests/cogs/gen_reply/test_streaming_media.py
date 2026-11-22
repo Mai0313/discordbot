@@ -48,7 +48,7 @@ from discordbot.cogs.gen_reply.status_marks import (
     TIMEOUT_HINT_EMOJI,
 )
 
-from tests.helpers.casting import as_message, make_not_found
+from tests.helpers.casting import as_message, make_forbidden, make_not_found
 from tests.helpers.reply_fakes import (
     FakeGuild,
     FakeReply,
@@ -1146,3 +1146,85 @@ async def test_attach_generated_media_catches_unexpected_builder_exception(
         fields.get("media") == "voice" and fields.get("error_type") == "RuntimeError"
         for _, fields in warns
     )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_trace"),
+    [
+        (make_forbidden(message="Missing Access", code=50001), False),
+        (make_not_found(message="Unknown Webhook", code=10015), True),
+    ],
+    ids=["forbidden_no_trace", "not_found_keeps_trace"],
+)
+async def test_apply_media_edit_drops_forbidden_trace_and_keeps_not_found_trace(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, expected_trace: bool
+) -> None:
+    """Media edits omit 403 tracebacks while preserving `/ask` 404 traces at `warn`."""
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = failure
+    attacher = InlineMediaAttacher(
+        message=as_message(fake=message),
+        surface=TurnSurface.for_message(message=as_message(fake=message)),
+        markers=InlineMarkers(cleaned_text="hi"),
+        media_delivery=hosting_off_planner(),
+    )
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    result = await attacher.apply_media_edit(
+        reply=as_message(fake=reply),
+        files=[MediaItem(source=b"png", filename="generated.png").to_file()],
+        hosted_urls=[],
+        render_with_hosted=lambda block: block,
+    )
+
+    assert result.landed is False
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields["error_type"] == type(failure).__name__
+    assert "code" in fields
+    assert ("_exc_info" in fields) is expected_trace
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_trace"),
+    [
+        (make_forbidden(message="Missing Access", code=50001), False),
+        (make_not_found(message="Unknown Webhook", code=10015), True),
+    ],
+    ids=["forbidden_no_trace", "not_found_keeps_trace"],
+)
+async def test_send_hosted_follow_up_drops_forbidden_trace_and_keeps_not_found_trace(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, expected_trace: bool
+) -> None:
+    """Hosted-link follow-up omits 403 tracebacks while preserving `/ask` 404 traces at `warn`."""
+    message = FakeMessage()
+    reply = FakeReply()
+    surface = TurnSurface.for_message(message=as_message(fake=message))
+
+    async def failing_follow_up(self: TurnSurface, **_kwargs: object) -> object:
+        del self
+        raise failure
+
+    monkeypatch.setattr(TurnSurface, "follow_up", failing_follow_up)
+    attacher = InlineMediaAttacher(
+        message=as_message(fake=message),
+        surface=surface,
+        markers=InlineMarkers(cleaned_text="hi"),
+        media_delivery=hosting_off_planner(),
+    )
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    sent = await attacher._send_hosted_follow_up(
+        reply=as_message(fake=reply),
+        follow_up="-# 媒體過大，改用連結\nhttps://media.test/a.mp4",
+        hosted_count=1,
+        file_count=0,
+    )
+
+    assert sent is None
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields["error_type"] == type(failure).__name__
+    assert "code" in fields
+    assert ("_exc_info" in fields) is expected_trace

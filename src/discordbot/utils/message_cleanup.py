@@ -253,14 +253,23 @@ def report_press_failure(error: HTTPException, message: Message, action: str) ->
     text = f"A press could not {action} a public message; trying the channel"
     message_id = getattr(message, "id", None)
     channel_id = getattr(getattr(message, "channel", None), "id", None)
-    if isinstance(error, NotFound) or error.status == 401:
-        logfire.info(text, message_id=message_id, channel_id=channel_id, code=error.code)
-    elif isinstance(error, Forbidden):
-        logfire.warn(text, message_id=message_id, channel_id=channel_id, code=error.code)
-    else:
-        logfire.warn(
-            text, message_id=message_id, channel_id=channel_id, code=error.code, _exc_info=error
+    if error.status == 401:
+        logfire.info(
+            text,
+            message_id=message_id,
+            channel_id=channel_id,
+            code=error.code,
+            error_type=type(error).__name__,
         )
+        return
+    report_discord_failure(
+        error=error,
+        not_found_message=text,
+        forbidden_message=text,
+        other_message=text,
+        message_id=message_id,
+        channel_id=channel_id,
+    )
 
 
 async def edit_public_message(
@@ -418,20 +427,13 @@ async def delete_public_message(
             await message.delete()
     except NotFound:
         pass
-    except Forbidden:
-        # Expected when channel overwrites exclude the bot; omit traceback.
-        logfire.warn(
-            "Discord refused to delete a public response",
+    except HTTPException as exc:
+        report_discord_failure(
+            error=exc,
+            forbidden_message="Discord refused to delete a public response",
+            other_message="Failed to delete public response",
             message_id=resolved_message_id,
             channel_id=getattr(getattr(message, "channel", None), "id", None),
-        )
-        return False
-    except HTTPException:
-        logfire.warn(
-            "Failed to delete public response",
-            message_id=resolved_message_id,
-            channel_id=getattr(getattr(message, "channel", None), "id", None),
-            _exc_info=True,
         )
         return False
     if isinstance(resolved_message_id, int):
@@ -468,22 +470,16 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
             )
             await forget_public_message(message_id=record.message_id)
             continue
-        except Forbidden:
-            # Expected when channel overwrites exclude the bot; omit traceback.
-            logfire.warn(
-                "Stale public response sits in a channel the bot cannot read",
+        except HTTPException as exc:
+            report_discord_failure(
+                error=exc,
+                forbidden_message="Stale public response sits in a channel the bot cannot read",
+                other_message="Failed to fetch stale public response",
                 channel_id=record.channel_id,
                 message_id=record.message_id,
             )
-            await forget_public_message(message_id=record.message_id)
-            continue
-        except HTTPException:
-            logfire.warn(
-                "Failed to fetch stale public response",
-                channel_id=record.channel_id,
-                message_id=record.message_id,
-                _exc_info=True,
-            )
+            if isinstance(exc, Forbidden):
+                await forget_public_message(message_id=record.message_id)
             continue
         if await delete_public_message(message=message, message_id=record.message_id):
             deleted_count += 1

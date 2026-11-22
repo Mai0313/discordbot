@@ -329,7 +329,14 @@ async def test_a_refused_report_is_a_warn_even_on_its_last_message(
 
     assert errors == []
     assert [fields for _, fields in warns] == [
-        {"thread_id": _THREAD_ID, "chunk_index": 0, "is_last": True}
+        {
+            "thread_id": _THREAD_ID,
+            "chunk_index": 0,
+            "is_last": True,
+            "has_files": True,
+            "code": 0,
+            "error_type": "Forbidden",
+        }
     ]
 
 
@@ -377,4 +384,6 @@ async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file
     )
 
     assert thread.bodies == [b"the whole report"]
-    assert [fields for _, fields in warns] == [{"thread_id": 1, "chunk_index": 0}]
+    assert [fields for _, fields in warns] == [
+        {"thread_id": 1, "chunk_index": 0, "code": 0, "error_type": "Forbidden"}
+    ]

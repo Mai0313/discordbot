@@ -517,6 +517,8 @@ async def test_regen_deletion_ignores_not_found_and_logs_forbidden_without_trace
     assert len(warns) == 1
     assert warns[0][1]["channel_id"] == channel.id
     assert warns[0][1]["message_id"] == 2602
+    assert warns[0][1]["code"] == 0
+    assert warns[0][1]["error_type"] == "Forbidden"
     assert "_exc_info" not in warns[0][1]
 
 
@@ -609,6 +611,8 @@ async def test_regen_rejects_disabled_unknown_unsupported_and_unreachable_source
     assert fb_click.edits[-1]["content"] == "沒有權限讀取原始訊息，無法重新生成"
     assert warns[-1]["channel_id"] == 555
     assert warns[-1]["message_id"] == 8704
+    assert warns[-1]["code"] == 0
+    assert warns[-1]["error_type"] == "Forbidden"
     assert "_exc_info" not in warns[-1]
 
     http_click = _regen_interaction(

@@ -42,7 +42,7 @@ from tests.helpers.reply_fakes import (
 )
 from tests.helpers.link_sources import hosting_off_planner
 from tests.helpers.ask_interaction import _interaction
-from tests.helpers.logfire_capture import capture_logs
+from tests.helpers.logfire_capture import capture_logs, capture_levels
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -601,3 +601,66 @@ async def test_a_capped_surface_stops_chunking_where_its_budget_ends() -> None:
     written = reply.edits[-1] + "".join(sent["content"] for sent in interaction.followup.sent)
     assert TRUNCATED_NOTICE.strip() in written
     assert written.endswith(footer)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_level", "expected_trace"),
+    [
+        (make_forbidden(message="Missing Access", code=50001), "warn", False),
+        (make_not_found(message="Unknown Message", code=10008), "info", False),
+    ],
+    ids=["forbidden", "not_found"],
+)
+async def test_land_failure_uses_report_discord_failure_policy(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, expected_level: str, expected_trace: bool
+) -> None:
+    """`land_failure` omits traceback on 403/404 and includes `code` and `error_type`."""
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = failure
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
+    records = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
+
+    landed = await streamer.land_failure(embed=nextcord.Embed(title="err"))
+
+    assert landed is False
+    assert len(records) == 1
+    level, _, fields = records[0]
+    assert level == expected_level
+    assert fields["message_id"] == message.id
+    assert fields["reply_id"] == reply.id
+    assert fields["error_type"] == type(failure).__name__
+    assert "code" in fields
+    assert ("_exc_info" in fields) is expected_trace
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_trace"),
+    [
+        (make_forbidden(message="Missing Access", code=50001), False),
+        (make_not_found(message="Unknown Webhook", code=10015), True),
+    ],
+    ids=["forbidden_no_trace", "not_found_keeps_trace"],
+)
+async def test_edit_reply_text_drops_forbidden_trace_and_keeps_not_found_trace(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, expected_trace: bool
+) -> None:
+    """Footnote edits drop 403 tracebacks while preserving `/ask` 404 traces at `warn`."""
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = failure
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    landed = await streamer._edit_reply_text(
+        reply=as_message(fake=reply), content="updated", failure="footnote failed"
+    )
+
+    assert landed is False
+    assert len(warns) == 1
+    msg, fields = warns[0]
+    assert msg == "footnote failed"
+    assert fields["message_id"] == message.id
+    assert fields["error_type"] == type(failure).__name__
+    assert "code" in fields
+    assert ("_exc_info" in fields) is expected_trace

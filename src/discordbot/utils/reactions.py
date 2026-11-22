@@ -3,9 +3,10 @@
 import asyncio
 import contextlib
 
-import logfire
-from nextcord import Message, NotFound, Forbidden, ClientUser
+from nextcord import Message, ClientUser
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
+
+from discordbot.utils.discord_errors import report_discord_failure
 
 
 async def update_reaction(
@@ -28,25 +29,16 @@ async def update_reaction(
             await message.remove_reaction(emoji=previous, member=bot_user)
     try:
         await message.add_reaction(emoji=emoji)
-    except NotFound:
-        pass
-    except Forbidden:
-        # The channel's permissions decide who may react; the ids are the whole finding.
-        logfire.warn(
-            "Discord refused a reaction",
-            message_id=message.id,
-            channel_id=message.channel.id,
-            emoji=emoji,
-        )
     except Exception as exc:
         # Broad on purpose: reaction bookkeeping is best-effort and must never break the caller.
-        logfire.warn(
-            "Failed to add a reaction",
+        report_discord_failure(
+            error=exc,
+            not_found_message=None,
+            forbidden_message="Discord refused a reaction",
+            other_message="Failed to add a reaction",
             message_id=message.id,
             channel_id=message.channel.id,
             emoji=emoji,
-            error_type=type(exc).__name__,
-            _exc_info=exc,
         )
     return emoji
 
@@ -93,8 +85,7 @@ class ReactionStatusChain(BaseModel):
 
         async def _step() -> str:
             if previous_task is not None:
-                with contextlib.suppress(Exception):
-                    await previous_task
+                await previous_task
             return await update_reaction(
                 message=self.message, bot_user=self.bot_user, emoji=emoji, previous=previous_emoji
             )
@@ -106,5 +97,4 @@ class ReactionStatusChain(BaseModel):
         """Waits for the last scheduled reaction update to finish."""
         if self._tail is None:
             return
-        with contextlib.suppress(Exception):
-            await self._tail
+        await self._tail

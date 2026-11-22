@@ -27,6 +27,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.asyncio_locks import KeyedLockManager
+from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.cogs.gen_reply.answer import RegenOptions, max_regens_for
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
@@ -158,26 +159,22 @@ class ReplyRegenerator(BaseModel):
         if channel is None or isinstance(channel, PartialMessageable):
             try:
                 channel = await self.bot.fetch_channel(channel_id)
-            except Forbidden:
-                logfire.warn(
-                    "Channel refused lookup for reply regen",
-                    channel_id=channel_id,
-                    reply_message_id=reply_message_id,
-                )
-                await interaction.edit_original_message(content="沒有權限讀取原頻道，無法重新生成")
-                return None
-            except NotFound:
-                await interaction.edit_original_message(content="找不到原頻道，無法重新生成")
-                return None
             except HTTPException as exc:
-                logfire.warn(
-                    "Failed to fetch channel for reply regen",
+                report_discord_failure(
+                    error=exc,
+                    not_found_message=None,
+                    forbidden_message="Channel refused lookup for reply regen",
+                    other_message="Failed to fetch channel for reply regen",
                     channel_id=channel_id,
                     reply_message_id=reply_message_id,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
                 )
-                await interaction.edit_original_message(content="讀取原頻道時發生錯誤，請稍後再試")
+                if isinstance(exc, NotFound):
+                    notice = "找不到原頻道，無法重新生成"
+                elif isinstance(exc, Forbidden):
+                    notice = "沒有權限讀取原頻道，無法重新生成"
+                else:
+                    notice = "讀取原頻道時發生錯誤，請稍後再試"
+                await interaction.edit_original_message(content=notice)
                 return None
         if not isinstance(channel, _MessageFetchable):
             await interaction.edit_original_message(content="這個頻道不支援重新生成")
@@ -193,28 +190,23 @@ class ReplyRegenerator(BaseModel):
         """Fetches the original asking message for regen, reporting failures ephemerally."""
         try:
             return await channel.fetch_message(state.source_message_id)
-        except NotFound:
-            await interaction.edit_original_message(content="找不到原始發問訊息，無法重新生成")
-            return None
-        except Forbidden:
-            logfire.warn(
-                "Channel refused source message fetch for reply regen",
-                channel_id=state.channel_id,
-                message_id=state.source_message_id,
-                reply_message_id=state.reply_message_id,
-            )
-            await interaction.edit_original_message(content="沒有權限讀取原始訊息，無法重新生成")
-            return None
         except HTTPException as exc:
-            logfire.warn(
-                "Failed to fetch source message for reply regen",
+            report_discord_failure(
+                error=exc,
+                not_found_message=None,
+                forbidden_message="Channel refused source message fetch for reply regen",
+                other_message="Failed to fetch source message for reply regen",
                 channel_id=state.channel_id,
                 message_id=state.source_message_id,
                 reply_message_id=state.reply_message_id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
-            await interaction.edit_original_message(content="讀取原始訊息時發生錯誤，請稍後再試")
+            if isinstance(exc, NotFound):
+                notice = "找不到原始發問訊息，無法重新生成"
+            elif isinstance(exc, Forbidden):
+                notice = "沒有權限讀取原始訊息，無法重新生成"
+            else:
+                notice = "讀取原始訊息時發生錯誤，請稍後再試"
+            await interaction.edit_original_message(content=notice)
             return None
 
     async def _delete_old_chunks(self, channel: _MessageFetchable, state: RegenChainState) -> None:
@@ -229,25 +221,18 @@ class ReplyRegenerator(BaseModel):
                 else:
                     old_message = await channel.fetch_message(old_id)
                     await old_message.delete()
-            except NotFound:
-                continue
-            except Forbidden:
-                logfire.warn(
-                    "Channel refused old reply deletion after regen",
-                    channel_id=state.channel_id,
-                    message_id=old_id,
-                    reply_message_id=state.reply_message_id,
-                )
-                break
             except HTTPException as exc:
-                logfire.warn(
-                    "Failed to delete old reply chunk after regen",
+                report_discord_failure(
+                    error=exc,
+                    not_found_message=None,
+                    forbidden_message="Channel refused old reply deletion after regen",
+                    other_message="Failed to delete old reply chunk after regen",
                     channel_id=state.channel_id,
                     message_id=old_id,
                     reply_message_id=state.reply_message_id,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
                 )
+                if isinstance(exc, Forbidden):
+                    break
 
     async def _execute_turn(
         self,

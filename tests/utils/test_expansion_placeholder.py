@@ -451,3 +451,43 @@ async def test_resuming_in_an_uncached_channel_fetches_the_channel_only_once() -
     assert len(expand.calls) == 1
     assert placeholder_message.edits
     assert len(fetch_calls) == 1
+
+
+@pytest.mark.parametrize("stage", ["placeholder", "source"])
+async def test_resume_warns_without_traceback_when_discord_refuses_a_fetch(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """A 403 during restart resume logs at `warn` with code and error_type, no traceback."""
+    source, placeholder_message, channel = await _interrupted()
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    forbidden = make_forbidden(message="Missing Access", code=50001)
+    refused_id = placeholder_message.id if stage == "placeholder" else source.id
+    original_fetch = channel.fetch_message
+
+    async def refusing_fetch(id: int, /) -> Message:  # noqa: A002 -- nextcord's own name
+        if id == refused_id:
+            raise forbidden
+        return await original_fetch(id)
+
+    monkeypatch.setattr(target=channel, name="fetch_message", value=refusing_fetch)
+    expand = _RecordingExpand()
+
+    await resume_expansion_placeholders(
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
+    )
+
+    assert expand.calls == []
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields == {
+        "channel_id": channel.id,
+        "message_id": refused_id,
+        "code": 50001,
+        "error_type": "Forbidden",
+    }
+    assert await _load_pending(source=_SOURCE, created_before=database_now()) == []
+    if stage == "source":
+        assert placeholder_message.deleted is True

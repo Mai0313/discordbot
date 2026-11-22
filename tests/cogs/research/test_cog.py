@@ -289,9 +289,9 @@ async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
     assert [edit.get("content") for edit in interaction.edits] == [
         research_cog._launch_reply(outcome="forbidden", thread_id=None)
     ]
-    assert [fields for _, fields in warns] == [{"channel_id": 20, "owner_id": 1}], (
-        "a permission the bot cannot earn needs the ids and no traceback"
-    )
+    assert [fields for _, fields in warns] == [
+        {"channel_id": 20, "owner_id": 1, "code": 0, "error_type": "Forbidden"}
+    ], "a permission the bot cannot earn needs the ids, code, error_type, and no traceback"
 
 
 @pytest.mark.parametrize(
@@ -315,9 +315,15 @@ async def test_deep_research_answers_when_its_anchor_fails_for_another_reason(
     assert [edit.get("content") for edit in interaction.edits] == [
         research_cog._launch_reply(outcome="error", thread_id=None)
     ]
-    assert [fields for _, fields in errors] == [
-        {"channel_id": 20, "owner_id": 1, "error_type": error_type, "_exc_info": error}
-    ]
+    expected: dict[str, object] = {
+        "channel_id": 20,
+        "owner_id": 1,
+        "error_type": error_type,
+        "_exc_info": error,
+    }
+    if error_type == "HTTPException":
+        expected["code"] = 0
+    assert [fields for _, fields in errors] == [expected]
 
 
 async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
@@ -338,7 +344,9 @@ async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
     assert [edit.get("content") for edit in interaction.edits] == [
         research_cog._launch_reply(outcome="forbidden", thread_id=None)
     ]
-    assert [fields for _, fields in warns] == [{"message_id": 10, "owner_id": 1, "channel_id": 20}]
+    assert [fields for _, fields in warns] == [
+        {"message_id": 10, "owner_id": 1, "channel_id": 20, "code": 0, "error_type": "Forbidden"}
+    ]
 
 
 async def test_a_marker_launch_says_so_when_the_thread_is_refused(
@@ -358,7 +366,7 @@ async def test_a_marker_launch_says_so_when_the_thread_is_refused(
         research_cog._launch_reply(outcome="forbidden", thread_id=None)
     ]
     assert [fields for _, fields in warns] == [
-        {"message_id": 10, "owner_id": 300, "channel_id": 20}
+        {"message_id": 10, "owner_id": 300, "channel_id": 20, "code": 0, "error_type": "Forbidden"}
     ]
 
 
@@ -458,7 +466,9 @@ async def test_a_thread_the_bot_lost_access_to_is_not_reported_as_deleted(
     records = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
 
     assert await cog._fetch_thread(thread_id=5) is None
-    assert [(name, fields) for name, _, fields in records] == [(level, {"thread_id": 5})]
+    assert [(name, fields) for name, _, fields in records] == [
+        (level, {"thread_id": 5, "code": 0, "error_type": type(failure).__name__})
+    ]
 
 
 async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
@@ -563,7 +573,9 @@ async def test_a_refused_thread_write_is_reported_without_a_traceback(
     )
 
     assert sent is None
-    assert [fields for _, fields in warns] == [{"thread_id": _THREAD_ID}]
+    assert [fields for _, fields in warns] == [
+        {"thread_id": _THREAD_ID, "code": 0, "error_type": "Forbidden"}
+    ]
 
 
 # ----- run exits ----------------------------------------------------------------------------
@@ -841,9 +853,11 @@ async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fa
     # The marker's anchor is the reply that promised the run, so it stays.
     assert anchor.deleted is False
     assert cog._active_threads == set()
-    # A launch never asks for the Manage Threads a delete takes, so a refusal logs the ids alone.
+    # A launch never asks for the Manage Threads a delete takes, so a refusal logs without trace.
     assert [fields for _, fields in warns] == (
-        [{"thread_id": _THREAD_ID, "owner_id": _OWNER_ID}] if refused else []
+        [{"thread_id": _THREAD_ID, "owner_id": _OWNER_ID, "code": 0, "error_type": "Forbidden"}]
+        if refused
+        else []
     )
 
 
@@ -953,9 +967,14 @@ async def test_a_resume_whose_history_read_fails_runs_on_a_status_line_of_its_ow
     await _assert_owner_released(cog=cog, phase="done")
     assert thread.writes[0]["content"] == research_cog.RESEARCHING_STATUS
     assert [fields for _, fields in warns] == [
-        {"thread_id": _THREAD_ID}
+        {"thread_id": _THREAD_ID, "code": 0, "error_type": "Forbidden"}
         if refused
-        else {"thread_id": _THREAD_ID, "error_type": "HTTPException", "_exc_info": error}
+        else {
+            "thread_id": _THREAD_ID,
+            "code": 0,
+            "error_type": "HTTPException",
+            "_exc_info": error,
+        }
     ]
 
 
@@ -1149,7 +1168,11 @@ async def test_a_failed_run_on_a_broken_thread_logs_each_write_and_still_ends(
 
     await _launch_run(cog=cog, thread=_RunThread(error=error, status_posts=status_posts))
 
-    trace = {} if refused else {"error_type": "HTTPException", "_exc_info": error}
+    trace = (
+        {"code": 0, "error_type": "Forbidden"}
+        if refused
+        else {"code": 0, "error_type": "HTTPException", "_exc_info": error}
+    )
     assert [(message, fields) for level, message, fields in records if level == "warn"] == [
         (_FAILED_RUN_WRITE_LOGS[write][0 if refused else 1], {"thread_id": _THREAD_ID, **trace})
         for write in writes
@@ -1166,10 +1189,10 @@ async def test_a_refused_report_logs_each_write_without_a_traceback_and_still_en
 
     await _launch_run(cog=cog, thread=_RunThread(error=make_forbidden(message="Missing Access")))
 
-    where = {"thread_id": _THREAD_ID, "chunk_index": 0}
+    where = {"thread_id": _THREAD_ID, "chunk_index": 0, "code": 0, "error_type": "Forbidden"}
     assert [(level, fields) for level, _, fields in records] == [
         ("warn", where),
-        ("warn", {**where, "is_last": True}),
+        ("warn", {**where, "is_last": True, "has_files": True}),
     ]
     await _assert_owner_released(cog=cog, phase="done")
 
@@ -1184,7 +1207,7 @@ async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_end
     await _launch_run(cog=cog, thread=_RunThread(error=error))
 
     where = {"thread_id": _THREAD_ID, "chunk_index": 0}
-    trace = {"error_type": "HTTPException", "_exc_info": error}
+    trace = {"code": 0, "error_type": "HTTPException", "_exc_info": error}
     # The last message carries the file, ping and footer, so losing it is an error.
     assert [(level, fields) for level, _, fields in records] == [
         ("warn", {**where, **trace}),

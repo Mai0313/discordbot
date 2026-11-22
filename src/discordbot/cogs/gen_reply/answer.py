@@ -25,6 +25,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.typings.models import BLIND_TEST_MODEL_LABEL, ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
+from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
     render_author_identity,
@@ -362,13 +363,22 @@ class AnswerTurn(BaseModel):
             # Record the persona reply so `/ask` history retains evidence the media was delivered.
             await self.surface.record_turn(answer=persona_reply)
         except Exception as exc:
-            logfire.warn(
-                "Media persona reply failed; leaving the delivered media without a reply",
+            report_discord_failure(
+                error=exc,
+                not_found_message=(
+                    "Media persona reply failed; leaving the delivered media without a reply"
+                ),
+                not_found_level="warn",
+                not_found_exc_info=True,
+                forbidden_message=(
+                    "Media persona reply failed; leaving the delivered media without a reply"
+                ),
+                other_message=(
+                    "Media persona reply failed; leaving the delivered media without a reply"
+                ),
                 media=media_noun,
                 message_id=self.message.id,
                 model=model.name,
-                error_type=type(exc).__name__,
-                _exc_info=True,
             )
             # Delete an unstarted hosted-case base ping; check `content_ever_started` because
             # retries reset `content_started`.

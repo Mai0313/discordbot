@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import asyncio
 
 import pytest
+from nextcord import HTTPException
 
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 
@@ -29,7 +30,13 @@ async def test_a_refused_reaction_is_a_warn_with_its_ids(monkeypatch: pytest.Mon
 
     assert added == "✅"
     assert [fields for _message, fields in warns] == [
-        {"message_id": 1, "channel_id": 2, "emoji": "✅"}
+        {
+            "message_id": message.id,
+            "channel_id": message.channel.id,
+            "emoji": "✅",
+            "code": 0,
+            "error_type": "Forbidden",
+        }
     ]
 
 
@@ -73,15 +80,16 @@ async def test_update_reaction_logs_unexpected_errors_at_warn(
     added = await update_reaction(message=as_message(fake=message), bot_user=None, emoji="✅")
 
     assert added == "✅"
-    assert [fields for _message, fields in warns] == [
-        {
-            "message_id": 1,
-            "channel_id": 2,
-            "emoji": "✅",
-            "error_type": error_type,
-            "_exc_info": failure,
-        }
-    ]
+    expected: dict[str, object] = {
+        "message_id": message.id,
+        "channel_id": message.channel.id,
+        "emoji": "✅",
+        "error_type": error_type,
+        "_exc_info": failure,
+    }
+    if isinstance(failure, HTTPException):
+        expected["code"] = failure.code
+    assert [fields for _message, fields in warns] == [expected]
 
 
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:

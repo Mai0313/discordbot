@@ -8,9 +8,10 @@ the opening status message into the first chunk; every send is best-effort.
 from typing import TYPE_CHECKING
 
 import logfire
-from nextcord import File, Object, Message, Forbidden, AllowedMentions
+from nextcord import File, Object, Message, AllowedMentions
 
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
+from discordbot.utils.discord_errors import DiscordLogLevel, report_discord_failure
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -186,20 +187,17 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
             else:
                 await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
-        except Forbidden:
-            logfire.warn(
-                "research thread refused the report edit",
-                thread_id=thread.id,
-                chunk_index=chunk_index,
-            )
         except Exception as exc:
             # Broad: any Discord failure here is recoverable by the fallback send below.
-            logfire.warn(
-                "failed to edit research status into report",
+            report_discord_failure(
+                error=exc,
+                not_found_message="failed to edit research status into report",
+                not_found_level="warn",
+                not_found_exc_info=True,
+                forbidden_message="research thread refused the report edit",
+                other_message="failed to edit research status into report",
                 thread_id=thread.id,
                 chunk_index=chunk_index,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
         # Rewind each File after a failed edit: Message.edit reads fp without rewinding.
         for file in files:
@@ -209,23 +207,20 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
             await thread.send(content=content, files=files, allowed_mentions=allowed_mentions)
         else:
             await thread.send(content=content, allowed_mentions=allowed_mentions)
-    except Forbidden:
-        logfire.warn(
-            "research thread refused a report message",
-            thread_id=thread.id,
-            chunk_index=chunk_index,
-            is_last=is_last,
-        )
     except Exception as exc:
         # Broad: best-effort final send must not abort phase bookkeeping; losing the last chunk
         # drops the attachments and ping.
-        log = logfire.error if is_last else logfire.warn
-        log(
-            "failed to post research report message",
+        other_level: DiscordLogLevel = "error" if is_last else "warn"
+        report_discord_failure(
+            error=exc,
+            not_found_message="failed to post research report message",
+            not_found_level=other_level,
+            not_found_exc_info=True,
+            forbidden_message="research thread refused a report message",
+            other_message="failed to post research report message",
+            other_level=other_level,
             thread_id=thread.id,
             chunk_index=chunk_index,
             is_last=is_last,
             has_files=bool(files),
-            error_type=type(exc).__name__,
-            _exc_info=exc,
         )

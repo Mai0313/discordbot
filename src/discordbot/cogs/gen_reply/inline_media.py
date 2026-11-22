@@ -17,6 +17,7 @@ from discordbot.typings.media import (
 )
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
+from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -355,13 +356,16 @@ class InlineMediaAttacher(BaseModel):
             )
         except Exception as exc:
             # Broad: best-effort hosted-link follow-up must not raise into the reply pipeline.
-            logfire.warn(
-                "Hosted media link follow-up failed; the media URL was never posted",
+            report_discord_failure(
+                error=exc,
+                not_found_message="Hosted media link follow-up failed; the media URL was never posted",
+                not_found_level="warn",
+                not_found_exc_info=True,
+                forbidden_message="Hosted media link follow-up failed; the media URL was never posted",
+                other_message="Hosted media link follow-up failed; the media URL was never posted",
                 message_id=self.message.id,
                 hosted_url_count=hosted_count,
                 file_count=file_count,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
             )
             await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
             return None
@@ -404,13 +408,16 @@ class InlineMediaAttacher(BaseModel):
                 await reply.edit(**edit_kwargs)
             except Exception as exc:
                 # Broad: best-effort media attach must not raise into the reply pipeline.
-                logfire.warn(
-                    "Failed to attach generated media onto the reply",
+                report_discord_failure(
+                    error=exc,
+                    not_found_message="Failed to attach generated media onto the reply",
+                    not_found_level="warn",
+                    not_found_exc_info=True,
+                    forbidden_message="Failed to attach generated media onto the reply",
+                    other_message="Failed to attach generated media onto the reply",
                     message_id=self.message.id,
                     file_count=len(files),
                     hosted_count=len(hosted_urls),
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
                 )
                 await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
                 return InlineMediaResult(landed=False)

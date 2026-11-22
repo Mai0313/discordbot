@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+import asyncio
 
 import pytest
 from nextcord.enums import InteractionContextType
@@ -32,7 +33,7 @@ from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
 from discordbot.services.memory.server_prompts import SERVER_PHASE1_EVALUATOR_PROMPT
 
 from tests.helpers.memory import drain_memory_turns, wait_for_persisted_writes
-from tests.helpers.casting import as_message
+from tests.helpers.casting import as_message, make_forbidden, make_not_found
 from tests.helpers.gen_reply import FakeGeminiClient, interactions_turn_events
 from tests.helpers.reply_fakes import (
     FakeAuthor,
@@ -465,3 +466,46 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     assert [update["subject"] for update in scheduled] == [
         f"target_user_id: {ASKER_ID}\n{expected_source}"
     ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_trace"),
+    [
+        (make_forbidden(message="Missing Access", code=50001), False),
+        (make_not_found(message="Unknown Webhook", code=10015), True),
+    ],
+    ids=["forbidden_no_trace", "not_found_keeps_trace"],
+)
+async def test_media_persona_reply_drops_forbidden_trace_and_keeps_not_found_trace(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, expected_trace: bool
+) -> None:
+    """Media persona failures drop 403 tracebacks while preserving `/ask` 404 traces at `warn`."""
+    interaction = _interaction()
+    surface = TurnSurface.for_interaction(interaction=interaction, question="畫一隻貓")
+    turn = AnswerTurn(
+        config=LLMConfig.model_construct(),
+        media_delivery=hosting_off_planner(),
+        toolkit=_toolkit(interaction=interaction),
+        surface=surface,
+    )
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    async def failing_context() -> ReplyContext:
+        raise failure
+
+    context_task = asyncio.create_task(coro=failing_context())
+    await turn.stream_media_persona_reply(
+        reply=None,
+        context_task=context_task,
+        system_prompt="SYS",
+        focus_part=ResponseInputImageParam(
+            detail="auto", image_url="https://example.test/cat.png", type="input_image"
+        ),
+        media_noun="image",
+    )
+
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields["error_type"] == type(failure).__name__
+    assert "code" in fields
+    assert ("_exc_info" in fields) is expected_trace
