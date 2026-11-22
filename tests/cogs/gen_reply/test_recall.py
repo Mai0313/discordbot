@@ -22,7 +22,9 @@ from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     render_callable_users_block,
     widen_allowlist_with_aliases,
+    allowlist_ids_from_server_memory,
 )
+from discordbot.services.memory.facts import parse_member_alias_table
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -363,7 +365,9 @@ def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
     allowed = {123: RecallCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
-    widen_allowlist_with_aliases(allowed=allowed, memory=memory)
+    widen_allowlist_with_aliases(
+        allowed=allowed, aliases=allowlist_ids_from_server_memory(memory=memory)
+    )
 
     # The conversation label leads and the table row rides behind it on the same line.
     assert allowed[123].prompt_label.startswith("Mai (mai9999)")
@@ -441,3 +445,26 @@ def test_an_ask_turn_reads_memory_scoped_to_where_it_happens(
     )
 
     assert builder.plan_recall().recall_context == expected
+
+
+def test_plan_recall_parses_server_alias_table_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Public guild turns parse the `## 成員稱呼` table once for both deterministic and optional candidates."""
+    cog = _cog()
+    message = FakeMessage(content="hi", author=FakeAuthor(user_id=123))
+    server_memory = "## 成員稱呼\n* Mai(社群暱稱:李董)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
+    monkeypatch.setattr(ReplyContextBuilder, "read_server_memory", lambda _self: server_memory)
+    calls = 0
+
+    def spy_parse(memory: str) -> dict[int, str]:
+        nonlocal calls
+        calls += 1
+        return parse_member_alias_table(memory=memory)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.recall.parse_member_alias_table", spy_parse)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.context.channel_is_public", lambda **_: True)
+
+    plan = _context_builder(cog=cog, message=as_message(fake=message)).plan_recall()
+
+    assert calls == 1
+    assert 456 in plan.optional_candidates
+    assert 123 not in plan.optional_candidates

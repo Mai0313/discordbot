@@ -13,6 +13,8 @@ read it, so unreadable compartments are never opened. The always-read tone note
 safe by construction and live outside the compartment tree.
 """
 
+from collections.abc import Mapping
+
 from nextcord import User, Member
 from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
@@ -137,16 +139,18 @@ def allowlist_ids_from_server_memory(memory: str) -> dict[int, str]:
     }
 
 
-def widen_allowlist_with_aliases(allowed: dict[int, RecallCandidate], memory: str) -> None:
-    """Appends `## 成員稱呼` alias rows to the `prompt_label` of users already in `allowed`.
+def widen_allowlist_with_aliases(
+    allowed: dict[int, RecallCandidate], aliases: Mapping[int, str]
+) -> None:
+    """Appends `aliases` entries to the `prompt_label` of users already in `allowed`.
 
     Mutates `allowed` in place without adding table-only members or altering `credit_label`.
 
     Args:
         allowed (dict[int, RecallCandidate]): Existing participant allowlist to enrich in place.
-        memory (str): Consolidated server memory markdown.
+        aliases (Mapping[int, str]): Parsed `## 成員稱呼` user id to mention-escaped alias rows.
     """
-    for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
+    for user_id, label in aliases.items():
         candidate = allowed.get(user_id)
         if candidate is not None:
             allowed[user_id] = RecallCandidate(

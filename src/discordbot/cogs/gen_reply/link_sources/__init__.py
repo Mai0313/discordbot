@@ -338,6 +338,23 @@ def comment_lines[OutputT: LinkableCommentOutput](
     return lines
 
 
+def reply_media_note(image_urls: Sequence[str], video_urls: Sequence[str]) -> str:
+    """Returns an unattached-media count note for a comment or reply, or `""` when none are listed.
+
+    Args:
+        image_urls (Sequence[str]): Image URLs carried by the comment or reply.
+        video_urls (Sequence[str]): Video URLs carried by the comment or reply.
+    """
+    counts = [
+        f"{len(urls)} {noun}"
+        for urls, noun in ((image_urls, "image(s)"), (video_urls, "video(s)"))
+        if urls
+    ]
+    if not counts:
+        return ""
+    return f"(carries {' and '.join(counts)}, NOT attached)"
+
+
 class LinkUrlFilter(Protocol):
     """Post-match guard rejecting a matched URL the source cannot read (e.g. a profile)."""
 

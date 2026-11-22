@@ -5,6 +5,7 @@ Gemini Files API when media ingestion is active; always injects caption text or 
 notice distinguishing unavailable posts, WAF blocks, transfer errors, and generic read failures.
 """
 
+from typing import TYPE_CHECKING, Any
 import asyncio
 
 from google import genai
@@ -32,7 +33,13 @@ from discordbot.cogs.gen_reply.link_sources import (
     marker_block,
     link_context_blocks,
 )
-from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
+from discordbot.cogs.gen_reply.link_sources.image_ingest import (
+    bounded_media_step,
+    gather_media_parts,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 DOUYIN_CONTEXT_SEPARATOR = (
     "==== The Douyin link in the user's message, already fetched for you below: the post's "
@@ -99,8 +106,9 @@ async def _upload_media(
     url: str, download: DouyinDownload, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the downloaded files concurrently, keeping the parts that succeeded."""
-    results = await asyncio.gather(
-        *(
+    tasks: list[Coroutine[Any, Any, ResponseInputFileParam | None]] = []
+    for path in download.filenames:
+        tasks.append(
             upload_as_input_file(
                 client=gemini_client,
                 source=path,
@@ -108,23 +116,10 @@ async def _upload_media(
                 filename=path.name,
                 timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
             )
-            for path in download.filenames
-        ),
-        return_exceptions=True,
+        )
+    return await gather_media_parts(
+        tasks=tasks, warning="Douyin media upload failed for one item", url=url
     )
-    parts: list[ResponseInputFileParam] = []
-    for result in results:
-        if isinstance(result, BaseException):
-            logfire.warn(
-                "Douyin media upload failed for one item",
-                url=url,
-                error_type=type(result).__name__,
-                _exc_info=result,
-            )
-            continue
-        if result is not None:
-            parts.append(result)
-    return parts
 
 
 async def _fetch_and_upload(
@@ -182,7 +177,7 @@ async def build_douyin_context_messages(
         try:
             # Per-URL lock deduplicates share-page fetches; release before `_fetch_and_upload`
             # because `douyin_fetch_semaphore` is non-reentrant and upload has its own cap.
-            async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
+            async with douyin_url_locks.hold(key=url), douyin_fetch_semaphore.get():
                 # No output folder because `parse_metadata` writes nothing.
                 downloader = DouyinDownloader(output_folder="")
                 post = await asyncio.to_thread(downloader.parse_metadata, url=url)

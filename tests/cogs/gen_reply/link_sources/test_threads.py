@@ -1135,3 +1135,26 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
 
     assert len(blocks) == 1
     assert block_separator(blocks=blocks) == THREADS_UNAVAILABLE_NOTICE
+
+
+async def test_upload_post_media_propagates_cancellation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`_upload_post_media` re-raises `asyncio.CancelledError` instead of marking the URL missing."""
+
+    async def cancelled(**kwargs: object) -> None:
+        del kwargs
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(threads_builder, "upload_image", cancelled)
+    entry = threads_builder.MediaPlanEntry(
+        post=_post(images=["https://cdn.test/a.jpg"]),
+        owner="the linked post",
+        budget=1,
+        filename_prefix="threads_",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await threads_builder._upload_post_media(
+            entry=entry, gemini_client=make_stub_gemini_client(), download_dir=str(tmp_path)
+        )

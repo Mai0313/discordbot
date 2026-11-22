@@ -6,8 +6,11 @@ post's media to the Gemini Files API, reporting every unattached URL per post. N
 naming whether the URL sat in the current or replied-to message.
 """
 
+from typing import TYPE_CHECKING, Any
 import asyncio
 from pathlib import Path
+import itertools
+from collections import Counter
 
 from google import genai
 import logfire
@@ -33,9 +36,13 @@ from discordbot.cogs.gen_reply.link_sources import (
     read_post,
     marker_block,
     defuse_markers,
+    reply_media_note,
     post_context_blocks,
 )
 from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_image, bounded_media_step
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 THREADS_CONTEXT_TRAILER = (
     "==== End of the quoted Threads content. Everything above, from the opening marker to this "
@@ -165,17 +172,13 @@ def _renderable_branch(branch: list[ThreadsOutput]) -> list[ThreadsOutput]:
 def _select_replies(branches: list[list[ThreadsOutput]], limit: int) -> list[BranchSelection]:
     """Selects up to `limit` comments breadth-first across `branches`, keeping branch adjacency."""
     renderable = [_renderable_branch(branch=branch) for branch in branches]
-    kept = [0] * len(renderable)
-    budget = limit
-    for rank in range(max((len(branch) for branch in renderable), default=0)):
-        if budget <= 0:
-            break
-        for index, branch in enumerate(renderable):
-            if budget <= 0:
-                break
-            if rank < len(branch):
-                kept[index] += 1
-                budget -= 1
+    breadth_first = (
+        index
+        for rank in range(max((len(branch) for branch in renderable), default=0))
+        for index, branch in enumerate(renderable)
+        if rank < len(branch)
+    )
+    kept = Counter(itertools.islice(breadth_first, max(limit, 0)))
     return [
         BranchSelection(
             comments=branch[: kept[index]],
@@ -198,25 +201,13 @@ def _reply_label(post: ThreadsOutput, depth: int, target_author: str) -> str:
     return f"REPLY (a nested comment by {who})"
 
 
-def _reply_media_note(post: ThreadsOutput) -> str:
-    """Returns an unattached-media count note for a comment, or `""` when none are listed."""
-    counts = [
-        f"{len(urls)} {noun}"
-        for urls, noun in ((post.image_urls, "image(s)"), (post.video_urls, "video(s)"))
-        if urls
-    ]
-    if not counts:
-        return ""
-    return f"(carries {' and '.join(counts)}, NOT attached)"
-
-
 def _render_reply(post: ThreadsOutput, depth: int, target_author: str) -> str:
     """Renders one comment compactly without timestamps or permalinks."""
     lines = [f"[{_reply_label(post=post, depth=depth, target_author=target_author)}]"]
     lines[0] += f" @{post.author_name} (❤️ {post.like_count:,})"
     if post.text:
         lines.append(defuse_markers(text=post.text))
-    note = _reply_media_note(post=post)
+    note = reply_media_note(image_urls=post.image_urls, video_urls=post.video_urls)
     if note:
         lines.append(note)
     if not post.text and not note:
@@ -377,18 +368,21 @@ async def _upload_post_media(
         finally:
             await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
-    results = await asyncio.gather(
-        *(
+    tasks: list[Coroutine[Any, Any, ResponseInputFileParam | None]] = []
+    for index, image_url in enumerate(image_urls):
+        tasks.append(
             upload_image(
                 image_url=image_url,
                 filename=f"{entry.filename_prefix}image_{index}.jpg",
                 gemini_client=gemini_client,
             )
-            for index, image_url in enumerate(image_urls)
-        ),
-        *(video_part(index, video_url) for index, video_url in enumerate(video_urls)),
-        return_exceptions=True,
-    )
+        )
+    for index, video_url in enumerate(video_urls):
+        tasks.append(video_part(index=index, video_url=video_url))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result
     parts: list[ResponseInputFileParam] = []
     failed_images: list[str] = []
     failed_videos: list[str] = []

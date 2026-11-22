@@ -24,6 +24,7 @@ from discordbot.services.platforms.twitter import (
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
     defuse_markers,
+    reply_media_note,
     build_post_context,
 )
 from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
@@ -131,14 +132,10 @@ def _render_reply(reply: TwitterOutput, target_author: str, is_direct: bool) -> 
             f"(The reply goes on for {len(reply.text) - MAX_TWITTER_REPLY_CHARS:,} more "
             "characters, not shown.)"
         )
-    media = [
-        f"{len(urls)} {noun}"
-        for urls, noun in ((reply.image_urls, "image(s)"), (reply.video_urls, "video(s)"))
-        if urls
-    ]
-    if media:
-        lines.append(f"(carries {' and '.join(media)}, NOT attached)")
-    if not reply.text and not media:
+    note = reply_media_note(image_urls=reply.image_urls, video_urls=reply.video_urls)
+    if note:
+        lines.append(note)
+    if not reply.text and not note:
         lines.append("(no readable text)")
     return "\n".join(lines)
 

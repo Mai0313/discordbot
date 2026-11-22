@@ -540,3 +540,44 @@ async def test_an_earlier_reply_degraded_to_markers_is_still_shortened(
     assert _text(block=rendered[1]) == (
         f"Tester (tester) [id: {BOT_ID}]: {shorten_earlier_reply(text=reply)}[attachment: file]"
     )
+
+
+async def test_render_history_logs_unsupported_attachment_once_when_payload_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A payload-capped history message classifies and logs unsupported skips once, not twice."""
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+    )
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.context.MAX_HISTORY_INLINE_BYTES", 2_000)
+    post = _said(content="mixed", author_id=1)
+    post.attachments = [
+        FakeAttachment(filename="0.txt", payload=b"x" * 3_000, attachment_id=1),
+        FakeAttachment(
+            filename="doc.docx",
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            attachment_id=2,
+        ),
+    ]
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
+
+    rendered = await _context_builder(
+        cog=_cog(bot_user_id=BOT_ID), message=as_message(fake=_said(content="hi"))
+    ).render_history(hist_messages=[as_message(fake=post)])
+
+    assert "[attachment: file]" in _text(block=rendered[1])
+    skips = [
+        fields["cache_key"]
+        for text, fields in logged
+        if text == "gen_reply skipping unsupported attachment"
+    ]
+    assert skips == [2]

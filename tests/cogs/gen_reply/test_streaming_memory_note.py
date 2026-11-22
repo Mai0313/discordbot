@@ -189,7 +189,7 @@ async def test_a_memory_note_never_reaches_a_later_turns_history(
     bot_reply = as_message(
         fake=FakeMessage(content=on_screen.strip(), author=FakeAuthor(bot=True, user_id=999))
     )
-    assert await _media_builder().get_cleaned_content(message=bot_reply) == expected
+    assert _media_builder().get_cleaned_content(message=bot_reply) == expected
     spans = [
         *message_link_texts(message=bot_reply, strip_usage_footer=True),
         *authored_link_texts(message=bot_reply),

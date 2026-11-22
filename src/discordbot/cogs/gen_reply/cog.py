@@ -290,7 +290,7 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> int | None:
         """Dispatches `ReplyPipeline` on the turn's prompt, or replies with `?` when empty."""
         message = surface.message
-        user_prompt = await self.toolkit.input_builder.get_user_prompt(content=content)
+        user_prompt = self.toolkit.input_builder.get_user_prompt(content=content)
         has_attachment = bool(message.attachments or message.stickers)
         is_forward = bool(message.snapshots)
         # Merge rather than fallback-only: guild forwards carry a `<@bot>` trigger comment that

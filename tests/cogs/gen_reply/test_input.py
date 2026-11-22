@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -126,21 +127,21 @@ def test_collect_sources_includes_forwarded_snapshot_media() -> None:
     ] == [1, 2]
 
 
-async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
+def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     """Forwarded snapshot text is folded in and tagged so a forward is never blank."""
     builder = _media_builder()
 
     # Text-only forward: the snapshot content surfaces under the tag.
     forward_only = FakeMessage(author=FakeAuthor(user_id=1))
     forward_only.snapshots = [FakeSnapshot(content="hello from elsewhere")]
-    rendered = await builder.get_cleaned_content(message=as_message(fake=forward_only))
+    rendered = builder.get_cleaned_content(message=as_message(fake=forward_only))
     assert FORWARDED_MESSAGE_MARKER in rendered
     assert "hello from elsewhere" in rendered
 
     # The forwarder's own comment is kept alongside the forwarded body (append, not replace).
     with_comment = FakeMessage(content="look at this", author=FakeAuthor(user_id=1))
     with_comment.snapshots = [FakeSnapshot(content="original text")]
-    rendered = await builder.get_cleaned_content(message=as_message(fake=with_comment))
+    rendered = builder.get_cleaned_content(message=as_message(fake=with_comment))
     assert "look at this" in rendered
     assert "original text" in rendered
 
@@ -154,7 +155,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
         )
     ]
     assert (
-        await builder.get_cleaned_content(message=as_message(fake=media_only))
+        builder.get_cleaned_content(message=as_message(fake=media_only))
         == FORWARDED_MESSAGE_MARKER
     )
 
@@ -163,7 +164,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     forwarded_bot_reply.snapshots = [
         FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0")
     ]
-    rendered = await builder.get_cleaned_content(message=as_message(fake=forwarded_bot_reply))
+    rendered = builder.get_cleaned_content(message=as_message(fake=forwarded_bot_reply))
     assert "real answer" in rendered
     assert "⬆" not in rendered
 
@@ -175,7 +176,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
         )
     ]
     assert (
-        await builder.get_cleaned_content(message=as_message(fake=footer_only_forward))
+        builder.get_cleaned_content(message=as_message(fake=footer_only_forward))
         == FORWARDED_MESSAGE_MARKER
     )
 
@@ -184,7 +185,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     captioned.snapshots = [
         FakeSnapshot(content="funny", embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")])
     ]
-    rendered = await builder.get_cleaned_content(message=as_message(fake=captioned))
+    rendered = builder.get_cleaned_content(message=as_message(fake=captioned))
     assert "funny" in rendered
     assert "youtu.be" not in rendered
 
@@ -247,37 +248,34 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     embed.add_field(name="Field", value="Value")
     embed.set_footer(text="Footer")
 
-    assert await cog.toolkit.input_builder.get_user_prompt(content="hi <@999>") == "hi"
-    assert await cog.toolkit.input_builder.get_user_prompt(content="hi <@!999>") == "hi"
+    assert cog.toolkit.input_builder.get_user_prompt(content="hi <@999>") == "hi"
+    assert cog.toolkit.input_builder.get_user_prompt(content="hi <@!999>") == "hi"
     assert "Author" in cog.toolkit.input_builder.extract_embed_text(embeds=[embed])
 
     bot_message = FakeMessage(
         content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0", author=FakeAuthor(bot=True, user_id=999)
     )
     assert (
-        await cog.toolkit.input_builder.get_cleaned_content(message=as_message(fake=bot_message))
+        cog.toolkit.input_builder.get_cleaned_content(message=as_message(fake=bot_message))
         == "answer"
     )
     assert USAGE_FOOTER_RE.search(string=bot_message.content)
     bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0"
     bot_message.embeds = [Embed(url="https://youtu.be/jNQXAC9IVRw")]
     assert (
-        await cog.toolkit.input_builder.get_cleaned_content(message=as_message(fake=bot_message))
-        == ""
+        cog.toolkit.input_builder.get_cleaned_content(message=as_message(fake=bot_message)) == ""
     )
 
     embed_message = FakeMessage()
     embed_message.embeds = [embed]
-    assert "Title" in await cog.toolkit.input_builder.get_cleaned_content(
+    assert "Title" in cog.toolkit.input_builder.get_cleaned_content(
         message=as_message(fake=embed_message)
     )
 
     system_message = FakeMessage()
     system_message.system_content = "joined"
     assert (
-        await cog.toolkit.input_builder.get_cleaned_content(
-            message=as_message(fake=system_message)
-        )
+        cog.toolkit.input_builder.get_cleaned_content(message=as_message(fake=system_message))
         == "joined"
     )
 
@@ -1001,3 +999,23 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     # order-contract: each awaited cache lookup renders its source before returning.
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
+
+
+async def test_get_image_sources_with_mime_propagates_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`asyncio.CancelledError` from a source-image load propagates instead of logging a warning."""
+    builder = _media_builder()
+    message = FakeMessage(content="draw", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(filename="a.png", content_type="image/png", attachment_id=1)
+    ]
+
+    async def cancelled(source: object) -> object:
+        del source
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.input.load_image_bytes", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await builder.get_image_sources_with_mime(message=as_message(fake=message))
