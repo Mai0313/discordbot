@@ -583,3 +583,66 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     assert re.search(pattern=rf"(?<!\d){hidden}(?!\d)", string=embed.description)
     shown = [turn.turn_number for turn in history if str(turn.turn_number) in embed.description]
     assert shown == [turn.turn_number for turn in history[hidden:]]
+
+
+def test_dragon_gate_history_and_final_embeds_stay_within_utf16_limits_with_emoji_names() -> None:
+    """Emoji nicknames double UTF-16 length; history and final embeds trim cleanly within limits."""
+    emoji_name = "🐉" * 32
+    participants = [
+        dragon_gate_seat(user_id=index, display_name=emoji_name, balance=10**15)
+        for index in range(1, 20)
+    ]
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=participants
+    )
+    round_state.withdrawn_user_ids = {participant.user_id for participant in participants}
+    for participant in participants:
+        round_state.player_deltas[participant.user_id] = -(10**15)
+    turn_template = DragonGateTurnResult(
+        turn_number=99_999,
+        participant=participants[0],
+        pillars=[card(rank="10"), card(rank="10", suit="♥")],
+        third_card=card(rank="10", suit="♦"),
+        bet=10**15,
+        outcome="pair_pillar_hit",
+        delta=-(10**15),
+    )
+    history = [
+        turn_template.model_copy(update={"turn_number": 90_000 + index}) for index in range(40)
+    ]
+    results = [
+        DragonGatePlayerResult(
+            participant=participant,
+            delta=-(10**15),
+            final_balance=10**15,
+            withdrawn=True,
+            refunded_to_pool=10**15,
+        )
+        for participant in participants
+    ]
+
+    final_embed = build_dragon_gate_final_embed(
+        round_state=round_state, results=results, jackpot=10**15, reason="round over"
+    )
+    history_budget = 6_000 - embed_text_length(embed=final_embed)
+    history_embed = build_dragon_gate_history_embed(
+        history=history, round_state=round_state, max_utf16=min(4_096, history_budget)
+    )
+
+    assert embed_text_length(embed=final_embed) <= 4_096
+    assert history_embed is not None
+    assert embed_text_length(embed=history_embed) <= 4_096
+    assert embed_text_length(embed=final_embed) + embed_text_length(embed=history_embed) <= 6_000
+    assert str(history_embed.description).count("```") % 2 == 0
+
+
+def test_dragon_gate_in_progress_embed_warns_when_active_balance_is_below_min_bet() -> None:
+    """When a seated player's wallet sits below the minimum bet, the table tells them to leave."""
+    owner = dragon_gate_seat(user_id=1, display_name="Alice", balance=15)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
+    )
+    embed = build_dragon_gate_in_progress_embed(
+        round_state=round_state, jackpot=500, insufficient_balance=True
+    )
+    assert "不足最低下注" in str(embed.description)

@@ -18,6 +18,7 @@ from discordbot.cogs.games.seats import (
     release_seats,
     hand_over_seats,
     seated_elsewhere,
+    update_seat_stake,
 )
 from discordbot.cogs.games.blackjack import max_round_loss
 from discordbot.cogs.games.dragon_gate import ANTE, DragonGateRound
@@ -466,3 +467,23 @@ async def test_leaving_a_dragon_gate_table_frees_the_seat_at_once(
 
     assert not seated_elsewhere(user_id=2)
     assert seated_elsewhere(user_id=1)
+
+
+async def test_update_seat_stake_updates_only_for_current_holder_and_clamps_at_zero() -> None:
+    """`update_seat_stake` adjusts the active table's hold, ignores strangers, and clamps >= 0."""
+    holder = _Holder()
+    stranger = _Holder()
+    claim_seat(user_id=1, holder=holder)
+    assert held_amount(user_id=1) is None
+
+    update_seat_stake(user_id=1, holder=holder, amount=250)
+    assert held_amount(user_id=1) == 250
+
+    update_seat_stake(user_id=1, holder=stranger, amount=999)
+    assert held_amount(user_id=1) == 250
+
+    update_seat_stake(user_id=1, holder=holder, amount=-50)
+    assert held_amount(user_id=1) == 0
+
+    release_seats(user_ids=[1], holder=holder)
+    assert held_amount(user_id=1) == 0

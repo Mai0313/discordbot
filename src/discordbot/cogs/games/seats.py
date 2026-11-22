@@ -2,8 +2,9 @@
 
 A seat runs from lobby admission through round settlement and registers a wallet hold in
 `services/economy/holds.py`: the full wallet while the lobby reads balances, then the table's
-maximum possible loss (`0` for 射龍門, whose bets settle immediately). The bot player is never
-seated here. State is in-process only and clears on restart.
+maximum possible loss for Blackjack or net positive table winnings (starting at `0` and updated
+after each turn) for 射龍門 so mid-round winnings stay protected for 逆贏不拿. The bot player
+is never seated here. State is in-process only and clears on restart.
 """
 
 from typing import Protocol
@@ -63,6 +64,18 @@ def hand_over_seats(
             _seats.set(key=user_id, value=to_holder)
             release_stake(user_id=user_id, holder=from_holder)
             hold_stake(user_id=user_id, holder=to_holder, amount=stake)
+
+
+def update_seat_stake(user_id: int, holder: SeatHolder, amount: int) -> None:
+    """Updates `holder`'s wallet hold for `user_id` if `holder` still seats them.
+
+    Args:
+        user_id (int): Discord user ID whose hold to update.
+        holder (SeatHolder): Active table holding the seat.
+        amount (int): Points to hold (clamped at 0).
+    """
+    if _seats.get(key=user_id) is holder:
+        hold_stake(user_id=user_id, holder=holder, amount=max(amount, 0))
 
 
 def release_seats(user_ids: list[int], holder: SeatHolder) -> None:

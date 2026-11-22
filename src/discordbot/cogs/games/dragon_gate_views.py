@@ -16,9 +16,16 @@ from discordbot.cogs.games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
-from discordbot.cogs.games.seats import release_seats, hand_over_seats
+from discordbot.cogs.games.seats import release_seats, hand_over_seats, update_seat_stake
 from discordbot.utils.number_text import compact_amount
 from discordbot.utils.amount_parsing import parse_decimal_amount
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_TOTAL_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+    embed_text_length,
+    clip_to_utf16_limit,
+)
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -34,6 +41,7 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGatePairChoiceRequiredError,
     DragonGatePairChoiceUnavailableError,
 )
+from discordbot.services.economy.holds import spending
 from discordbot.cogs.games.interactions import (
     GameView,
     table_edit_kwargs,
@@ -61,6 +69,7 @@ if TYPE_CHECKING:
     from nextcord.ext import commands
 
     from discordbot.typings.games import GameParticipant
+    from discordbot.typings.economy import JackpotSettlementResult
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
@@ -115,13 +124,17 @@ def _result_line(result: DragonGateTurnResult) -> str:
     )
 
 
-def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
-    """Builds monospace history lines for the most recent completed turns, counting older ones."""
+def _history_code_lines(
+    history: list[DragonGateTurnResult], visible_count: int = DRAGON_GATE_VISIBLE_HISTORY_LINES
+) -> list[str]:
+    """Builds monospace history lines for the most recent `visible_count` turns, counting older ones."""
     lines: list[str] = []
-    hidden_count = len(history) - DRAGON_GATE_VISIBLE_HISTORY_LINES
+    hidden_count = len(history) - visible_count
     if hidden_count > 0:
         lines.append(f"(前 {hidden_count} 手省略)")
-    for result in history[-DRAGON_GATE_VISIBLE_HISTORY_LINES:]:
+    if visible_count <= 0:
+        return lines
+    for result in history[-visible_count:]:
         outcome_label = _outcome_label(outcome=result.outcome)
         pillars = " ".join(str(card) for card in result.pillars)
         lines.append(
@@ -132,15 +145,21 @@ def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
     return lines
 
 
-def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
+def _scoreboard_code_lines(
+    round_state: DragonGateRound, visible_count: int = DRAGON_GATE_VISIBLE_PLAYER_LINES
+) -> list[str]:
     """Builds monospace scoreboard lines from current table deltas."""
     lines: list[str] = []
-    for participant in round_state.participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
+    shown = round_state.participants[:visible_count]
+    for participant in shown:
         delta = round_state.player_delta(user_id=participant.user_id)
         suffix = " (已離桌)" if participant.user_id in round_state.withdrawn_user_ids else ""
         lines.append(
             f"{participant.account_name}{suffix}: {compact_amount(amount=delta, signed=True)}"
         )
+    hidden_count = len(round_state.participants) - len(shown)
+    if hidden_count > 0:
+        lines.append(f"(還有 {hidden_count} 位玩家省略)")
     return lines
 
 
@@ -233,12 +252,15 @@ def build_dragon_gate_lobby_embed(
     return embed
 
 
-def build_dragon_gate_in_progress_embed(round_state: DragonGateRound, jackpot: int) -> Embed:
+def build_dragon_gate_in_progress_embed(
+    round_state: DragonGateRound, jackpot: int, insufficient_balance: bool = False
+) -> Embed:
     """Returns the active 射龍門 table embed.
 
     Args:
         round_state (DragonGateRound): Current 射龍門 round state.
         jackpot (int): Live jackpot pool balance.
+        insufficient_balance (bool): Whether the active player's wallet is below the minimum bet.
     """
     active_turn = round_state.active_turn
 
@@ -254,6 +276,8 @@ def build_dragon_gate_in_progress_embed(round_state: DragonGateRound, jackpot: i
         description_parts.append(
             f"## {TURN_FIELD_EMOJI} 輪到 {active_turn.participant.display_name}"
         )
+        if insufficient_balance:
+            description_parts.append("> ⚠️ 餘額不足最低下注，請按「離桌」")
 
     embed = Embed(
         title=f"♦️ 射龍門 · 第 {round_state.turn_number} 手",
@@ -266,14 +290,28 @@ def build_dragon_gate_in_progress_embed(round_state: DragonGateRound, jackpot: i
     return embed
 
 
+def _render_history_description(history_lines: list[str], scoreboard_lines: list[str]) -> str:
+    """Wraps history and scoreboard code lines inside the history embed description."""
+    lines: list[str] = list(history_lines)
+    if history_lines and scoreboard_lines:
+        lines.append("")
+    lines.extend(scoreboard_lines)
+    return "**紀錄:**\n```\n" + "\n".join(lines) + "\n```"
+
+
 def build_dragon_gate_history_embed(
-    history: list[DragonGateTurnResult], round_state: DragonGateRound
+    history: list[DragonGateTurnResult],
+    round_state: DragonGateRound,
+    max_utf16: int = DISCORD_EMBED_DESCRIPTION_LIMIT,
 ) -> Embed | None:
     """Returns an auxiliary embed with recent turns and cumulative scoreboard, or None when empty.
+
+    Trims older turns, then trailing scoreboard rows, to fit within `max_utf16` UTF-16 code units.
 
     Args:
         history (list[DragonGateTurnResult]): Resolved turns in chronological order.
         round_state (DragonGateRound): Current 射龍門 round state.
+        max_utf16 (int): Maximum UTF-16 code-unit budget for the embed description.
     """
     has_deltas = any(
         round_state.player_delta(user_id=participant.user_id) != 0
@@ -281,17 +319,65 @@ def build_dragon_gate_history_embed(
     )
     if not history and not has_deltas:
         return None
+    budget = min(max_utf16, DISCORD_EMBED_DESCRIPTION_LIMIT)
+    prefix = "**紀錄:**\n```\n"
+    suffix = "\n```"
+    wrapper_len = utf16_length(value=prefix) + utf16_length(value=suffix)
+    if budget <= wrapper_len:
+        return None
 
-    lines: list[str] = []
-    if history:
-        lines.extend(_history_code_lines(history=history))
-    if history and round_state.participants:
-        lines.append("")
-    if round_state.participants:
-        lines.extend(_scoreboard_code_lines(round_state=round_state))
+    visible_history = min(len(history), DRAGON_GATE_VISIBLE_HISTORY_LINES)
+    visible_players = min(len(round_state.participants), DRAGON_GATE_VISIBLE_PLAYER_LINES)
+    history_lines = (
+        _history_code_lines(history=history, visible_count=visible_history) if history else []
+    )
+    scoreboard_lines = (
+        _scoreboard_code_lines(round_state=round_state, visible_count=visible_players)
+        if round_state.participants
+        else []
+    )
+    description = _render_history_description(
+        history_lines=history_lines, scoreboard_lines=scoreboard_lines
+    )
+    while visible_history > 0 and utf16_length(value=description) > budget:
+        visible_history -= 1
+        history_lines = _history_code_lines(history=history, visible_count=visible_history)
+        description = _render_history_description(
+            history_lines=history_lines, scoreboard_lines=scoreboard_lines
+        )
+    while visible_players > 0 and utf16_length(value=description) > budget:
+        visible_players -= 1
+        scoreboard_lines = _scoreboard_code_lines(
+            round_state=round_state, visible_count=visible_players
+        )
+        description = _render_history_description(
+            history_lines=history_lines, scoreboard_lines=scoreboard_lines
+        )
+    if utf16_length(value=description) > budget:
+        inner = description.removeprefix(prefix).removesuffix(suffix)
+        clipped = clip_to_utf16_limit(text=inner, limit=budget - wrapper_len, notice="…")
+        description = f"{prefix}{clipped}{suffix}"
+    return Embed(description=description, color=PUSH_COLOR)
 
-    code_block = "```\n" + "\n".join(lines) + "\n```"
-    return Embed(description=f"**紀錄:**\n{code_block}", color=PUSH_COLOR)
+
+def _final_result_blocks(results: list[DragonGatePlayerResult], visible_count: int) -> list[str]:
+    """Formats the first `visible_count` settled player blocks plus any hidden-player notice."""
+    parts: list[str] = []
+    for result in results[:visible_count]:
+        balance_text = f"餘額 {amount_code(amount=result.final_balance, compact=True)}"
+        if result.withdrawn:
+            balance_text += " · 已離桌"
+        if result.refunded_to_pool > 0:
+            balance_text += (
+                f" · 逆贏退回 {amount_code(amount=result.refunded_to_pool, compact=True)}"
+            )
+        parts.append(f"**{result.participant.display_name}**")
+        parts.append(_settlement_result_heading(delta=result.delta))
+        parts.append(metadata_line(text=balance_text))
+    hidden_count = len(results) - visible_count
+    if hidden_count > 0:
+        parts.append(f"-# 還有 {hidden_count} 位玩家已結算")
+    return parts
 
 
 def build_dragon_gate_final_embed(
@@ -305,32 +391,35 @@ def build_dragon_gate_final_embed(
         jackpot (int): Final jackpot pool balance.
         reason (str): Human-readable reason the table closed.
     """
-    description_parts: list[str] = [f"### {FINISH_REASON_FIELD_EMOJI} 結束原因", reason, ""]
-    description_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {compact_amount(amount=jackpot)}")
-    description_parts.append("")
+    header_parts: list[str] = [f"### {FINISH_REASON_FIELD_EMOJI} 結束原因", reason, ""]
+    header_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {compact_amount(amount=jackpot)}")
+    header_parts.append("")
     if round_state.last_result is not None:
-        description_parts.append(f"### {LAST_HAND_FIELD_EMOJI} 最後一手")
-        description_parts.append(_result_line(result=round_state.last_result))
-        description_parts.append("")
-    description_parts.append("### 結算")
-    for result in results[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
-        balance_text = f"餘額 {amount_code(amount=result.final_balance, compact=True)}"
-        if result.withdrawn:
-            balance_text += " · 已離桌"
-        if result.refunded_to_pool > 0:
-            balance_text += (
-                f" · 逆贏退回 {amount_code(amount=result.refunded_to_pool, compact=True)}"
-            )
-        description_parts.append(f"**{result.participant.display_name}**")
-        description_parts.append(_settlement_result_heading(delta=result.delta))
-        description_parts.append(metadata_line(text=balance_text))
-    hidden_count = len(results) - DRAGON_GATE_VISIBLE_PLAYER_LINES
-    if hidden_count > 0:
-        description_parts.append(f"-# 還有 {hidden_count} 位玩家已結算")
+        header_parts.append(f"### {LAST_HAND_FIELD_EMOJI} 最後一手")
+        header_parts.append(_result_line(result=round_state.last_result))
+        header_parts.append("")
+    header_parts.append("### 結算")
+
+    visible_players = min(len(results), DRAGON_GATE_VISIBLE_PLAYER_LINES)
+    description = "\n".join([
+        *header_parts,
+        *_final_result_blocks(results=results, visible_count=visible_players),
+    ])
+    while (
+        visible_players > 0 and utf16_length(value=description) > DISCORD_EMBED_DESCRIPTION_LIMIT
+    ):
+        visible_players -= 1
+        description = "\n".join([
+            *header_parts,
+            *_final_result_blocks(results=results, visible_count=visible_players),
+        ])
+    description = clip_to_utf16_limit(
+        text=description, limit=DISCORD_EMBED_DESCRIPTION_LIMIT, notice="\n…（已截斷）"
+    )
 
     embed = Embed(
         title=_final_title(results=results),
-        description="\n".join(description_parts),
+        description=description,
         color=delta_color(delta=sum(result.delta for result in results)),
     )
     if round_state.participants and round_state.participants[0].avatar_url:
@@ -411,8 +500,8 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             interaction=interaction,
             payload=table_edit_kwargs(embeds=embeds, view=view, target=message),
         )
-        # A Dragon Gate bet settles the moment it is made, so the table holds no stake; its seat
-        # only keeps the player off a Blackjack table, whose stake a bet here could reach.
+        # Each seat starts at a 0 hold and updates after each turn to max(net_delta, 0) so
+        # mid-round winnings stay protected for 逆贏不拿 while keeping the player off other tables.
         hand_over_seats(
             stakes=dict.fromkeys(self._human_ids(), 0), from_holder=self, to_holder=view
         )
@@ -624,22 +713,12 @@ class DragonGateView(GameView):
         lower_button = cast('Button["DragonGateView"]', self.choose_lower)
         higher_button.disabled = False
         lower_button.disabled = False
-
-        if active is not None and active.is_pair and active.direction is not None:
-            higher_button.label = "同點猜大 ✓" if active.direction == "higher" else "同點猜大"
-            lower_button.label = "同點猜小 ✓" if active.direction == "lower" else "同點猜小"
-        else:
-            higher_button.label = "同點猜大"
-            lower_button.label = "同點猜小"
         set_view_item_visible(view=self, item=higher_button, visible=needs_pair_choice)
         set_view_item_visible(view=self, item=lower_button, visible=needs_pair_choice)
 
         bet_select = cast('StringSelect["DragonGateView"]', self.bet_select)
         bet_select.disabled = False
-        if needs_pair_choice:
-            bet_select.placeholder = "⚠️ 請先選擇猜大或猜小"
-        else:
-            bet_select.placeholder = "🪙 選擇下注金額"
+        bet_select.placeholder = "🪙 選擇下注金額"
         bet_select.options = [
             SelectOption(
                 label=f"底注 {compact_amount(amount=minimum)}",
@@ -714,7 +793,161 @@ class DragonGateView(GameView):
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
-    async def _place_bet_locked_by_interaction(  # noqa: C901 -- resolve, settle and book share one hold of the round lock
+    @staticmethod
+    def _is_stale_generation_win(
+        turn_result: DragonGateTurnResult,
+        settlement: JackpotSettlementResult,
+        prev_generation: int | None,
+    ) -> bool:
+        """Returns whether a winning bet paid +0 because another table cleared the pool."""
+        return (
+            turn_result.delta > 0
+            and settlement.applied_player_delta == 0
+            and prev_generation is not None
+            and settlement.jackpot_generation != prev_generation
+        )
+
+    async def _refresh_table_locked(
+        self, interaction: Interaction[commands.Bot], message: Message
+    ) -> None:
+        """Rebuilds controls and renders the current in-progress embeds onto `message`."""
+        self.sync_controls()
+        self.last_press = interaction
+        await interaction.edit_original_message(
+            **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
+        )
+
+    async def _resolve_bet_locked(
+        self, user_id: int, amount: int
+    ) -> tuple[DragonGateTurnResult, JackpotSettlementResult, int | None]:
+        """Refreshes wallet, resolves and settles one bet under `spending`, and updates the hold."""
+        prev_generation = self._jackpot_generation
+        async with spending(user_id=user_id):
+            # Refresh from the live wallet: a player may have spent or transferred outside
+            # the table since the ante, so the in-table cache can be stale.
+            self._final_balances[user_id] = await get_balance(user_id=user_id)
+            if amount > self._max_bet_for(user_id=user_id):
+                raise DragonGateBetRangeError("Bet exceeds the player's balance")
+            turn_result = self.round_state.resolve_bet(
+                user_id=user_id, amount=amount, jackpot=self._jackpot_snapshot
+            )
+            settlement = await apply_jackpot_settlement(
+                player_id=user_id,
+                player_account_name=turn_result.participant.account_name,
+                player_avatar_url=turn_result.participant.avatar_url,
+                player_delta=turn_result.delta,
+                game_id=GAME_ID,
+                expected_jackpot_generation=prev_generation,
+            )
+            if not self._is_stale_generation_win(
+                turn_result=turn_result, settlement=settlement, prev_generation=prev_generation
+            ):
+                applied_delta = settlement.applied_player_delta
+                booked_result = (
+                    turn_result
+                    if applied_delta == turn_result.delta
+                    else turn_result.model_copy(update={"delta": applied_delta})
+                )
+                self.round_state.record_result(result=booked_result)
+                self._history.append(booked_result)
+                # Update before releasing `spending` so concurrent debits cannot spend winnings
+                # ahead of a 逆贏不拿 refund.
+                update_seat_stake(
+                    user_id=user_id,
+                    holder=self,
+                    amount=max(self.round_state.player_delta(user_id=user_id), 0),
+                )
+            return turn_result, settlement, prev_generation
+
+    async def _withdraw_if_below_min_bet_locked(
+        self,
+        user_id: int,
+        was_loss: bool,
+        player_balance: int,
+        interaction: Interaction[commands.Bot],
+        message: Message,
+    ) -> bool:
+        """Auto-withdraws a losing player who cannot cover the minimum bet; True if table ended."""
+        min_bet = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
+        if not (
+            was_loss and player_balance < min_bet and self.round_state.is_active(user_id=user_id)
+        ):
+            return False
+        delta = self.round_state.player_delta(user_id=user_id)
+        if delta > 0:
+            try:
+                await self._refund_winnings_to_pool_locked(user_id=user_id, delta=delta)
+            # Broad on purpose: a failed refund must not block auto-withdrawal or strand the table.
+            except Exception as exc:
+                logfire.error(
+                    "Dragon Gate auto-withdraw refund failed; the player keeps the winnings",
+                    user_id=user_id,
+                    delta=delta,
+                    channel_id=message.channel.id,
+                    message_id=message.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+        self.round_state.withdraw(user_id=user_id)
+        # The table never touches a withdrawn wallet again, so the seat goes now.
+        release_seats(user_ids=[user_id], holder=self)
+        if player_balance > 0:
+            await self._send_notice(
+                interaction=interaction, content="餘額低於最低下注，已自動離桌"
+            )
+        if self.round_state.finished:
+            await self._finalize_locked(
+                message=message, reason="所有玩家已離桌或餘額不足", interaction=interaction
+            )
+            return True
+        return False
+
+    async def _record_settled_bet_locked(
+        self,
+        interaction: Interaction[commands.Bot],
+        message: Message,
+        turn_result: DragonGateTurnResult,
+        settlement: JackpotSettlementResult,
+        prev_generation: int | None,
+    ) -> None:
+        """Syncs snapshots from `settlement` and closes or refreshes the table."""
+        user_id = turn_result.participant.user_id
+        self._jackpot_snapshot = settlement.jackpot_balance
+        self._jackpot_generation = settlement.jackpot_generation
+        self._final_balances[user_id] = settlement.player_balance
+
+        if self._is_stale_generation_win(
+            turn_result=turn_result, settlement=settlement, prev_generation=prev_generation
+        ):
+            await self._send_notice(
+                interaction=interaction,
+                content="彩金池已被其他牌桌清空並補池，這手未結算，請依最新彩金池重新下注",
+            )
+            if settlement.jackpot_balance <= 0:
+                await self._finalize_locked(
+                    message=message, reason="彩金池清空", interaction=interaction
+                )
+                return
+            await self._refresh_table_locked(interaction=interaction, message=message)
+            return
+
+        if settlement.jackpot_depleted or settlement.jackpot_balance <= 0:
+            reason = "彩金池清空，系統已自動補池" if settlement.jackpot_depleted else "彩金池清空"
+            await self._finalize_locked(message=message, reason=reason, interaction=interaction)
+            return
+
+        if await self._withdraw_if_below_min_bet_locked(
+            user_id=user_id,
+            was_loss=turn_result.delta < 0,
+            player_balance=settlement.player_balance,
+            interaction=interaction,
+            message=message,
+        ):
+            return
+
+        await self._refresh_table_locked(interaction=interaction, message=message)
+
+    async def _place_bet_locked_by_interaction(
         self, interaction: Interaction[commands.Bot], amount: int
     ) -> None:
         """Resolves a bet, settles it against the jackpot, then books it and refreshes the table.
@@ -733,76 +966,27 @@ class DragonGateView(GameView):
                     interaction=interaction, content="這桌已經結束, 等下一桌吧"
                 )
                 return
-            jackpot_before = self._jackpot_snapshot
             try:
-                # Refresh from the live wallet: a player may have spent or transferred
-                # outside the table since the ante, so the in-table cache can be stale.
-                self._final_balances[interaction.user.id] = await get_balance(
-                    user_id=interaction.user.id
-                )
-                if amount > self._max_bet_for(user_id=interaction.user.id):
-                    raise DragonGateBetRangeError("Bet exceeds the player's balance")
-                turn_result = self.round_state.resolve_bet(
-                    user_id=interaction.user.id, amount=amount, jackpot=self._jackpot_snapshot
+                turn_result, settlement, prev_generation = await self._resolve_bet_locked(
+                    user_id=interaction.user.id, amount=amount
                 )
             except DragonGateError as error:
                 await self._send_notice(
                     interaction=interaction, content=self._rule_error_notice(error=error)
                 )
                 return
-            was_loss = turn_result.delta < 0
-            try:
-                settlement = await apply_jackpot_settlement(
-                    player_id=interaction.user.id,
-                    player_account_name=turn_result.participant.account_name,
-                    player_avatar_url=turn_result.participant.avatar_url,
-                    player_delta=turn_result.delta,
-                    game_id=GAME_ID,
-                    expected_jackpot_generation=self._jackpot_generation,
-                )
             except Exception:
                 # Broad on purpose: whatever the write raised on, it rolled back and nothing was
                 # booked, so the player only needs telling; the re-raise reaches on_error, which
                 # logs it.
                 await self._send_notice(interaction=interaction, content="下注失敗, 這注不算")
                 raise
-            player_balance = settlement.player_balance
-            applied_delta = settlement.applied_player_delta
-            if applied_delta != turn_result.delta:
-                turn_result = turn_result.model_copy(update={"delta": applied_delta})
-            self.round_state.record_result(result=turn_result)
-            self._history.append(turn_result)
-            self._jackpot_snapshot = settlement.jackpot_balance
-            self._jackpot_generation = settlement.jackpot_generation
-            self._final_balances[interaction.user.id] = player_balance
-            pool_was_cleared = settlement.jackpot_depleted or (
-                applied_delta > 0 and applied_delta >= jackpot_before
-            )
-            if pool_was_cleared:
-                reason = (
-                    "彩金池清空，系統已自動補池" if settlement.jackpot_depleted else "彩金池清空"
-                )
-                await self._finalize_locked(
-                    message=message, reason=reason, interaction=interaction
-                )
-                return
-            if (
-                was_loss
-                and player_balance <= 0
-                and self.round_state.is_active(user_id=interaction.user.id)
-            ):
-                self.round_state.withdraw(user_id=interaction.user.id)
-                # The table never touches a withdrawn wallet again, so the seat goes now.
-                release_seats(user_ids=[interaction.user.id], holder=self)
-                if self.round_state.finished:
-                    await self._finalize_locked(
-                        message=message, reason="所有玩家已離桌或餘額歸零", interaction=interaction
-                    )
-                    return
-            self.sync_controls()
-            self.last_press = interaction
-            await interaction.edit_original_message(
-                **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
+            await self._record_settled_bet_locked(
+                interaction=interaction,
+                message=message,
+                turn_result=turn_result,
+                settlement=settlement,
+                prev_generation=prev_generation,
             )
 
     async def _handle_leave(self, interaction: Interaction[commands.Bot]) -> None:
@@ -856,13 +1040,23 @@ class DragonGateView(GameView):
 
     def in_progress_embeds(self) -> list[Embed]:
         """Returns the current table embed and optional history embed."""
-        embeds: list[Embed] = [
-            build_dragon_gate_in_progress_embed(
-                round_state=self.round_state, jackpot=self._jackpot_snapshot
-            )
-        ]
+        active_turn = self.round_state.active_turn
+        minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
+        insufficient_balance = (
+            not self._settled and active_turn is not None and self._active_max_bet() < minimum
+        )
+        primary_embed = build_dragon_gate_in_progress_embed(
+            round_state=self.round_state,
+            jackpot=self._jackpot_snapshot,
+            insufficient_balance=insufficient_balance,
+        )
+        embeds: list[Embed] = [primary_embed]
+        remaining_utf16 = min(
+            DISCORD_EMBED_DESCRIPTION_LIMIT,
+            DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=primary_embed),
+        )
         history_embed = build_dragon_gate_history_embed(
-            history=self._history, round_state=self.round_state
+            history=self._history, round_state=self.round_state, max_utf16=remaining_utf16
         )
         if history_embed is not None:
             embeds.append(history_embed)
@@ -875,13 +1069,15 @@ class DragonGateView(GameView):
             for participant in self.round_state.participants
             if participant.user_id == user_id
         )
-        settlement = await apply_jackpot_settlement(
-            player_id=user_id,
-            player_account_name=participant.account_name,
-            player_avatar_url=participant.avatar_url,
-            player_delta=-delta,
-            game_id=GAME_ID,
-        )
+        async with spending(user_id=user_id):
+            settlement = await apply_jackpot_settlement(
+                player_id=user_id,
+                player_account_name=participant.account_name,
+                player_avatar_url=participant.avatar_url,
+                player_delta=-delta,
+                game_id=GAME_ID,
+                refund=True,
+            )
         self._jackpot_snapshot = settlement.jackpot_balance
         self._jackpot_generation = settlement.jackpot_generation
         self._final_balances[user_id] = settlement.player_balance
@@ -956,8 +1152,12 @@ class DragonGateView(GameView):
             reason=reason,
         )
         embeds: list[Embed] = [final_embed]
+        remaining_utf16 = min(
+            DISCORD_EMBED_DESCRIPTION_LIMIT,
+            DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=final_embed),
+        )
         history_embed = build_dragon_gate_history_embed(
-            history=self._history, round_state=self.round_state
+            history=self._history, round_state=self.round_state, max_utf16=remaining_utf16
         )
         if history_embed is not None:
             embeds.append(history_embed)
