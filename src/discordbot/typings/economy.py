@@ -230,7 +230,11 @@ class JackpotSettlementRequest(BaseModel):
     )
     refund: bool = Field(
         default=False,
-        description="Whether a positive delta hands back the player's own earlier debit rather than paying a win: credited in full whatever the pool holds, and taken back off today's casino loss instead of counted as a win.",
+        description=(
+            "Whether this entry reverses an earlier table flow instead of booking a fresh win or loss: "
+            "a positive delta refunds an earlier debit in full whatever the pool holds and subtracts it from today's casino loss; "
+            "a negative delta claws back earlier winnings into the pool and subtracts it from today's casino win."
+        ),
     )
     expected_jackpot_generation: int | None = Field(
         default=None,
@@ -475,6 +479,9 @@ class PortfolioView(BaseModel):
     debt_principal: int = Field(..., description="Total outstanding loan principal.")
     debt_interest: int = Field(..., description="Total accrued loan interest due.")
     net_worth: int = Field(..., description="Balance minus total debt principal and interest.")
+    is_vip: bool = Field(
+        default=False, description="Whether the account owns the permanent VIP perk."
+    )
 
 
 class EconomyConfig(BaseSettings):

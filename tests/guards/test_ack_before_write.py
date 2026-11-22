@@ -17,9 +17,6 @@ _LEDGER_MUTATIONS = frozenset({
     "repay_central_bank_loans",
     "repay_personal_loans",
     "transfer",
-    # Both accrue and persist interest before returning, so they take the same write lock.
-    "get_portfolio",
-    "list_loan_contracts",
     "accept_loan_proposal",
     "cancel_loan_proposal",
     "reject_expired_loan_proposal",
@@ -37,7 +34,9 @@ _LEDGER_READS = frozenset({
     "get_spendable_balance",
     "get_central_bank_status",
     "get_credit_ceiling",
+    "get_portfolio",
     "get_vip",
+    "list_loan_contracts",
     "top_losers",
     "top_n",
 })
