@@ -9,7 +9,9 @@ enumerated here instead of being softened into a `.get()` at the call site.
 import re
 from typing import get_args
 
-from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
+import pytest
+
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, EmojiConfig, LinkSourceName
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 
@@ -36,3 +38,24 @@ def test_a_custom_emoji_marker_is_a_well_formed_reference() -> None:
     for name, emoji in LINK_SOURCE_EMOJIS.items():
         if any(mark in emoji for mark in "<:>"):
             assert re.fullmatch(r"<a?:\w+:\d+>", emoji), name
+
+
+def test_default_emojis_are_unicode_and_link_sources_are_distinct() -> None:
+    """Default emojis need no custom Discord Application Emojis and keep link markers distinct."""
+    defaults = EmojiConfig()
+    for field_name, value in defaults.model_dump().items():
+        assert value, field_name
+        assert not any(mark in value for mark in "<:>"), field_name
+    assert len(set(LINK_SOURCE_EMOJIS.values())) == len(LINK_SOURCE_EMOJIS)
+
+
+def test_emoji_config_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Environment variables override default Unicode emojis with custom app emoji references."""
+    monkeypatch.setenv(name="EMOJI_FACEBOOK", value="<:facebook:1546179601288396810>")
+    monkeypatch.setenv(name="EMOJI_RESEARCH", value="<:dino:1517560319281594570>")
+
+    config = EmojiConfig()
+
+    assert config.facebook == "<:facebook:1546179601288396810>"
+    assert config.research == "<:dino:1517560319281594570>"
+    assert config.done == "✅"

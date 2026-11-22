@@ -9,15 +9,37 @@ factory. The schema itself comes only from the Alembic migrations under `migrati
 """
 
 from typing import Any
+from pathlib import Path
 import contextlib
 from collections.abc import AsyncGenerator
 
+from alembic import command
 from pydantic import Field, BaseModel
 from sqlalchemy import event
+from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from discordbot.typings.timeouts import SQLITE_BUSY_TIMEOUT_SECONDS
 from discordbot.utils.stored_integer import configure_sqlite_stored_integer_functions
+
+_upgraded_sections: set[tuple[Path, str]] = set()
+
+
+def ensure_database_upgraded(section: str) -> None:
+    """Upgrades the Alembic `section` database to head once per working directory and section.
+
+    Creates `./data/database` before running Alembic so fresh checkouts and containers boot
+    without pre-seeded directories. Safe to call from multiple cogs sharing one database.
+
+    Args:
+        section (str): Section name in `alembic.ini` to upgrade to `"head"`.
+    """
+    key = (Path.cwd().resolve(), section)
+    if key in _upgraded_sections:
+        return
+    Path("./data/database").mkdir(parents=True, exist_ok=True)
+    command.upgrade(config=Config(file_="alembic.ini", ini_section=section), revision="head")
+    _upgraded_sections.add(key)
 
 
 def configure_sqlite_connection(

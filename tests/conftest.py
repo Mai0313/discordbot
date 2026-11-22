@@ -109,13 +109,19 @@ def migrated_databases(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pa
     """Each database upgraded to its newest migration once per worker, keyed by its section."""
     root = tmp_path_factory.mktemp(basename="migrated")
     templates: dict[str, Path] = {}
-    for database in ("economy", "games", "reply", "messages"):
+    for database in ("cleanup", "economy", "games", "reply", "messages"):
         templates[database] = root / f"{database}.db"
         command.upgrade(
             config=migration_config(database=database, db_path=templates[database]),
             revision="head",
         )
     return templates
+
+
+@pytest.fixture(autouse=True)
+def upgraded_sections_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Starts each test with an empty migration latch so runs stay independent."""
+    monkeypatch.setattr("discordbot.utils.sqlite_config._upgraded_sections", set())
 
 
 def _isolate_engine(
@@ -367,18 +373,18 @@ def card_videos_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
 def cleanup_store_isolated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
 ) -> None:
-    """Points the pending public-message cleanup table at a throwaway `games.db`.
+    """Points the pending public-message cleanup table at a throwaway `cleanup.db`.
 
     Autouse for the reason `expansion_store_isolated` is: every expiring public message is
     recorded for deletion, the write is swallowed best-effort, so a test missing the swap
-    would pass green while inserting rows into the live `games.db` — where the next real
+    would pass green while inserting rows into the live `cleanup.db` — where the next real
     start would try to delete a message named by a test's fake ids.
     """
     _isolate_engine(
         monkeypatch=monkeypatch,
         target="discordbot.utils.message_cleanup._engine",
-        db_path=tmp_path / "game_cleanup.db",
-        template=migrated_databases["games"],
+        db_path=tmp_path / "cleanup.db",
+        template=migrated_databases["cleanup"],
     )
 
 

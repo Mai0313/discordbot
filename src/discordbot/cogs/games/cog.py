@@ -22,6 +22,7 @@ from discordbot.cogs.games.seats import seated_elsewhere
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs.games.bot_player import kelly_bet, count_adjusted_edge
@@ -429,9 +430,11 @@ class GamesCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds `GamesCogs` to `bot`.
+    """Upgrades `economy.db` and `games.db`, then adds `GamesCogs` to `bot`.
 
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
+    ensure_database_upgraded(section="economy")
+    ensure_database_upgraded(section="games")
     bot.add_cog(cog=GamesCogs(bot=bot), override=True)

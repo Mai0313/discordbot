@@ -11,7 +11,7 @@ def migration_config(database: str, db_path: Path) -> Config:
     """Returns the `alembic.ini` section for `database`, aimed at `db_path` instead of `data/`.
 
     Args:
-        database (str): The `alembic.ini` section: `economy`, `games`, `reply` or `messages`.
+        database (str): The `alembic.ini` section: `cleanup`, `economy`, `games`, `reply` or `messages`.
         db_path (Path): The SQLite file to migrate or check.
     """
     config = Config(file_=ALEMBIC_INI, ini_section=database)

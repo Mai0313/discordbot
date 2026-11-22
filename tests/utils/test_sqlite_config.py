@@ -6,12 +6,17 @@ seed rows decide the outcome.
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import insert, select, update
+from alembic.config import Config
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils import sqlite_config
+from discordbot.utils.sqlite_config import SqliteBootstrap, ensure_database_upgraded
 from discordbot.utils.stored_integer import StoredInteger
+
+from tests.helpers.source_tree import REPO_ROOT
 
 
 class _Base(DeclarativeBase):
@@ -46,3 +51,29 @@ async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_funct
         await session.commit()
         assert await session.scalar(statement=select(_Counter.amount)) == 1_005
     await engine.dispose()
+
+
+def test_ensure_database_upgraded_creates_dir_and_runs_once_per_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ensure_database_upgraded` creates `data/database`, upgrades once, and is idempotent."""
+    (tmp_path / "alembic.ini").symlink_to(target=REPO_ROOT / "alembic.ini")
+    (tmp_path / "migrations").symlink_to(target=REPO_ROOT / "migrations")
+    monkeypatch.chdir(path=tmp_path)
+
+    calls: list[str] = []
+    real_upgrade = sqlite_config.command.upgrade
+
+    def counting_upgrade(config: Config, revision: str) -> None:
+        calls.append(config.config_ini_section)
+        real_upgrade(config=config, revision=revision)
+
+    monkeypatch.setattr(target=sqlite_config.command, name="upgrade", value=counting_upgrade)
+
+    ensure_database_upgraded(section="cleanup")
+    ensure_database_upgraded(section="cleanup")
+    ensure_database_upgraded(section="economy")
+
+    assert (tmp_path / "data" / "database" / "cleanup.db").is_file()
+    assert (tmp_path / "data" / "database" / "economy.db").is_file()
+    assert calls == ["cleanup", "economy"]

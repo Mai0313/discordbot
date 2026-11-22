@@ -1,34 +1,54 @@
 """Alembic environment shared by every database; the `alembic.ini` section names the database."""
 
 from typing import Any, Literal
+import importlib
 
 from alembic import context
-from sqlalchemy import Connection, event, engine_from_config
+from sqlalchemy import MetaData, Connection, event, engine_from_config
 from alembic.autogenerate.api import AutogenContext
 
-from discordbot.cogs.log_msg.cog import metadata as messages_metadata
-from discordbot.cogs.games.database import Base as GamesBase
 from discordbot.utils.stored_integer import StoredInteger
-from discordbot.utils.message_cleanup import metadata as cleanup_metadata
-from discordbot.cogs.research.database import Base as ResearchBase
-from discordbot.cogs.gen_reply.ask_store import Base as AskBase
-from discordbot.services.memory.database import Base as MemoryBase
-from discordbot.services.economy.database import Base as EconomyBase
-from discordbot.utils.expansion_placeholder import Base as ExpansionBase
-from discordbot.cogs.gen_reply.feedback_store import Base as FeedbackBase
 
-target_metadata = {
-    "economy": [EconomyBase.metadata],
-    "games": [GamesBase.metadata, cleanup_metadata],
-    "reply": [
-        ResearchBase.metadata,
-        AskBase.metadata,
-        FeedbackBase.metadata,
-        ExpansionBase.metadata,
-        MemoryBase.metadata,
-    ],
-    "messages": [messages_metadata],
-}[context.config.config_ini_section]
+# `(module_path, attribute, optional_cog)` pairs per `alembic.ini` section.
+# Optional cogs under `cogs/` may be deleted in minimal deployments; skipping an absent cog's
+# own package keeps `alembic upgrade` working for surviving cogs that share that database.
+_SECTION_METADATA: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "cleanup": (("discordbot.utils.message_cleanup", "metadata", False),),
+    "economy": (("discordbot.services.economy.database", "Base", False),),
+    "games": (("discordbot.cogs.games.database", "Base", False),),
+    "reply": (
+        ("discordbot.cogs.research.database", "Base", True),
+        ("discordbot.cogs.gen_reply.ask_store", "Base", True),
+        ("discordbot.cogs.gen_reply.feedback_store", "Base", True),
+        ("discordbot.utils.expansion_placeholder", "Base", False),
+        ("discordbot.services.memory.database", "Base", False),
+    ),
+    "messages": (("discordbot.cogs.log_msg.cog", "metadata", False),),
+}
+
+
+def _load_target_metadata(section: str) -> list[MetaData]:
+    """Loads only the SQLAlchemy metadata objects owned by `section`."""
+    entries = _SECTION_METADATA[section]
+    loaded: list[MetaData] = []
+    for module_path, attr_name, optional_cog in entries:
+        try:
+            module = importlib.import_module(name=module_path)
+        except ModuleNotFoundError as exc:
+            # Skip only when the optional cog's own package is absent, never a missing third-party dep.
+            if (
+                optional_cog
+                and exc.name is not None
+                and (module_path == exc.name or module_path.startswith(f"{exc.name}."))
+            ):
+                continue
+            raise
+        obj = getattr(module, attr_name)
+        loaded.append(obj if isinstance(obj, MetaData) else obj.metadata)
+    return loaded
+
+
+target_metadata = _load_target_metadata(section=context.config.config_ini_section)
 
 engine = engine_from_config(
     configuration=context.config.get_section(name=context.config.config_ini_section, default={}),

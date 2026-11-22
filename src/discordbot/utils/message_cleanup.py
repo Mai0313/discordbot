@@ -17,14 +17,12 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
 _delete_tasks: LoopLocalRegistry[str, set[asyncio.Task[None]]] = LoopLocalRegistry()
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/cleanup.db")
 metadata = MetaData()
 Table(
-    "pending_game_message",
+    "pending_public_message",
     metadata,
-    # Nullable only to match the deployed DDL, which never said NOT NULL: an INTEGER PRIMARY KEY
-    # is SQLite's rowid, which is never NULL.
-    Column("message_id", Integer, primary_key=True, nullable=True),
+    Column("message_id", Integer, primary_key=True),
     Column("channel_id", Integer, nullable=False),
     Column("guild_name", Text),
     Column("channel_name", Text),
@@ -32,20 +30,20 @@ Table(
     Column("created_at", Text, nullable=False, server_default=text(text="CURRENT_TIMESTAMP")),
 )
 _UPSERT_PENDING_PUBLIC_MESSAGE_SQL: Final[str] = """
-INSERT INTO pending_game_message (message_id, channel_id, guild_name, channel_name, user_name)
+INSERT INTO pending_public_message (message_id, channel_id, guild_name, channel_name, user_name)
 VALUES (:message_id, :channel_id, :guild_name, :channel_name, :user_name)
 ON CONFLICT(message_id) DO UPDATE SET
     channel_id = excluded.channel_id,
     guild_name = excluded.guild_name,
     channel_name = excluded.channel_name,
-    user_name = COALESCE(excluded.user_name, pending_game_message.user_name)
+    user_name = COALESCE(excluded.user_name, pending_public_message.user_name)
 """
 _DELETE_PENDING_PUBLIC_MESSAGE_SQL: Final[str] = """
-DELETE FROM pending_game_message WHERE message_id = :message_id
+DELETE FROM pending_public_message WHERE message_id = :message_id
 """
 _LIST_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
 SELECT channel_id, message_id, guild_name, channel_name, user_name
-FROM pending_game_message
+FROM pending_public_message
 WHERE :tracked_before IS NULL OR created_at < :tracked_before
 ORDER BY created_at ASC, message_id ASC
 """

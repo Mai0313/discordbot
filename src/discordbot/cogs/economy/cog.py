@@ -1,18 +1,24 @@
 """Slash commands for balances, leaderboards, transfers, loans, VIP, and admin tax."""
 
 from io import BytesIO
+from time import monotonic
+from typing import TYPE_CHECKING
 from datetime import UTC, datetime
 
+import logfire
 import nextcord
-from nextcord import File, Locale, Member, Interaction, SlashOption
+from nextcord import File, Locale, Member, Message, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     LEADERBOARD_SIZE,
     VIP_PURCHASE_COST,
     VIP_WIN_MULTIPLIER_LABEL,
+    BASE_MESSAGE_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
+    MESSAGE_REWARD_COOLDOWN_SECONDS,
     EconomyConfig,
     LoanLenderType,
     monthly_rate_percent_to_bps,
@@ -57,6 +63,8 @@ from discordbot.cogs.economy.embeds import (
     build_transfer_insufficient_embed,
     build_empty_loss_leaderboard_embed,
 )
+from discordbot.utils.asyncio_locks import spawn_tracked
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.services.economy.holds import held_amount
 from discordbot.services.economy.database import (
@@ -74,6 +82,7 @@ from discordbot.services.economy.database import (
     call_personal_loans,
     list_loan_contracts,
     repay_personal_loans,
+    credit_with_repayment,
     get_spendable_balance,
     call_central_bank_loans,
     get_central_bank_status,
@@ -81,6 +90,7 @@ from discordbot.services.economy.database import (
     repay_central_bank_loans,
     create_personal_loan_request,
     create_central_bank_loan_request,
+    reject_loan_proposals_created_before,
 )
 from discordbot.utils.interaction_responses import (
     send_private_followup,
@@ -90,6 +100,9 @@ from discordbot.utils.interaction_responses import (
     send_expiring_followup_after_private_defer,
 )
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
+
+if TYPE_CHECKING:
+    import asyncio
 
 
 async def _amount_or_refuse(
@@ -121,6 +134,98 @@ class EconomyCogs(commands.Cog):
         """
         self.bot = bot
         self.economy_config = EconomyConfig()
+        # Captured before the gateway connects so proposals created before `on_ready` survive.
+        self._started_at = database_now()
+        self._startup_sweeps_done = False
+        self._startup_tasks: set[asyncio.Task[None]] = set()
+        # Process-local per-user reward cooldown; resets on restart by design.
+        self._message_reward_at: dict[int, float] = {}
+        self._message_reward_pruned_at = 0.0
+
+    def _prune_message_reward_cooldowns(self, now: float) -> None:
+        """Drops expired message-reward cooldown entries."""
+        if now - self._message_reward_pruned_at < MESSAGE_REWARD_COOLDOWN_SECONDS:
+            return
+        cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
+        self._message_reward_at = {
+            user_id: rewarded_at
+            for user_id, rewarded_at in self._message_reward_at.items()
+            if rewarded_at > cutoff
+        }
+        self._message_reward_pruned_at = now
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Rejects stale loan proposals left pending by an earlier process (runs once)."""
+        if self._startup_sweeps_done:
+            return
+        self._startup_sweeps_done = True
+        # Reject stale loan proposals whose decision views died with the previous process.
+        spawn_tracked(
+            coro=reject_loan_proposals_created_before(cutoff=self._started_at),
+            tasks=self._startup_tasks,
+            name="reject-stale-loan-requests",
+        )
+
+    @commands.Cog.listener()
+    async def on_message(self, message: Message) -> None:
+        """Awards the cooldown-gated message reward.
+
+        This is the only faucet that pays an action reward, and it is best-effort: a failed
+        credit or participation write is logged and swallowed.
+
+        Args:
+            message (Message): The message that was sent.
+        """
+        if message.author == self.bot.user or message.author.bot:
+            return
+
+        now = monotonic()
+        self._prune_message_reward_cooldowns(now=now)
+        last_rewarded_at = self._message_reward_at.get(message.author.id)
+        if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
+            # Reserve the cooldown slot before awaiting to prevent double-credits on rapid
+            # messages; restored in the except block if crediting fails.
+            self._message_reward_at[message.author.id] = now
+            guild = message.guild
+            try:
+                avatar_url = await guild_avatar_url(user=message.author, guild=guild)
+                await credit_with_repayment(
+                    user_id=message.author.id,
+                    name=message.author.name,
+                    avatar_url=avatar_url,
+                    amount=BASE_MESSAGE_REWARD_AMOUNT,
+                )
+            except Exception as exc:
+                if self._message_reward_at.get(message.author.id) == now:
+                    if last_rewarded_at is None:
+                        self._message_reward_at.pop(message.author.id, None)
+                    else:
+                        self._message_reward_at[message.author.id] = last_rewarded_at
+                # Broad on purpose: the reward is best-effort and must never raise out of
+                # the listener, so every failure mode (DB, avatar fetch) is swallowed.
+                logfire.warn(
+                    "Failed to award base message points",
+                    user_id=message.author.id,
+                    guild_id=guild.id if guild else None,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+            if guild is not None:
+                # Kept outside the reward try block so a failure here cannot roll back the
+                # cooldown slot and double-pay the reward on the next message.
+                try:
+                    await record_guild_participant(guild_id=guild.id, user_id=message.author.id)
+                except Exception as exc:
+                    # Broad on purpose: participation tracking is best-effort and must never
+                    # raise out of the listener.
+                    logfire.warn(
+                        "Failed to record economy participation",
+                        user_id=message.author.id,
+                        guild_id=guild.id,
+                        error_type=type(exc).__name__,
+                        _exc_info=exc,
+                    )
 
     @staticmethod
     async def _spending_held_by_table(
@@ -1287,9 +1392,10 @@ class EconomyCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds `EconomyCogs` to the bot.
+    """Upgrades `economy.db` and adds `EconomyCogs` to the bot.
 
     Args:
         bot (commands.Bot): Bot instance registering the cog.
     """
+    ensure_database_upgraded(section="economy")
     bot.add_cog(cog=EconomyCogs(bot=bot), override=True)

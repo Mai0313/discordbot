@@ -6,7 +6,8 @@ enters the same pipeline through an interaction-backed `TurnSurface` where gatew
 never arrive (unjoined servers, group DMs, and other users' DMs).
 """
 
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast, runtime_checkable
+from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
+import asyncio
 from functools import cached_property
 import contextlib
 
@@ -27,7 +28,7 @@ from nextcord import (
     HTTPException,
     PartialMessageable,
 )
-from nextcord.ext import commands
+from nextcord.ext import tasks, commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_RED
@@ -38,6 +39,8 @@ from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
+from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
@@ -61,9 +64,6 @@ from discordbot.cogs.gen_reply.feedback_store import (
 from discordbot.cogs.gen_reply.feedback_views import ReplyFeedbackView
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
-
-if TYPE_CHECKING:
-    import asyncio
 
 
 @runtime_checkable
@@ -180,15 +180,39 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Registers persistent feedback views and spawns one-shot post-restart memory resume."""
+        """Registers persistent feedback views, starts price-table refreshes, and resumes memory."""
         if self._resume_started:
             return
         # Register once regardless of `feedback_enabled` so buttons on earlier replies keep working.
         self.bot.add_view(ReplyFeedbackView(allow_regen=True, on_regen=self._handle_regen))
         # Start on the running loop; an unstarted service drops commits instead of binding early.
         memory_git.start()
+        if not self.price_table_task.is_running():
+            self.price_table_task.start()
         self._resume_started = True
         spawn_tracked(coro=self._resume_memory(), tasks=self._tasks, name="memory-resume")
+
+    def cog_unload(self) -> None:
+        """Stops the periodic price-table refresh loop when the cog unloads."""
+        self.price_table_task.cancel()
+
+    @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
+    async def price_table_task(self) -> None:
+        """Refreshes the LiteLLM model price table off the event loop.
+
+        Runs immediately on start to warm the cache, retries while degraded, and refreshes daily
+        once upstream has succeeded.
+        """
+        try:
+            await asyncio.to_thread(refresh_model_info)
+        except Exception as exc:
+            # Broad on purpose: an uncaught exception stops the tasks.loop permanently, and
+            # nextcord's bound `_error` crashes silently on class methods (`_injected` arg).
+            logfire.error(
+                "model price table refresh failed; retrying next pass",
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     async def _resume_memory(self) -> None:
         """Re-enqueues persisted review jobs and consolidates over-threshold scopes."""
@@ -697,9 +721,10 @@ class ReplyGeneratorCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the ReplyGeneratorCogs to the bot.
+    """Upgrades `reply.db` and adds `ReplyGeneratorCogs` to the bot.
 
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
+    ensure_database_upgraded(section="reply")
     bot.add_cog(cog=ReplyGeneratorCogs(bot=bot), override=True)

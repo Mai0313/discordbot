@@ -17,6 +17,7 @@ from nextcord.ext import commands
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from discordbot.typings.emojis import DONE_EMOJI, FAILED_EMOJI
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
@@ -28,10 +29,10 @@ from discordbot.utils.discord_errors import is_reply_target_gone
 # WORKING: in progress; DONE: card delivered; RETRY_LATER: transient fetch/timeout failure;
 # UNREADABLE: gone, private, or over Discord limits; FAILED: unexpected bot error.
 EXPANSION_WORKING_EMOJI: Final[str] = "🔗"
-EXPANSION_DONE_EMOJI: Final[str] = "<:greencheck:1517565102424068226>"
+EXPANSION_DONE_EMOJI: Final[str] = DONE_EMOJI
 EXPANSION_RETRY_LATER_EMOJI: Final[str] = "⏱️"
 EXPANSION_UNREADABLE_EMOJI: Final[str] = "⚠️"
-EXPANSION_FAILED_EMOJI: Final[str] = "<:redcross:1517565100838355016>"
+EXPANSION_FAILED_EMOJI: Final[str] = FAILED_EMOJI
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 

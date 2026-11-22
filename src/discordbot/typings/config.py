@@ -15,6 +15,12 @@ class DiscordConfig(BaseSettings):
         examples=["MTEz-..."],
         validation_alias=AliasChoices("DISCORD_BOT_TOKEN"),
     )
+    bot_activity: str = Field(
+        default="Discord",
+        description="Playing-activity label shown in the bot's Discord presence.",
+        examples=["Discord"],
+        validation_alias=AliasChoices("DISCORD_BOT_ACTIVITY"),
+    )
 
 
 class LoggingConfig(BaseSettings):
