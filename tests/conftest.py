@@ -5,16 +5,15 @@ every variable `.env.example` names from the process, so no setting reaches a te
 developer's `.env` or shell: a test that needs one sets it with `monkeypatch.setenv`. It also
 refuses every connection past loopback for the whole run (`_refuse_remote`).
 
-Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
-`tmp_path` SQLite file for one test, all through `_isolate_engine`, and every one is autouse.
-That file starts as a copy of `migrated_databases`, so every test runs on the schema the
-migrations build, exactly as a deployment does.
-`memory_isolated_dir` is the one a test requests, and it covers more than a directory: the
-store dir, the `memory_job` engine, the process-local caches, counters and task registries the
-store and pipeline hold, and the git committer. The autouse fixtures are the other half of that
-isolation, keeping a real deployment's databases and files out of every test whether or not it
-asked for them; the memory store stays live for a test that does not request
-`memory_isolated_dir`.
+Each `*_isolated_db` fixture points an owning engine at a fresh `tmp_path` SQLite file for one
+test, all through `_isolate_engine`, and every one is autouse (`reply_isolated_db` covers every
+store sharing `reply.db`, `memory_job` included). That file starts as a copy of
+`migrated_databases`, so every test runs on the schema the migrations build, exactly as a
+deployment does. `memory_isolated_dir` is the one a test requests, and it covers the store dir,
+the process-local caches, counters and task registries the store and pipeline hold, and the git
+committer. The autouse fixtures are the other half of that isolation, keeping a real deployment's
+databases and files out of every test whether or not it asked for them; the memory store stays
+live for a test that does not request `memory_isolated_dir`.
 """
 
 import os
@@ -35,7 +34,7 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.helpers.migrations import migration_config
-from tests.helpers.source_tree import env_example_names
+from tests.helpers.source_tree import REPO_ROOT, env_example_names
 
 # `discordbot` loads `.env` when it is imported. Settings match a name in any case, and the
 # SDKs read variables of their own (google-genai falls back to `GOOGLE_API_KEY` for the empty key
@@ -120,8 +119,16 @@ def migrated_databases(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pa
 
 @pytest.fixture(autouse=True)
 def upgraded_sections_reset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Starts each test with an empty migration latch so runs stay independent."""
-    monkeypatch.setattr("discordbot.utils.sqlite_config._upgraded_sections", set())
+    """Starts each test with the repo root pre-marked so unit tests never migrate live `./data`.
+
+    Tests exercising `ensure_database_upgraded` chdir into `tmp_path`, which is absent from the
+    latch so real migrations still run there.
+    """
+    repo_root = REPO_ROOT.resolve()
+    monkeypatch.setattr(
+        "discordbot.utils.sqlite_config._upgraded_sections",
+        {(repo_root, section) for section in ("cleanup", "economy", "games", "reply", "messages")},
+    )
 
 
 def _isolate_engine(
@@ -168,57 +175,23 @@ def economy_isolated_db(
 
 
 @pytest.fixture(autouse=True)
-def research_isolated_db(
+def reply_isolated_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
 ) -> None:
-    """Points the research session table at a throwaway `reply.db`.
+    """Points the shared `reply.db` engine at a throwaway copy for every store using it.
 
-    Autouse for the reason `expansion_store_isolated` is: a test that launches a run without the
-    swap would leave a `researching` row in the live `reply.db`, which the next real start would
-    try to resume.
+    Autouse because expansion placeholders, `/ask` turns, finalized reply snapshots, research
+    sessions, and staged memory turns write best-effort to `reply.db`, so a test missing the swap
+    would pass green while polluting the live database.
     """
     _isolate_engine(
         monkeypatch=monkeypatch,
-        target="discordbot.cogs.research.database._engine",
+        target="discordbot.utils.sqlite_config.reply_db_engine",
         db_path=tmp_path / "reply.db",
         template=migrated_databases["reply"],
     )
-
-
-@pytest.fixture(autouse=True)
-def ask_isolated_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
-) -> None:
-    """Points the `/ask` conversation table at a throwaway `reply.db`.
-
-    Autouse for the reason `expansion_store_isolated` is: every `/ask` turn records itself and a
-    failed write is swallowed, so a test missing the swap would pass green while writing its fake
-    turns into the live table.
-    """
-    _isolate_engine(
-        monkeypatch=monkeypatch,
-        target="discordbot.cogs.gen_reply.ask_store._engine",
-        db_path=tmp_path / "reply.db",
-        template=migrated_databases["reply"],
-    )
-
-
-@pytest.fixture(autouse=True)
-def feedback_isolated_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
-) -> None:
-    """Points the reply feedback tables at a throwaway `reply.db`.
-
-    Autouse for the same reason `ask_isolated_db` is: every finalized reply records a best-effort
-    `reply_turn` snapshot whose failure is swallowed, so a test missing the swap would pass green
-    while writing fake turns into the live database.
-    """
-    _isolate_engine(
-        monkeypatch=monkeypatch,
-        target="discordbot.cogs.gen_reply.feedback_store._engine",
-        db_path=tmp_path / "reply.db",
-        template=migrated_databases["reply"],
-    )
+    monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
+    monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
 
 
 @pytest.fixture(autouse=True)
@@ -227,7 +200,7 @@ def messages_isolated_db(
 ) -> None:
     """Points the message log at a throwaway `messages.db`.
 
-    Autouse for the reason `expansion_store_isolated` is: the log writes in a background task
+    Autouse for the reason `reply_isolated_db` is: the log writes in a background task
     whose failure is swallowed, so a test missing the swap would pass green while inserting its
     fake messages into the live file.
     """
@@ -240,10 +213,8 @@ def messages_isolated_db(
 
 
 @pytest.fixture
-def memory_isolated_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
-) -> Path:
-    """Per-test memory dir + isolated memory_job DB with reset process-local state."""
+def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Per-test memory dir with reset process-local state (`reply.db` is already isolated)."""
     memories_dir = tmp_path / "memories"
     monkeypatch.setattr("discordbot.services.memory.store._MEMORY_DIR", memories_dir)
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
@@ -264,18 +235,6 @@ def memory_isolated_dir(
     monkeypatch.setattr("discordbot.services.memory.consolidation._failed_observations", set())
     monkeypatch.setattr("discordbot.services.memory.consolidation._failed_compactions", {})
     monkeypatch.setattr("discordbot.services.memory.inflight._db_tasks", set())
-    # Point the memory_job engine at a throwaway reply.db so no test ever writes the
-    # real file: every schedule_memory_update now persists, and those writes are
-    # swallowed best-effort, so a missing swap would pass green while polluting the
-    # real DB.
-    _isolate_engine(
-        monkeypatch=monkeypatch,
-        target="discordbot.services.memory.database._engine",
-        db_path=tmp_path / "memory_reply.db",
-        template=migrated_databases["reply"],
-    )
-    monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
-    monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
     # _scope_locks, staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
     # and the memory semaphore are loop-local helpers that rebuild on the per-test event
     # loop, so they need no manual reset. An `asyncio.Task` left in a registry is unusable
@@ -295,25 +254,6 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     usage_dir = tmp_path / "usage"
     monkeypatch.setenv(name="USAGE_LOG_DIR", value=str(usage_dir))
     return usage_dir
-
-
-@pytest.fixture(autouse=True)
-def expansion_store_isolated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
-) -> None:
-    """Points the pending-expansion table at a throwaway `reply.db`.
-
-    Autouse for the reason `usage_log_isolated_dir` is: every expansion cog records its
-    placeholder, the write is swallowed best-effort, so a test missing the swap would pass
-    green while inserting rows into the live `reply.db` — where the next real restart would
-    find them and try to expand a link nobody posted.
-    """
-    _isolate_engine(
-        monkeypatch=monkeypatch,
-        target="discordbot.utils.expansion_placeholder._engine",
-        db_path=tmp_path / "expansion_reply.db",
-        template=migrated_databases["reply"],
-    )
 
 
 @pytest.fixture(autouse=True)
@@ -375,7 +315,7 @@ def cleanup_store_isolated(
 ) -> None:
     """Points the pending public-message cleanup table at a throwaway `cleanup.db`.
 
-    Autouse for the reason `expansion_store_isolated` is: every expiring public message is
+    Autouse for the reason `reply_isolated_db` is: every expiring public message is
     recorded for deletion, the write is swallowed best-effort, so a test missing the swap
     would pass green while inserting rows into the live `cleanup.db` — where the next real
     start would try to delete a message named by a test's fake ids.
@@ -394,7 +334,7 @@ def games_history_isolated_db(
 ) -> None:
     """Points the Blackjack round history at a throwaway `games.db`.
 
-    Autouse for the reason `expansion_store_isolated` is: every settled round records its
+    Autouse for the reason `reply_isolated_db` is: every settled round records its
     history in a background task whose failure is swallowed, so a test that settles a table
     without the swap would pass green while writing rows into the live `games.db`.
     """

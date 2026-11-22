@@ -7,21 +7,17 @@ without ruff's TC rules hiding `datetime` under `TYPE_CHECKING`.
 """
 
 from datetime import datetime
-from contextlib import AbstractAsyncContextManager
 
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, Index, Integer, DateTime, delete, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import open_reply_session
 
 # Write-side table retention cap (not a request budget in `typings/context_budgets.py`);
 # deliberately larger than `HISTORY_MESSAGE_LIMIT` so read-side budgets always bind first.
 ASK_TURN_RETENTION = 500
-
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
 
 class Base(DeclarativeBase):
@@ -67,14 +63,6 @@ class AskTurn(BaseModel):
     answer: str = Field(..., description="What the bot replied.")
 
 
-_database = SqliteBootstrap()
-
-
-def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `reply.db`."""
-    return _database.open_session(engine=_engine)
-
-
 async def load_ask_turns(channel_id: int, user_id: int, limit: int) -> list[AskTurn]:
     """Returns the newest `limit` turns of one conversation, ordered oldest-first.
 
@@ -83,7 +71,7 @@ async def load_ask_turns(channel_id: int, user_id: int, limit: int) -> list[AskT
         user_id (int): The person whose conversation this is.
         limit (int): Maximum number of turns to read.
     """
-    async with open_session() as session:
+    async with open_reply_session() as session:
         result = await session.execute(
             select(AskTurnRow)
             .where(AskTurnRow.channel_id == channel_id, AskTurnRow.user_id == user_id)
@@ -110,7 +98,7 @@ async def record_ask_turn(
         question (str): The `question` option, verbatim.
         answer (str): The finalized reply text.
     """
-    async with open_session() as session, session.begin():
+    async with open_reply_session() as session, session.begin():
         session.add(
             AskTurnRow(
                 channel_id=channel_id,

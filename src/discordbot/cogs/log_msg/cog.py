@@ -14,14 +14,14 @@ from alembic.migration import MigrationContext
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.asyncio_locks import spawn_tracked
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import SqliteBootstrap, sqlite_url
 
 if TYPE_CHECKING:
     import asyncio
 
 # Single shared engine, never a per-message `cached_property`: that leaks the
 # connection pool, dialect cache and inspector cache once per Discord message.
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/messages.db")
+_engine: AsyncEngine = create_async_engine(url=sqlite_url(filename="messages.db"))
 
 metadata = MetaData()
 Table(

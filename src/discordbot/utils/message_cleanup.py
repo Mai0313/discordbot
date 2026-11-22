@@ -13,11 +13,11 @@ from nextcord.ext import commands
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.asyncio_locks import LoopLocalRegistry, spawn_tracked
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import SqliteBootstrap, sqlite_url
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
 _delete_tasks: LoopLocalRegistry[str, set[asyncio.Task[None]]] = LoopLocalRegistry()
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/cleanup.db")
+_engine: AsyncEngine = create_async_engine(url=sqlite_url(filename="cleanup.db"))
 metadata = MetaData()
 Table(
     "pending_public_message",

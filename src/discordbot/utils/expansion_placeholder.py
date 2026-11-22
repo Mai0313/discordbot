@@ -15,13 +15,12 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from sqlalchemy import Text, Index, Integer, DateTime, delete, select
 from nextcord.ext import commands
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.typings.emojis import DONE_EMOJI, FAILED_EMOJI
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import open_reply_session
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 
@@ -33,8 +32,6 @@ EXPANSION_DONE_EMOJI: Final[str] = DONE_EMOJI
 EXPANSION_RETRY_LATER_EMOJI: Final[str] = "⏱️"
 EXPANSION_UNREADABLE_EMOJI: Final[str] = "⚠️"
 EXPANSION_FAILED_EMOJI: Final[str] = FAILED_EMOJI
-
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
 
 class Base(DeclarativeBase):
@@ -104,15 +101,12 @@ class ExpansionRetry(Protocol):
         ...
 
 
-_database = SqliteBootstrap()
-
-
 async def _record_pending(
     placeholder: Message, source_message: Message, source: str, url: str
 ) -> None:
     """Persists a posted placeholder so a restart can find it again, best-effort."""
     try:
-        async with _database.open_session(engine=_engine) as session, session.begin():
+        async with open_reply_session() as session, session.begin():
             session.add(
                 PendingExpansionRow(
                     message_id=placeholder.id,
@@ -136,7 +130,7 @@ async def _record_pending(
 async def _forget_pending(message_id: int) -> None:
     """Drops the row for a placeholder that is now settled, best effort."""
     try:
-        async with _database.open_session(engine=_engine) as session, session.begin():
+        async with open_reply_session() as session, session.begin():
             await session.execute(
                 delete(PendingExpansionRow).where(PendingExpansionRow.message_id == message_id)
             )
@@ -153,7 +147,7 @@ async def _forget_pending(message_id: int) -> None:
 
 async def _load_pending(source: str, created_before: datetime) -> list[PendingExpansion]:
     """Reads one cog's expansions recorded before `created_before`, oldest first."""
-    async with _database.open_session(engine=_engine) as session:
+    async with open_reply_session() as session:
         rows = await session.scalars(
             select(PendingExpansionRow)
             .where(

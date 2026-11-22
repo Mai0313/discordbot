@@ -10,7 +10,6 @@ Usage::
 
 from typing import Literal
 import asyncio
-from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
@@ -22,6 +21,7 @@ from alembic.config import Config
 from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.economy import clamped_balance
+from discordbot.utils.sqlite_config import DATABASE_DIR
 from discordbot.services.economy.database import top_n, get_account, adjust_balance
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
@@ -284,7 +284,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
     args = _parse_args(argv=argv)
-    db_path = Path("./data/database/economy.db")
+    db_path = DATABASE_DIR / "economy.db"
     if args.dry_run:
         if not db_path.is_file():
             raise SystemExit(f"no economy database at {db_path}")

@@ -7,8 +7,8 @@ One row per scope stages a phase-1 review turn so a restart can resume work not 
 - `failed`: LLM failure with `transcript` kept for one restart retry.
 - `cleared`: transcript-free tombstone whose token blocks older staging writes from reappearing.
 
-`reply.db` is shared with other modules, so this module keeps its own `Base`, bootstrap, and
-module-level `AsyncEngine` singleton. Do not add `from __future__ import annotations`: SQLAlchemy
+`reply.db` is shared with other modules through `utils/sqlite_config.py::reply_db_engine`, while
+this module keeps its own `Base`. Do not add `from __future__ import annotations`: SQLAlchemy
 resolves `Mapped[datetime]` at class-definition time, and postponed annotations cause ruff's TC
 rules to move `datetime` under `TYPE_CHECKING`, breaking import.
 
@@ -27,20 +27,18 @@ from contextlib import AbstractAsyncContextManager
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, String, Integer, DateTime, func, text, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.memory import MemoryFlavor
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import open_reply_session, current_reply_db_engine
 
 # Lifecycle of a persisted review turn, stored in the `status` column.
 MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
 # One process would need a trillion captured memory events to exhaust its range.
 _TOKEN_BLOCK_SIZE = 1_000_000_000_000
-
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
 # Negative values are process-local placeholders resolved lazily into a reserved SQLite range.
 _token_sequence = count(start=1)
@@ -120,12 +118,9 @@ class MemoryJob(BaseModel):
     last_error: str | None = Field(..., description="Bounded failure blurb when failed.")
 
 
-_database = SqliteBootstrap()
-
-
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `reply.db`."""
-    return _database.open_session(engine=_engine)
+    """Returns an async session context manager on the shared `reply.db` engine."""
+    return open_reply_session()
 
 
 def cast_flavor(value: str) -> MemoryFlavor:
@@ -177,7 +172,7 @@ def new_token() -> int:
 
 async def _reserve_token_block(engine: AsyncEngine) -> int:
     """Atomically reserves a token range and returns its exclusive lower bound."""
-    async with _database.open_session(engine=engine) as session:
+    async with open_reply_session(engine=engine) as session:
         await session.execute(statement=text("BEGIN IMMEDIATE"))
         clock_high = await session.scalar(
             statement=select(MemoryTokenClockRow.high_watermark).where(MemoryTokenClockRow.id == 1)
@@ -207,7 +202,7 @@ async def _resolve_token(token: int) -> int:
     sequence = -token
     if sequence > _TOKEN_BLOCK_SIZE:
         raise RuntimeError("memory token placeholder is outside the reserved block")
-    engine = _engine
+    engine = current_reply_db_engine()
     with _token_state_lock:
         block_base = _token_block_bases.get(engine)
     if block_base is None:

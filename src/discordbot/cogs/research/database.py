@@ -1,9 +1,10 @@
 """Persistent deep-research session store (`data/database/reply.db`).
 
 Tracks one row per launched research thread for restart resume (`store=True`) and the per-owner
-single-active-session limit. Opens an `AsyncSession` against `_engine` per call so tests can swap
-`_engine`. Omits `from __future__ import annotations`: SQLAlchemy resolves `Mapped[datetime]` at
-class creation, where ruff's `TC` rules would move `datetime` under `TYPE_CHECKING`.
+single-active-session limit. Opens sessions against the shared `reply.db` engine via
+`open_reply_session`. Omits `from __future__ import annotations`: SQLAlchemy resolves
+`Mapped[datetime]` at class creation, where ruff's `TC` rules would move `datetime` under
+`TYPE_CHECKING`.
 """
 
 from typing import Literal
@@ -13,16 +14,14 @@ from contextlib import AbstractAsyncContextManager
 from pydantic import Field, BaseModel
 from sqlalchemy import String, Integer, DateTime, insert, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import open_reply_session
 
 # Persisted values for the phase column; values outside this set are ignored by queries.
 ResearchPhase = Literal["researching", "done", "failed", "cancelled"]
-
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
 
 class Base(DeclarativeBase):
@@ -76,12 +75,9 @@ class PersistentResearchSession(BaseModel):
     )
 
 
-_database = SqliteBootstrap()
-
-
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `_engine`."""
-    return _database.open_session(engine=_engine)
+    """Returns an async session context manager on the shared `reply.db` engine."""
+    return open_reply_session()
 
 
 def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:

@@ -26,11 +26,11 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import SqliteBootstrap, sqlite_url
 from discordbot.cogs.games.blackjack import hand_value
 from discordbot.utils.stored_integer import StoredInteger
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
+_engine: AsyncEngine = create_async_engine(url=sqlite_url(filename="games.db"))
 
 
 class Base(DeclarativeBase):

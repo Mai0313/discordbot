@@ -14,10 +14,10 @@ from collections.abc import Sequence
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, Index, Integer, DateTime, ForeignKey, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.sqlite_config import SqliteBootstrap
+from discordbot.utils.sqlite_config import open_reply_session
 
 FeedbackVote = Literal["up", "down"]
 DownvoteReasonTag = Literal["off_topic", "inaccurate", "tone", "verbose", "other"]
@@ -25,8 +25,6 @@ FeedbackReasonTag = DownvoteReasonTag | Literal["regen"]
 ReplyRoute = Literal["QA", "IMAGE", "VIDEO"]
 ReplySurface = Literal["gateway", "ask"]
 FeedbackAction = Literal["set", "change", "clear"]
-
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
 
 class Base(DeclarativeBase):
@@ -187,12 +185,9 @@ def parse_reply_message_ids(raw: str | None, fallback_id: int) -> list[int]:
     return ids
 
 
-_database = SqliteBootstrap(enable_foreign_keys=True)
-
-
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `reply.db`."""
-    return _database.open_session(engine=_engine)
+    """Returns an async session context manager on the shared `reply.db` engine."""
+    return open_reply_session()
 
 
 async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are all per-turn inputs
