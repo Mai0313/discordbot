@@ -67,6 +67,7 @@ from discordbot.services.memory.store import (
 )
 from discordbot.services.memory.deltas import partition_raw_entries
 from discordbot.services.memory.writer import MemoryWriterAI
+from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.regeneration import regenerate_scope_memory
 
 if TYPE_CHECKING:
@@ -263,6 +264,8 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
         return
     if not _confirmed():
         return
+    # Offline rebuilds stay uncommitted for operator diff and revert; prevent lazy git commits.
+    memory_git.enabled = False
     config = LLMConfig()
     client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
     writer = MemoryWriterAI(client=client, model=model)

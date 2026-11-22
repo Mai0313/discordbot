@@ -39,7 +39,9 @@ class _GitRequest(BaseModel):
 class MemoryGitService(BaseModel):
     """Serialized, best-effort committer for the memory store.
 
-    Call `start()` inside a running event loop to bind the queue and worker task.
+    Call `start()` inside a running event loop to bind the queue and worker task; `enqueue()`
+    also starts the worker lazily when called on a running loop. Rebinds cleanly when the active
+    event loop changes across tests or restarts.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -48,55 +50,118 @@ class MemoryGitService(BaseModel):
 
     _queue: asyncio.Queue[_GitRequest] | None = PrivateAttr(default=None)
     _worker: asyncio.Task[None] | None = PrivateAttr(default=None)
+    _loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
+    _active_process: asyncio.subprocess.Process | None = PrivateAttr(default=None)
+    _stopping: bool = PrivateAttr(default=False)
     _failures: int = PrivateAttr(default=0)
+
+    def _reset_stale_loop_state(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Drops queue and worker handles left over from a previous event loop."""
+        if self._loop is not None and self._loop is not loop:
+            self._queue = None
+            self._worker = None
+            self._loop = None
+            self._active_process = None
+            self._stopping = False
+            self._failures = 0
+
+    @property
+    def is_running(self) -> bool:
+        """Returns whether the git worker is currently active on the running event loop."""
+        if self._worker is None or self._worker.done():
+            return False
+        try:
+            return self._loop is asyncio.get_running_loop()
+        except RuntimeError:
+            return False
 
     def start(self) -> None:
         """Starts the single worker if git history is enabled and a repository exists.
 
-        Not lazy: requests enqueued before `start()` are dropped.
+        Idempotent on the active event loop; evaluates `MemoryConfig().git_history_enabled` here
+        rather than at import time and rebinds cleanly if the event loop changed.
         """
-        if not self.enabled or self._worker is not None:
+        if not self.enabled or self._stopping:
+            return
+        loop = asyncio.get_running_loop()
+        self._reset_stale_loop_state(loop=loop)
+        if self._worker is not None and not self._worker.done():
+            return
+        if not MemoryConfig().git_history_enabled:
+            logfire.info("Memory git history disabled by configuration")
+            self.enabled = False
             return
         if not (memory_root() / ".git").is_dir():
             logfire.info("Memory git history disabled: the store is not a git repository")
             self.enabled = False
             return
+        self._failures = 0
         self._queue = asyncio.Queue()
+        self._loop = loop
         self._worker = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
-        """Cancels the worker, leaving any queued commits undone."""
+        """Cancels the worker and terminates any live git subprocess, leaving queued commits undone."""
+        self._stopping = True
         worker = self._worker
+        worker_loop = self._loop
+        process = self._active_process
         self._worker = None
         self._queue = None
-        if worker is None:
-            return
-        worker.cancel()
-        # Shutdown cancels the worker; any uncommitted change folds into the next commit.
-        with contextlib.suppress(asyncio.CancelledError):
-            await worker
+        self._loop = None
+        self._active_process = None
+        try:
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            same_loop = worker_loop is current_loop and current_loop is not None
+            if worker is not None and same_loop:
+                worker.cancel()
+                # Shutdown cancels the worker; any uncommitted change folds into the next commit.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+            if process is not None and process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                if same_loop:
+                    await process.wait()
+        finally:
+            self._stopping = False
 
     def enqueue(self, scope: str, reason: str) -> None:
         """Queues a commit of `scope` without blocking, raising, or awaiting.
+
+        Lazily starts the worker when a loop is running; drops requests when disabled, stopping,
+        or outside any running event loop.
 
         Args:
             scope (str): Scope directory to stage, relative to the store root.
             reason (str): Commit subject tag (for example, `'update'` or `'clear'`).
         """
+        if not self.enabled or self._stopping:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._reset_stale_loop_state(loop=loop)
+        if self._worker is None or self._worker.done():
+            self.start()
         queue = self._queue
         if queue is None or not self.enabled:
             return
         queue.put_nowait(_GitRequest(scope=scope, reason=reason))
 
     async def _run(self) -> None:
-        """Drains the queue one request at a time, discarding requests once disabled."""
+        """Drains the queue one request at a time, stopping once disabled."""
         queue = self._queue
         if queue is None:
             return
-        while True:
+        while self.enabled:
             request = await queue.get()
             if not self.enabled:
-                continue
+                return
             await self._commit(request=request)
 
     async def _commit(self, request: _GitRequest) -> None:
@@ -158,6 +223,7 @@ class MemoryGitService(BaseModel):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._active_process = process
         try:
             async with asyncio.timeout(delay=_GIT_COMMAND_TIMEOUT_SECONDS):
                 stdout, stderr = await process.communicate()
@@ -167,6 +233,9 @@ class MemoryGitService(BaseModel):
                     process.kill()
                 await process.wait()
             raise
+        finally:
+            if self._active_process is process:
+                self._active_process = None
         if process.returncode != 0:
             raise RuntimeError(
                 f"git {' '.join(args)} exited {process.returncode}: "
@@ -175,5 +244,5 @@ class MemoryGitService(BaseModel):
         return stdout.decode(errors="replace")
 
 
-# Process-wide singleton mirroring the single store repository.
-memory_git = MemoryGitService(enabled=MemoryConfig().git_history_enabled)
+# Process-wide singleton mirroring the single store repository; config is evaluated at `start()`.
+memory_git = MemoryGitService()

@@ -198,8 +198,11 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     def cog_unload(self) -> None:
-        """Stops the periodic price-table refresh loop when the cog unloads."""
+        """Stops the price-table refresh loop and stops git history if no memory cog remains."""
         self.price_table_task.cancel()
+        get_cog = getattr(self.bot, "get_cog", None)
+        if memory_git.is_running and (get_cog is None or get_cog("MemoryCogs") is None):
+            spawn_tracked(coro=memory_git.stop(), tasks=self._tasks, name="memory-git-stop")
 
     @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
     async def price_table_task(self) -> None:

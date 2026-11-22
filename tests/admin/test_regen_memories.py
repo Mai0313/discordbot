@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -22,10 +23,12 @@ from discordbot.services.memory.store import (
     read_raw_entries,
 )
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE2_COMPACTION_BLOCK
+from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.regeneration import RegenerationReport
 from discordbot.services.memory.server_prompts import SERVER_PHASE2_PROMPT
 
 from tests.helpers.memory import FakeMemoryClient, make_fact
+from tests.helpers.user_memory import _answers, _consolidated
 
 if TYPE_CHECKING:
     from discordbot.services.memory.writer import MemoryWriterAI
@@ -370,3 +373,44 @@ def test_a_rebuild_that_kept_no_fact_is_not_reported_as_having_no_evidence(
 def test_a_rebuild_that_stopped_short_is_not_reported_as_rebuilt_empty(result: str) -> None:
     """It may have stopped before distilling anything, so its empty counts prove nothing."""
     assert regen_script._loss_note(result=result, buckets={}) == ""
+
+
+def _git(repository: Path, *args: str) -> str:
+    """Runs one git command in a scratch repository, returning stdout."""
+    return subprocess.run(  # noqa: S603 -- fixed argv against a tmp_path repository
+        ["git", "-C", str(repository), *args],  # noqa: S607 -- git is resolved from PATH
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def _init_baseline_repo(repository: Path) -> None:
+    """Initializes a scratch git repository holding one seeded scope at baseline."""
+    repository.mkdir(parents=True, exist_ok=True)
+    _git(repository, "init", "-q", "-b", "main")
+    _git(repository, "config", "user.email", "test@example.com")
+    _git(repository, "config", "user.name", "test")
+    _seed(scope=_USER)
+    _git(repository, "add", "-A")
+    _git(repository, "commit", "-q", "-m", "baseline")
+
+
+async def test_offline_regen_keeps_memory_git_disabled_so_rebuilds_stay_uncommitted(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An offline rebuild must not lazily start `memory_git` and auto-commit partial results."""
+    _init_baseline_repo(repository=memory_isolated_dir)
+    monkeypatch.setattr(memory_git, "enabled", True)
+    client = FakeMemoryClient()
+    client.responses.answer = _answers(facts=_consolidated(text="重建後"))
+    monkeypatch.setattr(regen_script.console, "input", lambda *args, **kwargs: "y")
+    monkeypatch.setattr(regen_script, "AsyncOpenAI", lambda **kwargs: client)
+
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=_USER, dry_run=False
+    )
+
+    assert not memory_git.enabled
+    assert not memory_git.is_running
+    assert _git(memory_isolated_dir, "log", "--format=%s").splitlines() == ["baseline"]
