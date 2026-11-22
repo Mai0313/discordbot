@@ -14,6 +14,7 @@ from discordbot.utils.discord_embeds import (
     DEFAULT_EMBED_SPACER_FILENAME,
     utf16_length,
     embed_spacer_url,
+    embed_text_length,
 )
 from discordbot.cogs.parse_twitter.cog import _PARENT_HEADER, _TRUNCATED_NOTICE, TwitterCogs
 from discordbot.services.platforms.twitter import (
@@ -239,12 +240,7 @@ async def test_a_deep_thread_of_long_posts_fits_one_message() -> None:
         ),
     )
     embeds = expansion_embeds(message=message)
-    spent = sum(
-        utf16_length(value=text)
-        for embed in embeds
-        for text in (embed.description, embed.footer.text, embed.author.name)
-        if isinstance(text, str)
-    )
+    spent = sum(embed_text_length(embed=embed) for embed in embeds)
 
     assert len(embeds) == 10
     assert spent <= 6000
@@ -280,12 +276,7 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
         ),
     )
     embeds = expansion_embeds(message=message)
-    spent = sum(
-        utf16_length(value=text)
-        for embed in embeds
-        for text in (embed.description, embed.footer.text, embed.author.name)
-        if isinstance(text, str)
-    )
+    spent = sum(embed_text_length(embed=embed) for embed in embeds)
     alone = TwitterCogs(bot=stub_bot())._build_embeds(
         conversation=twitter_post(text="t" * 5000, image_urls=[])
     )
