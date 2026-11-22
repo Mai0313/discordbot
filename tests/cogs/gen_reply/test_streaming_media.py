@@ -18,15 +18,17 @@ from discordbot.typings.media import (
     LoadedMedia,
     music_filename,
 )
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.utils.media_delivery import DISCORD_ATTACHMENT_LIMIT, MediaItem
+from discordbot.utils.media_delivery import (
+    DISCORD_ATTACHMENT_LIMIT,
+    MediaItem,
+    MediaPlan,
+    MediaDeliveryPlanner,
+)
 from discordbot.cogs.gen_reply.markers import MAX_INLINE_IMAGES, InlineMarkers
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.streaming import (
-    DISCORD_MESSAGE_LIMIT,
-    ResponseStreamer,
-    stream_answer_with_retry,
-)
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
 from discordbot.cogs.gen_reply.generation import (
     MusicClip,
     VoiceClip,
@@ -36,6 +38,7 @@ from discordbot.cogs.gen_reply.generation import (
     VideoGenerator,
     VoiceGenerator,
 )
+from discordbot.cogs.gen_reply.inline_media import InlineMediaAttacher
 from discordbot.cogs.gen_reply.status_marks import (
     IMAGE_EMOJI,
     MUSIC_EMOJI,
@@ -283,22 +286,36 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     assert message.replies[0].allowed_mentions_seen[-1] is not None
 
 
-async def test_finalize_media_edit_posts_followup_when_content_would_overflow() -> None:
+async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A hosted URL on an already-near-2000-char reply rides a follow-up, not the main edit."""
     streamer = _streamer(message=FakeMessage())
     reply = FakeReply()
     streamer.reply = as_message(fake=reply)
+    streamer.reply_messages = [as_message(fake=reply)]
     streamer._body_text = "x" * (DISCORD_MESSAGE_LIMIT - 10)
     streamer.stored_content = streamer._body_text
 
-    await streamer._finalize_media_edit(
-        reply=as_message(fake=reply), files=[], hosted_urls=["https://media.test/abc.wav"]
-    )
+    async def fake_collect(self: InlineMediaAttacher) -> list[MediaItem]:
+        del self
+        return [MediaItem(source=b"wav", filename="abc.wav")]
+
+    async def fake_plan(self: MediaDeliveryPlanner, **_kwargs: object) -> MediaPlan:
+        del self
+        return MediaPlan(hosted_urls=["https://media.test/abc.wav"])
+
+    monkeypatch.setattr(InlineMediaAttacher, "_collect_generated_media", fake_collect)
+    monkeypatch.setattr(MediaDeliveryPlanner, "plan", fake_plan)
+
+    await streamer._attach_generated_media()
 
     # The URL did not fit the main content, so it was posted as a follow-up reply (which must keep
-    # AllowedMentions.none()), and the parent content was left unchanged.
+    # AllowedMentions.none()), appended to `reply_messages`, and the parent content was left unchanged.
     assert "media.test" not in (reply.content or "")
-    assert any("media.test" in (child.content or "") for child in reply.replies)
+    assert len(reply.replies) == 1
+    assert "media.test" in (reply.replies[0].content or "")
+    assert streamer.reply_messages == [as_message(fake=reply), as_message(fake=reply.replies[0])]
     assert reply.allowed_mentions_seen[-1] is not None
 
 
@@ -311,16 +328,30 @@ async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> Non
     streamer.reply = as_message(fake=reply)
     streamer._body_text = "x" * (DISCORD_MESSAGE_LIMIT - 10)
     streamer.stored_content = streamer._body_text
-
-    await streamer._finalize_media_edit(
-        reply=as_message(fake=reply), files=[], hosted_urls=["https://media.test/abc.wav"]
+    attacher = InlineMediaAttacher(
+        message=streamer.message,
+        surface=streamer.surface,
+        markers=streamer.markers,
+        media_delivery=streamer.media_delivery,
     )
 
+    result = await attacher.apply_media_edit(
+        reply=as_message(fake=reply),
+        files=[],
+        hosted_urls=["https://media.test/abc.wav"],
+        render_with_hosted=lambda hosted_block: streamer._render_reply_content(
+            hosted_block=hosted_block
+        ),
+    )
+
+    assert result.landed is False
     assert reply.replies == []
     assert DROPPED_HINT_EMOJI in message.added_reactions
 
 
-async def test_finalize_media_edit_keeps_state_clean_when_edit_fails() -> None:
+async def test_finalize_media_edit_keeps_state_clean_when_edit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A failed hosted-URL edit must not mutate `stored_content` or leak into later memory edits."""
     message = FakeMessage()
     streamer = _streamer(message=message)
@@ -334,11 +365,19 @@ async def test_finalize_media_edit_keeps_state_clean_when_edit_fails() -> None:
     before = streamer.stored_content
     reply.edit_error = RuntimeError("edit failed")
 
-    ok = await streamer._finalize_media_edit(
-        reply=as_message(fake=reply), files=[], hosted_urls=["https://media.test/never-landed.mp4"]
-    )
+    async def fake_collect(self: InlineMediaAttacher) -> list[MediaItem]:
+        del self
+        return [MediaItem(source=b"mp4", filename="never-landed.mp4")]
 
-    assert ok is False
+    async def fake_plan(self: MediaDeliveryPlanner, **_kwargs: object) -> MediaPlan:
+        del self
+        return MediaPlan(hosted_urls=["https://media.test/never-landed.mp4"])
+
+    monkeypatch.setattr(InlineMediaAttacher, "_collect_generated_media", fake_collect)
+    monkeypatch.setattr(MediaDeliveryPlanner, "plan", fake_plan)
+
+    await streamer._attach_generated_media()
+
     assert streamer.stored_content == before
     assert "never-landed.mp4" not in streamer.final_answer_text()
     assert DROPPED_HINT_EMOJI in message.added_reactions
@@ -363,11 +402,12 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
         reply.edit_error = RuntimeError("file uploads are limited here")
     streamer = _streamer(message=message, reply=as_message(fake=reply))
 
-    async def voice_clip() -> MediaItem:
+    async def voice_clip(self: InlineMediaAttacher) -> MediaItem:
         """Stands in for a synthesized clip ready to attach."""
+        del self
         return MediaItem(source=b"RIFF", filename="reply.wav")
 
-    monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_voice_candidate", voice_clip)
     logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     await streamer._attach_generated_media()
@@ -405,7 +445,7 @@ async def test_ask_media_is_sized_by_the_interaction_it_goes_out_through(
         return 1024**3
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.upload_limit_for", record_ceiling)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.upload_limit_for", record_ceiling)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.inline_media.upload_limit_for", record_ceiling)
     interaction = _AskInteraction()
     message = FakeMessage()
     surface = TurnSurface(
@@ -419,11 +459,12 @@ async def test_ask_media_is_sized_by_the_interaction_it_goes_out_through(
         reply=as_message(fake=FakeReply()),
     )
 
-    async def voice_clip() -> MediaItem:
+    async def voice_clip(self: InlineMediaAttacher) -> MediaItem:
         """Stands in for a synthesized clip ready to attach."""
+        del self
         return MediaItem(source=b"RIFF", filename="reply.wav")
 
-    monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_voice_candidate", voice_clip)
 
     await _media_routes(cog=_cog(), message=as_message(fake=message), surface=surface)._deliver(
         data=b"PNG", filename="image.png"
@@ -448,20 +489,26 @@ async def test_media_past_the_attachment_cap_earns_the_dropped_hint(
         """Stands in for one rendered clip ready to attach."""
         return MediaItem(source=b"clip", filename=name)
 
-    async def images(source_images_task: object) -> list[MediaItem]:
+    async def images(self: InlineMediaAttacher, source_images_task: object) -> list[MediaItem]:
         """Stands in for every inline image a reply may carry."""
-        del source_images_task
+        del self, source_images_task
         return [
             MediaItem(source=b"png", filename=f"generated_{index}.png")
             for index in range(MAX_INLINE_IMAGES)
         ]
 
-    monkeypatch.setattr(streamer, "_build_voice_candidate", lambda: clip(name="reply.wav"))
-    monkeypatch.setattr(streamer, "_build_music_candidate", lambda: clip(name="music.mp3"))
     monkeypatch.setattr(
-        streamer, "_build_video_candidate", lambda source_images_task: clip(name="video.mp4")
+        InlineMediaAttacher, "_build_voice_candidate", lambda self: clip(name="reply.wav")
     )
-    monkeypatch.setattr(streamer, "_build_image_candidates", images)
+    monkeypatch.setattr(
+        InlineMediaAttacher, "_build_music_candidate", lambda self: clip(name="music.mp3")
+    )
+    monkeypatch.setattr(
+        InlineMediaAttacher,
+        "_build_video_candidate",
+        lambda self, source_images_task: clip(name="video.mp4"),
+    )
+    monkeypatch.setattr(InlineMediaAttacher, "_build_image_candidates", images)
 
     await streamer._attach_generated_media()
 
@@ -488,18 +535,19 @@ async def test_ask_media_still_rendering_when_the_window_ends_is_dropped_with_a_
         reply=as_message(fake=reply),
     )
 
-    async def voice_clip() -> MediaItem:
+    async def voice_clip(self: InlineMediaAttacher) -> MediaItem:
         """Stands in for a synthesized clip ready to attach."""
+        del self
         return MediaItem(source=b"RIFF", filename="reply.wav")
 
-    async def never_finishes(source_images_task: object) -> MediaItem:
+    async def never_finishes(self: InlineMediaAttacher, source_images_task: object) -> MediaItem:
         """Stands in for a video render that outlasts the window."""
-        del source_images_task
+        del self, source_images_task
         await asyncio.sleep(60)
         return MediaItem(source=b"mp4", filename="video.mp4")
 
-    monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
-    monkeypatch.setattr(streamer, "_build_video_candidate", never_finishes)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_voice_candidate", voice_clip)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_video_candidate", never_finishes)
 
     await asyncio.wait_for(streamer._attach_generated_media(), timeout=5)
 
@@ -517,9 +565,9 @@ async def test_a_cancelled_turn_takes_its_inline_media_renders_with_it(
     rendering = asyncio.Event()
     stopped = asyncio.Event()
 
-    async def never_finishes(source_images_task: object) -> MediaItem:
+    async def never_finishes(self: InlineMediaAttacher, source_images_task: object) -> MediaItem:
         """Stands in for a video render, noting when it is stopped."""
-        del source_images_task
+        del self, source_images_task
         rendering.set()
         try:
             await asyncio.sleep(60)
@@ -527,7 +575,7 @@ async def test_a_cancelled_turn_takes_its_inline_media_renders_with_it(
             stopped.set()
         return MediaItem(source=b"mp4", filename="video.mp4")
 
-    monkeypatch.setattr(streamer, "_build_video_candidate", never_finishes)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_video_candidate", never_finishes)
     turn = asyncio.ensure_future(streamer._attach_generated_media())
     await rendering.wait()
     turn.cancel()
@@ -1001,8 +1049,9 @@ async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answe
         reply=as_message(fake=reply),
     )
 
-    async def never_finishes() -> MediaItem:
+    async def never_finishes(self: InlineMediaAttacher) -> MediaItem:
         """Stands in for a voice clip that outlasts the window."""
+        del self
         await asyncio.sleep(60)
         return MediaItem(source=b"RIFF", filename="reply.wav")
 
@@ -1010,7 +1059,7 @@ async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answe
         """Answers at once."""
         return _stream_events()
 
-    monkeypatch.setattr(streamer, "_build_voice_candidate", never_finishes)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_voice_candidate", never_finishes)
 
     answer = await asyncio.wait_for(
         stream_answer_with_retry(
@@ -1042,7 +1091,8 @@ async def test_attach_generated_media_cancels_and_drains_source_images_task_on_t
     source_started = asyncio.Event()
     source_drained = asyncio.Event()
 
-    async def slow_sources() -> list[object]:
+    async def slow_sources(self: InlineMediaAttacher) -> list[object]:
+        del self
         source_started.set()
         try:
             await asyncio.sleep(60)
@@ -1050,13 +1100,15 @@ async def test_attach_generated_media_cancels_and_drains_source_images_task_on_t
             source_drained.set()
         return []
 
-    async def slow_image_builder(source_images_task: object) -> list[MediaItem]:
-        del source_images_task
+    async def slow_image_builder(
+        self: InlineMediaAttacher, source_images_task: object
+    ) -> list[MediaItem]:
+        del self, source_images_task
         await asyncio.sleep(60)
         return []
 
-    monkeypatch.setattr(streamer, "_load_marker_source_images", slow_sources)
-    monkeypatch.setattr(streamer, "_build_image_candidates", slow_image_builder)
+    monkeypatch.setattr(InlineMediaAttacher, "_load_marker_source_images", slow_sources)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_image_candidates", slow_image_builder)
 
     await asyncio.wait_for(streamer._attach_generated_media(), timeout=5)
 
@@ -1074,14 +1126,16 @@ async def test_attach_generated_media_catches_unexpected_builder_exception(
     streamer = _streamer(message=message, reply=as_message(fake=reply))
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
-    async def explode_voice() -> MediaItem:
+    async def explode_voice(self: InlineMediaAttacher) -> MediaItem:
+        del self
         raise RuntimeError("unexpected tts crash")
 
-    async def ok_music() -> MediaItem:
+    async def ok_music(self: InlineMediaAttacher) -> MediaItem:
+        del self
         return MediaItem(source=b"mp3", filename="song.mp3")
 
-    monkeypatch.setattr(streamer, "_build_voice_candidate", explode_voice)
-    monkeypatch.setattr(streamer, "_build_music_candidate", ok_music)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_voice_candidate", explode_voice)
+    monkeypatch.setattr(InlineMediaAttacher, "_build_music_candidate", ok_music)
 
     await streamer._attach_generated_media()
 
