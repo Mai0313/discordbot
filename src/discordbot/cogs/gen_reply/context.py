@@ -186,7 +186,7 @@ def latest_reply_ids(messages: list[Message], bot_user_id: int | None) -> set[in
     """
     own = {message.id: message for message in messages if message.author.id == bot_user_id}
     # The blank line put back in front: a footer that followed its answer in a message of its own
-    # lost the one it anchors on to Discord's trim (`ResponseStreamer._split_reply_for_discord`).
+    # lost the one it anchors on to Discord's trim (`chunking.split_reply_for_discord`).
     current = next(
         (
             message

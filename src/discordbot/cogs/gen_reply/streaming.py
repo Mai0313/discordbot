@@ -5,7 +5,6 @@ import time
 from typing import Literal, TypedDict
 import asyncio
 import contextlib
-import unicodedata
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
@@ -15,9 +14,8 @@ from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_aft
 from nextcord.ui import View
 from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
-from openai.types.responses import Response, ResponseOutputItem, ResponseStreamEvent
+from openai.types.responses import ResponseStreamEvent
 
-from discordbot.utils.urls import normalized_host
 from discordbot.typings.media import (
     VOICE_REPLY_FILENAME,
     INLINE_IMAGE_FILENAME,
@@ -45,6 +43,8 @@ from discordbot.cogs.gen_reply.markers import (
     scrub_markers_for_preview,
 )
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE, TurnSurface
+from discordbot.cogs.gen_reply.chunking import split_reply_for_discord
+from discordbot.cogs.gen_reply.tool_use import AnswerToolUse
 from discordbot.cogs.gen_reply.generation import (
     ImageGenerator,
     MusicGenerator,
@@ -78,15 +78,6 @@ ANSWER_RETRY_JITTER_SECONDS = 1.0
 # Shown before background memory review finishes, then replaced in place.
 MEMORY_PENDING_NOTE = f"-# {MEMORY_WRITE_EMOJI} 正在整理記憶⋯"
 
-# Appended when surface.answer_capacity caps an /ask reply.
-TRUNCATED_NOTICE = "\n-# 回覆太長，這裡放不下後面的內容了"
-
-_CODE_FENCE = "```"
-# Bounded language tag carried onto reopened code blocks so splitting always makes progress.
-_FENCE_LANGUAGE_RE = re.compile(pattern=r"[A-Za-z0-9_+\-.#]{0,20}")
-# Combining, format, and emoji categories not to split beside when hard-cutting.
-_CLINGING_CATEGORIES = frozenset({"Mn", "Mc", "Me", "Cf", "Sk", "So"})
-
 # Window caps for the live thinking preview; char budget bounds wrapped paragraphs.
 REASONING_PREVIEW_MAX_LINES = 4
 REASONING_PREVIEW_MAX_CHARS = 320
@@ -99,126 +90,6 @@ class _EditKwargs(TypedDict, total=False):
     files: list[File]
     view: View
     allowed_mentions: AllowedMentions
-
-
-def _citation_domain(url: str, title: str) -> str | None:
-    """Returns the cited domain from `url`, falling back to `title` for Vertex redirects."""
-    host = normalized_host(url=url)
-    if host != "vertexaisearch.cloud.google.com":
-        return host or None
-    if re.fullmatch(pattern=r"(?:[a-z0-9-]+\.)+[a-z]{2,}", string=title, flags=re.IGNORECASE):
-        return title.lower()
-    return None
-
-
-def _url_citations(output: list[ResponseOutputItem]) -> list[tuple[str, str]]:
-    """The `(url, title)` of every `url_citation` annotation across message output text parts."""
-    return [
-        (annotation.url, annotation.title)
-        for item in output
-        if item.type == "message"
-        for part in item.content
-        if part.type == "output_text"
-        for annotation in part.annotations
-        if annotation.type == "url_citation"
-    ]
-
-
-class AnswerToolUse(BaseModel):
-    """What the answer's server-side tools did, as far as its backend reports it.
-
-    None on a field means the backend does not report it, never zero: a zero there would read as
-    an answer that did not search or cite.
-    """
-
-    web_search_queries: int | None = Field(
-        default=None, description="Distinct Google Search queries the answer ran."
-    )
-    url_fetches: int | None = Field(
-        default=None,
-        description="Distinct URLs URL context retrieved. The Responses bridge never reports it.",
-    )
-    url_citations: int | None = Field(
-        default=None, description="`url_citation` annotations on the answer text."
-    )
-    cited_domains: list[str] | None = Field(
-        default=None,
-        description="Distinct domains those citations point at, in first-cited order.",
-        examples=[["wikipedia.org", "nownews.com"]],
-    )
-
-    def record_citations(self, citations: list[tuple[str, str]]) -> None:
-        """Records the answer's `(url, title)` citations as a count and distinct domains.
-
-        Args:
-            citations (list[tuple[str, str]]): Citation `(url, title)` pairs.
-        """
-        self.url_citations = len(citations)
-        domains = (_citation_domain(url=url, title=title) for url, title in citations)
-        self.cited_domains = list(dict.fromkeys(domain for domain in domains if domain))
-
-    def record_response(self, response: Response) -> None:
-        """Records citations and search-query counts reported on a completed Responses API answer.
-
-        Args:
-            response (Response): Completed Responses API response.
-        """
-        self.record_citations(citations=_url_citations(output=response.output))
-        if response.usage:
-            details = response.usage.input_tokens_details
-            extra = (details.model_extra if details is not None else None) or {}
-            self.web_search_queries = extra.get("web_search_requests", 0)
-
-
-def _in_code_block(text: str, cut: int) -> bool:
-    """Whether `cut` falls inside a code block of `text`, pairing fences the way Discord does."""
-    return text.count(_CODE_FENCE, 0, cut) % 2 == 1 and text.find(_CODE_FENCE, cut) != -1
-
-
-def _last_break(text: str, end: int, floor: int, outside_code: bool) -> int:
-    """Returns the cleanest break index in `text[:end]` at or after `floor`."""
-    for separator in ("\n\n", "\n", " "):
-        cut = text.rfind(separator, 0, end)
-        while outside_code and cut >= floor and _in_code_block(text=text, cut=cut):
-            cut = text.rfind(separator, 0, cut)
-        if cut >= floor:
-            return cut
-    cut = end
-    opening = text.rfind("<", 0, end)
-    if opening >= floor and opening > text.rfind(">", 0, end):
-        cut = opening
-    while cut > floor and _CLINGING_CATEGORIES & {
-        unicodedata.category(text[cut - 1]),
-        unicodedata.category(text[cut]),
-    }:
-        cut -= 1
-    return cut
-
-
-def _cut_cleanly(text: str, budget: int, earliest: int) -> tuple[str, str]:
-    """Splits `text` within `[earliest, budget]`, closing and reopening overrun code fences."""
-    floor = max(budget // 2, earliest)
-    cut = _last_break(text=text, end=budget, floor=floor, outside_code=True)
-    if not _in_code_block(text=text, cut=cut):
-        return text[:cut], text[cut:]
-    opener = text.rfind(_CODE_FENCE, 0, cut)
-    if opener >= earliest and text[:opener].strip():
-        return text[:opener], text[opener:]
-    language = text[opener + len(_CODE_FENCE) :].split("\n", 1)[0]
-    fence = (
-        _CODE_FENCE + language if _FENCE_LANGUAGE_RE.fullmatch(string=language) else _CODE_FENCE
-    )
-    # Reserve room for the closing fence here and reopening fence on the remainder.
-    end = budget - len(_CODE_FENCE) - 1
-    fenced_floor = max(floor, earliest + len(fence) + 1)
-    if fenced_floor > end:
-        return text[:cut], text[cut:]
-    cut = _last_break(text=text, end=end, floor=fenced_floor, outside_code=False)
-    head, rest = text[:cut], text[cut:]
-    if not _in_code_block(text=text, cut=cut):
-        return head, rest
-    reopened = f"{fence}{rest}" if rest.startswith("\n") else f"{fence}\n{rest}"
-    return f"{head}\n{_CODE_FENCE}", reopened
 
 
 class IncompleteAnswerError(Exception):
@@ -415,48 +286,6 @@ class ResponseStreamer(BaseModel):
     _reasoning_logged: bool = PrivateAttr(default=False)
     _answer_seconds: float = PrivateAttr(default=0.0)
 
-    @staticmethod
-    def _split_reply_for_discord(
-        content: str, footer: str, max_messages: int | None = None
-    ) -> tuple[str, list[str]]:
-        """Splits `content` and `footer` into parent and follow-up chunks within `max_messages`."""
-        if len(f"{content}{footer}") <= DISCORD_MESSAGE_LIMIT:
-            return f"{content}{footer}", []
-        if len(footer) >= DISCORD_MESSAGE_LIMIT:
-            raise ValueError("Usage footer is too long for Discord message content")
-
-        messages: list[str] = []
-        remaining = content
-        while len(remaining) + len(footer) > DISCORD_MESSAGE_LIMIT:
-            left = None if max_messages is None else max_messages - len(messages)
-            if left is not None and left <= 1:
-                budget = DISCORD_MESSAGE_LIMIT - len(footer) - len(TRUNCATED_NOTICE)
-                # Last allowed message: close an overrun code block instead of breaking before it.
-                head, _ = _cut_cleanly(text=remaining, budget=budget, earliest=budget // 2)
-                remaining = f"{head}{TRUNCATED_NOTICE}"
-                break
-            if not messages and len(remaining) <= DISCORD_MESSAGE_LIMIT:
-                # An answer that fits one message is not split for its footer, which follows alone.
-                messages.append(remaining)
-                remaining = ""
-                break
-            # Keep text ahead of the footer on follow-ups so Discord does not strip
-            # USAGE_FOOTER_RE's leading blank line.
-            budget = (
-                DISCORD_MESSAGE_LIMIT
-                if len(remaining) > DISCORD_MESSAGE_LIMIT
-                else DISCORD_MESSAGE_LIMIT - len(footer)
-            )
-            # Earliest cut that lets remaining text + footer fit in the remaining message slots.
-            earliest = 0
-            if left is not None:
-                needed = len(remaining) + len(footer) - (left - 1) * DISCORD_MESSAGE_LIMIT
-                earliest = needed if needed <= budget else 0
-            head, remaining = _cut_cleanly(text=remaining, budget=budget, earliest=earliest)
-            messages.append(head)
-        messages.append(f"{remaining}{footer}")
-        return messages[0], messages[1:]
-
     def _render_preview(self) -> str:
         """Returns the preview text: scrubbed content once started, else a reasoning tail."""
         if self.content_started:
@@ -512,7 +341,7 @@ class ResponseStreamer(BaseModel):
 
     async def _write_final_message(self, content: str, footer: str) -> None:
         """Writes the final reply and overflow chunks via `surface`; no-ops if deleted."""
-        parent_content, follow_up_chunks = self._split_reply_for_discord(
+        parent_content, follow_up_chunks = split_reply_for_discord(
             content=content,
             footer=footer,
             max_messages=self.surface.answer_capacity(has_landed_reply=self.reply is not None),
@@ -640,7 +469,7 @@ class ResponseStreamer(BaseModel):
         if self.reply is None:
             return False
         # Clear reasoning preview with "" (not None): nextcord multipart edit omits content=None.
-        content, chunks = self._split_reply_for_discord(
+        content, chunks = split_reply_for_discord(
             content=scrub_markers_for_preview(text=self.stored_content)
             if self.content_started
             else "",
