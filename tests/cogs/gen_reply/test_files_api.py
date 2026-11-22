@@ -25,6 +25,7 @@ async def _uploaded_uri(
     filename: str = "clip.mp4",
     source: Path | bytes = b"data",
     timeout_seconds: float = 5.0,
+    file_api_enabled: bool = True,
 ) -> str | None:
     """Uploads through the helper and returns the uri its part references, or None."""
     part = await upload_as_input_file(
@@ -33,6 +34,7 @@ async def _uploaded_uri(
         mime_type="video/mp4",
         filename=filename,
         timeout_seconds=timeout_seconds,
+        file_api_enabled=file_api_enabled,
     )
     return None if part is None else part.get("file_id")
 
@@ -176,10 +178,9 @@ async def test_input_file_part_carries_the_uri_and_a_real_extension() -> None:
     }
 
 
-async def test_the_kill_switch_skips_the_upload_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_kill_switch_skips_the_upload_entirely() -> None:
     """Switched off, the transfer never starts, so an outage costs no upload either."""
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     files = FakeGeminiFiles()
-    uri = await _uploaded_uri(files=files)
+    uri = await _uploaded_uri(files=files, file_api_enabled=False)
     assert uri is None
     assert files.upload_calls == []

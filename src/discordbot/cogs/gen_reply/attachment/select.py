@@ -4,7 +4,6 @@ from collections.abc import Callable
 
 from google import genai
 
-from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
@@ -16,7 +15,9 @@ from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploa
 
 
 def build_attachment_handler(
-    model: ModelSettings, gemini_client: Callable[[], genai.Client | None]
+    model: ModelSettings,
+    gemini_client: Callable[[], genai.Client | None],
+    file_api_enabled: bool = True,
 ) -> AttachmentRenderer:
     """Returns the attachment renderer matching the answer (slow) model's provider.
 
@@ -32,8 +33,9 @@ def build_attachment_handler(
         model (ModelSettings): Selected answer model settings.
         gemini_client (Callable[[], genai.Client | None]): Provider for the deployment's direct
             Gemini client, or `None` when no Gemini key is configured.
+        file_api_enabled (bool): Whether provider Files API uploads are enabled.
     """
-    if not LLMConfig().file_api_enabled:
+    if not file_api_enabled:
         return InlineRenderer()
     if model.is_gemini and gemini_client() is not None:
         return GeminiFileUploader(gemini_client=gemini_client)

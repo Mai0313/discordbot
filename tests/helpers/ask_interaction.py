@@ -14,6 +14,7 @@ from nextcord import Message, ChannelType, PartialMessageable
 from nextcord.enums import InteractionContextType
 from nextcord.utils import utcnow
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.ask_message import build_ask_message
 
@@ -131,4 +132,6 @@ def _ask_message(interaction: Any) -> Message:  # noqa: ANN401 -- see `_interact
 
 def _toolkit(interaction: Any) -> ReplyToolkit:  # noqa: ANN401 -- see `_interaction`
     """A toolkit whose clients no test here ever calls through."""
-    return ReplyToolkit(bot=interaction.client, openai_client=SimpleNamespace(), gemini_api_key="")
+    return ReplyToolkit(
+        bot=interaction.client, openai_client=SimpleNamespace(), config=LLMConfig.model_construct()
+    )

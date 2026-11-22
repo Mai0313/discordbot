@@ -18,8 +18,9 @@ from discordbot.cogs.gen_reply.attachment.openai_file_api import OPENAI_FILE_EXP
 from tests.helpers.reply_fakes import (
     TEST_LLM_MODEL,
     FakeOpenAIFiles,
-    _att,
     _png_bytes,
+    _att_source,
+    _url_source,
     _fake_uploader,
     _fake_openai_uploader,
 )
@@ -41,17 +42,18 @@ async def test_dead_source_skipped_within_ttl_then_retried(
     )
     uploader = _fake_uploader()
     url = "https://example.test/dead.png"
+    source = _url_source(url=url)
 
-    assert await uploader.render_image(source=url, cache_key=url, allow_dead_cache=True) is None
+    assert await uploader.render_image(source=source, allow_dead_cache=True) is None
     assert calls["n"] == 1
     # Within the TTL the source is skipped without another fetch.
-    assert await uploader.render_image(source=url, cache_key=url, allow_dead_cache=True) is None
+    assert await uploader.render_image(source=source, allow_dead_cache=True) is None
     assert calls["n"] == 1
     # Backdating the marker past the TTL retries the fetch exactly once (self-heal).
     uploader._dead_sources.set(
         key=url, value=datetime.now(tz=UTC) - DEAD_SOURCE_TTL - timedelta(seconds=1)
     )
-    assert await uploader.render_image(source=url, cache_key=url, allow_dead_cache=True) is None
+    assert await uploader.render_image(source=source, allow_dead_cache=True) is None
     assert calls["n"] == 2
 
 
@@ -71,10 +73,11 @@ async def test_non_history_render_does_not_dead_cache_transient_failure(
     )
     uploader = _fake_uploader()
     url = "https://example.test/fresh.png"
+    source = _url_source(url=url)
 
     # Default path (current/reference): each call re-attempts the fetch and never marks dead.
-    assert await uploader.render_image(source=url, cache_key=url) is None
-    assert await uploader.render_image(source=url, cache_key=url) is None
+    assert await uploader.render_image(source=source) is None
+    assert await uploader.render_image(source=source) is None
     assert calls["n"] == 2
     assert url not in uploader._dead_sources
 
@@ -168,8 +171,7 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
     renderer = _fake_openai_uploader(files=files)
 
     image_rendered = await renderer.render_image(
-        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
-        cache_key="pic.png",
+        source=_att_source(filename="pic.png", content_type="image/png", payload=_png_bytes())
     )
     assert image_rendered is not None
     image_part = image_rendered.part
@@ -184,15 +186,14 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
         lambda image_file: LoadedMedia(data=b"jpeg", mime_type="image/jpeg"),
     )
-    url_image_rendered = await renderer.render_image(source=url, cache_key=url)
+    url_image_rendered = await renderer.render_image(source=_url_source(url=url))
     assert url_image_rendered is not None
     url_image_part = url_image_rendered.part
     assert url_image_part["type"] == "input_image"
     assert url_image_part["file_id"] == "file-test"
 
     file_rendered = await renderer.render_file(
-        attachment=_att(filename="notes.txt", content_type="text/plain", payload=b"hello world"),
-        cache_key="notes.txt",
+        source=_att_source(filename="notes.txt", content_type="text/plain", payload=b"hello world")
     )
     assert file_rendered is not None
     file_part = file_rendered.part

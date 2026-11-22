@@ -1,6 +1,6 @@
 """Builds Responses API input messages from Discord messages."""
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
 from mimetypes import guess_type
@@ -29,11 +29,16 @@ from discordbot.utils.llm_transcript import (
     defuse_separator_fences,
 )
 from discordbot.typings.context_budgets import HISTORY_EARLIER_REPLY_MAX_CHARS
-from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
+from discordbot.cogs.gen_reply.attachment.base import (
+    AttachmentSource,
+    AttachmentRenderer,
+    loggable_cache_key,
+)
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
     load_attachment_bytes,
+    resolve_source_filename,
 )
 
 if TYPE_CHECKING:
@@ -49,54 +54,6 @@ def shorten_earlier_reply(text: str) -> str:
     if len(text) <= HISTORY_EARLIER_REPLY_MAX_CHARS:
         return text
     return f"{text[:HISTORY_EARLIER_REPLY_MAX_CHARS].rstrip()} [… rest of this reply omitted]"
-
-
-class AttachmentSource(BaseModel):
-    """One renderable attachment source classified from message metadata.
-
-    Collected once per message and shared by every render of it. Carries only metadata (no
-    bytes, no network) so it is safe to build on the route critical path.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    handle: SkipValidation[Attachment | StickerItem | str] = Field(
-        ..., description="The attachment, sticker, or image URL the loaders consume."
-    )
-    kind: Literal["image", "file"] = Field(
-        ..., description="Whether the source renders as an image or a generic file."
-    )
-    is_sticker: bool = Field(
-        default=False,
-        description=(
-            "Whether the source is a Discord sticker. Separate from `kind`, which stays the "
-            "render path a sticker shares with every other image; this is what the text-only "
-            "marker names it."
-        ),
-    )
-    content_type: str = Field(
-        ...,
-        description=(
-            "Resolved MIME type; empty when the sent type is blank or parameter-only, or when "
-            "none is sent and the filename is unguessable."
-        ),
-    )
-    cache_key: int | str = Field(
-        ...,
-        description="Stable identity (attachment/sticker id or chosen embed URL) for the cache.",
-    )
-    size: int | None = Field(
-        default=None,
-        description=(
-            "Bytes Discord reports for an attachment; None for a sticker or an embed image, "
-            "which report none."
-        ),
-    )
-
-    @property
-    def marker_kind(self) -> str:
-        """The name an `[attachment: ...]` marker gives this source: a sticker as such, else its kind."""
-        return "sticker" if self.is_sticker else self.kind
 
 
 class MessageInputBuilder(BaseModel):
@@ -269,6 +226,7 @@ class MessageInputBuilder(BaseModel):
                     kind="image" if content_type.startswith("image/") else "file",
                     content_type=content_type,
                     cache_key=attachment.id,
+                    filename=attachment.filename,
                     size=attachment.size,
                 )
             )
@@ -280,6 +238,7 @@ class MessageInputBuilder(BaseModel):
                     is_sticker=True,
                     content_type=guess_type(sticker.url)[0] or "image/png",
                     cache_key=sticker.id,
+                    filename=resolve_source_filename(source=sticker, url_fallback="image.png"),
                 )
             )
         for embed in embeds:
@@ -291,6 +250,7 @@ class MessageInputBuilder(BaseModel):
                             kind="image",
                             content_type=guess_type(url)[0] or "image/png",
                             cache_key=url,
+                            filename="image.png",
                         )
                     )
         return sources
@@ -307,9 +267,7 @@ class MessageInputBuilder(BaseModel):
         rejected: list[tuple[AttachmentSource, str, bool]] = []
         for source in sources:
             required = self.required_modality(content_type=source.content_type)
-            carried = self.attachment_handler.carries(
-                content_type=source.content_type, cache_key=source.cache_key, size=source.size
-            )
+            carried = self.attachment_handler.carries(source=source)
             if required in modalities and carried:
                 accepted.append(source)
             else:
@@ -404,29 +362,36 @@ class MessageInputBuilder(BaseModel):
         )
         return [loaded for group in groups for loaded in group]
 
-    async def get_video_sources(self, message: Message) -> list[LoadedMedia]:
-        """Returns a single-element list with the first readable video attachment on `message`, or `[]`.
+    async def get_turn_video_source(
+        self, message: Message, replied_to: Message | None
+    ) -> LoadedMedia | None:
+        """Returns the first readable direct video attachment on `message` or `replied_to`, or None.
 
-        Downloads at most the first usable direct video attachment for video editing, skipping
-        failed reads and trying the next attachment.
+        Checks `message` before `replied_to` so a newly attached clip takes precedence, skipping
+        failed reads and trying the next video attachment.
 
         Args:
-            message (Message): Message to inspect for direct video attachments.
+            message (Message): Current message being answered.
+            replied_to (Message | None): Referenced message being replied to, or None.
         """
-        for source in self.collect_attachment_sources(message=message):
-            if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
-                try:
-                    return [await load_attachment_bytes(attachment=source.handle)]
-                except Exception as exc:
-                    # Broad: a Discord/transport read failure degrades to trying the next clip.
-                    logfire.warn(
-                        "failed to read a source video attachment; trying the next",
-                        message_id=message.id,
-                        filename=source.handle.filename,
-                        error_type=type(exc).__name__,
-                        _exc_info=exc,
-                    )
-        return []
+        messages = [message] if replied_to is None else [message, replied_to]
+        for source_message in messages:
+            for source in self.collect_attachment_sources(message=source_message):
+                if source.content_type.startswith("video/") and isinstance(
+                    source.handle, Attachment
+                ):
+                    try:
+                        return await load_attachment_bytes(attachment=source.handle)
+                    except Exception as exc:
+                        # Broad: a Discord/transport read failure degrades to trying the next clip.
+                        logfire.warn(
+                            "failed to read a source video attachment; trying the next",
+                            message_id=source_message.id,
+                            filename=source.filename,
+                            error_type=type(exc).__name__,
+                            _exc_info=exc,
+                        )
+        return None
 
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
@@ -490,18 +455,13 @@ class MessageInputBuilder(BaseModel):
             if source.kind == "image":
                 tasks.append(
                     self.attachment_handler.render_image(
-                        source=source.handle,
-                        cache_key=source.cache_key,
-                        allow_dead_cache=allow_dead_cache,
+                        source=source, allow_dead_cache=allow_dead_cache
                     )
                 )
             else:
-                # Only attachments are ever classified as files; stickers and embeds are images.
                 tasks.append(
                     self.attachment_handler.render_file(
-                        attachment=cast("Attachment", source.handle),
-                        cache_key=source.cache_key,
-                        allow_dead_cache=allow_dead_cache,
+                        source=source, allow_dead_cache=allow_dead_cache
                     )
                 )
         return list(await asyncio.gather(*tasks))

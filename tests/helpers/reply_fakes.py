@@ -41,6 +41,7 @@ from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.cogs.gen_reply.streaming import ResponseStreamer
 from discordbot.cogs.gen_reply.media_reply import MediaReplyRoutes
+from discordbot.cogs.gen_reply.attachment.base import AttachmentSource
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
@@ -584,14 +585,13 @@ def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUpl
     return uploader
 
 
-def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
+def _cog(bot_user_id: int = 999, file_api_enabled: bool = True) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs over fake clients, its LLMConfig pinned.
 
     The config is every field's declared default, so a checkout's `.env` cannot decide a test;
-    a test about it sets it on the cog. Everything else, the media planner (which the suite
-    keeps from hosting), the usage recorder and the attachment handler choice included, still
-    reads the environment. The toolkit alone holds a key, whose client is a fake, so a Gemini
-    answer model gets the uploading handler a keyed deployment does.
+    a test about it sets it on the cog. The toolkit alone holds a key, whose client is a fake,
+    so a Gemini answer model gets the uploading handler a keyed deployment does unless
+    `file_api_enabled` is false.
     """
     added_views: list[object] = []
 
@@ -611,9 +611,15 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
             )
         )
     )
-    cog.config = LLMConfig.model_construct()
+    cog.config = LLMConfig.model_construct(file_api_enabled=file_api_enabled)
     cog.__dict__["openai_client"] = FakeClient()
-    toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="test-key")
+    toolkit = ReplyToolkit(
+        bot=cog.bot,
+        openai_client=cog.openai_client,
+        config=LLMConfig.model_construct(
+            gemini_api_key="test-key", file_api_enabled=file_api_enabled
+        ),
+    )
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     # Seeded into the cached_property's slot, so every path reads this one rather than
     # building a real toolkit against the test deployment's empty credentials.
@@ -829,6 +835,39 @@ def _att(
     """Builds a FakeAttachment viewed as the nextcord Attachment a renderer expects."""
     return cast(
         "Attachment", FakeAttachment(filename=filename, content_type=content_type, payload=payload)
+    )
+
+
+def _att_source(
+    filename: str = "file.txt",
+    content_type: str = "text/plain",
+    payload: bytes = b"hello",
+    cache_key: int | str | None = None,
+    attachment: Attachment | None = None,
+) -> AttachmentSource:
+    """Builds a classified `AttachmentSource` over an attachment for renderer tests."""
+    handle = attachment or _att(filename=filename, content_type=content_type, payload=payload)
+    resolved_name = attachment.filename if attachment is not None else filename
+    return AttachmentSource(
+        handle=handle,
+        kind="image" if content_type.startswith("image/") else "file",
+        content_type=content_type,
+        cache_key=resolved_name if cache_key is None else cache_key,
+        filename=resolved_name,
+        size=handle.size,
+    )
+
+
+def _url_source(
+    url: str, cache_key: int | str | None = None, filename: str = "image.png"
+) -> AttachmentSource:
+    """Builds a classified image `AttachmentSource` over an embed URL for renderer tests."""
+    return AttachmentSource(
+        handle=url,
+        kind="image",
+        content_type="image/png",
+        cache_key=url if cache_key is None else cache_key,
+        filename=filename,
     )
 
 

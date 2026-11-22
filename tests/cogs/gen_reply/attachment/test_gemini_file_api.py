@@ -228,21 +228,13 @@ async def test_pending_uploads_lru_evicts_oldest_and_refreshes_on_repoll_and_ove
     assert repoll.uploaded is None
     assert (
         await uploader._upload_file(
-            cache_key="k1",
-            filename="v1.mp4",
-            data=b"x",
-            content_type="video/mp4",
-            kind="file",
+            cache_key="k1", filename="v1.mp4", data=b"x", content_type="video/mp4", kind="file"
         )
         is None
     )
     assert (
         await uploader._upload_file(
-            cache_key="k128",
-            filename="v128.mp4",
-            data=b"x",
-            content_type="video/mp4",
-            kind="file",
+            cache_key="k128", filename="v128.mp4", data=b"x", content_type="video/mp4", kind="file"
         )
         is None
     )

@@ -14,7 +14,6 @@ from collections.abc import Callable
 
 from google import genai
 import logfire
-from nextcord import Attachment, StickerItem
 from pydantic import Field, BaseModel, PrivateAttr
 from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -30,10 +29,11 @@ from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processi
 from discordbot.cogs.gen_reply.attachment.base import (
     UploadKind,
     FileBytesLoader,
+    AttachmentSource,
     FileUploadRenderer,
     loggable_cache_key,
 )
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 
 class PendingUpload(BaseModel):
@@ -88,26 +88,23 @@ class GeminiFileUploader(FileUploadRenderer):
     )
     # Uploads that timed out while still `PROCESSING`, keyed by attachment source `cache_key`.
     # Re-polled on the next reference and kept until provider expiry; bounded at 128 entries.
-    _pending_uploads: BoundedLRU[int | str, PendingUpload] = PrivateAttr(default_factory=BoundedLRU)
+    _pending_uploads: BoundedLRU[int | str, PendingUpload] = PrivateAttr(
+        default_factory=BoundedLRU
+    )
 
     async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
         """Returns `source` uploaded to the Gemini Files API as an `input_file` part, or `None`.
 
         Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
-            cache_key (int | str): Per-source identifier for pending and dead-source caching.
+            source (AttachmentSource): Classified image attachment, sticker, or URL to upload.
             allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
         """
-        source_name = resolve_source_filename(source=source, url_fallback="image.png")
         uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=source_name,
-            load_data=lambda: load_image_bytes(source=source),
+            cache_key=source.cache_key,
+            filename=source.filename,
+            load_data=lambda: load_image_bytes(source=source.handle),
             kind="image",
             allow_dead_cache=allow_dead_cache,
         )
@@ -115,7 +112,7 @@ class GeminiFileUploader(FileUploadRenderer):
             return None
         # LiteLLM drops `filename`, but the Interactions answer path classifies parts by extension.
         part = ResponseInputFileParam(
-            type="input_file", file_id=uploaded.uri, filename=source_name
+            type="input_file", file_id=uploaded.uri, filename=source.filename
         )
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 

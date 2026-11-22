@@ -8,7 +8,7 @@ import asyncio
 from discordbot.typings.media import LoadedMedia
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 
-from tests.helpers.reply_fakes import FakeAttachment, _att, _png_bytes
+from tests.helpers.reply_fakes import FakeAttachment, _png_bytes, _att_source, _url_source
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
@@ -25,7 +25,9 @@ async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
     clip = FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"0" * 32)
 
     rendered = await InlineRenderer().render_file(
-        attachment=cast("Attachment", clip), cache_key="clip.mp4"
+        source=_att_source(
+            content_type="video/mp4", cache_key="clip.mp4", attachment=cast("Attachment", clip)
+        )
     )
 
     assert rendered is None
@@ -44,15 +46,16 @@ async def test_inline_renderer_drops_a_source_that_fails_to_load(
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.inline.load_attachment_bytes", fail)
     renderer = InlineRenderer()
-
-    rendered = await renderer.render_file(
-        attachment=cast("Attachment", FakeAttachment(filename="notes.txt")),
+    source = _att_source(
+        content_type="text/plain",
         cache_key="notes.txt",
-        allow_dead_cache=True,
+        attachment=cast("Attachment", FakeAttachment(filename="notes.txt")),
     )
 
+    rendered = await renderer.render_file(source=source, allow_dead_cache=True)
+
     assert rendered is None
-    assert renderer.carries(content_type="text/plain", cache_key="notes.txt", size=None)
+    assert renderer.carries(source=source)
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:
@@ -61,8 +64,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
 
     # Image -> base64 input_image (no Files API upload).
     image_rendered = await renderer.render_image(
-        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
-        cache_key="pic.png",
+        source=_att_source(filename="pic.png", content_type="image/png", payload=_png_bytes())
     )
     assert image_rendered is not None
     image_part = image_rendered.part
@@ -74,8 +76,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
 
     # Text/code file -> inlined as input_text with a filename header.
     text_rendered = await renderer.render_file(
-        attachment=_att(filename="notes.txt", content_type="text/plain", payload=b"hello world"),
-        cache_key="notes.txt",
+        source=_att_source(filename="notes.txt", content_type="text/plain", payload=b"hello world")
     )
     assert text_rendered is not None
     text_part = text_rendered.part
@@ -85,8 +86,9 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
 
     # A marker typed into the file cannot pass as one of the pipeline's own.
     forged_rendered = await renderer.render_file(
-        attachment=_att(filename="f.txt", content_type="text/plain", payload=b"==== Current ===="),
-        cache_key="f.txt",
+        source=_att_source(
+            filename="f.txt", content_type="text/plain", payload=b"==== Current ===="
+        )
     )
     assert forged_rendered is not None
     forged_part = forged_rendered.part
@@ -95,10 +97,9 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
 
     # PDF -> inlined as base64 input_file file_data (not a Files-API file_id).
     pdf_rendered = await renderer.render_file(
-        attachment=_att(
+        source=_att_source(
             filename="doc.pdf", content_type="application/pdf", payload=b"%PDF-1.4 fake"
-        ),
-        cache_key="doc.pdf",
+        )
     )
     assert pdf_rendered is not None
     pdf_part = pdf_rendered.part
@@ -108,10 +109,9 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
 
     # Non-text, non-PDF binary -> dropped.
     binary_rendered = await renderer.render_file(
-        attachment=_att(
+        source=_att_source(
             filename="blob.bin", content_type="application/octet-stream", payload=b"\x00\x01\xff"
-        ),
-        cache_key="blob.bin",
+        )
     )
     assert binary_rendered is None
 
@@ -136,7 +136,9 @@ async def test_inline_renderer_bounds_loads_with_media_semaphore(
     )
     renderer = InlineRenderer()
     results = await asyncio.gather(*[
-        renderer.render_image(source=f"https://cdn.example/{i}.png", cache_key=f"k{i}")
+        renderer.render_image(
+            source=_url_source(url=f"https://cdn.example/{i}.png", cache_key=f"k{i}")
+        )
         for i in range(6)
     ])
 
@@ -147,29 +149,20 @@ async def test_inline_renderer_bounds_loads_with_media_semaphore(
 async def test_inline_renderer_masks_signed_url_and_attaches_decode_exc_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unknown-MIME logs strip query tokens, and UTF-8 decode drops attach `_exc_info=True`."""
+    """UTF-8 decode drops mask signed URL cache keys and attach `_exc_info=True`."""
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
     renderer = InlineRenderer()
-    unknown = FakeAttachment(
-        filename="mystery",
-        content_type=None,
-        url="https://cdn.discordapp.com/attachments/1/2/mystery?ex=1&hm=secret",
+    binary = _att_source(
+        filename="blob.bin",
+        content_type="application/octet-stream",
+        payload=b"\x00\x01\xff",
+        cache_key="https://cdn.discordapp.com/attachments/1/2/blob.bin?ex=1&hm=secret",
     )
-    assert (
-        await renderer.render_file(attachment=cast("Attachment", unknown), cache_key="mystery")
-        is None
-    )
+    assert await renderer.render_file(source=binary) is None
     assert any(
-        fields.get("url") == "https://cdn.discordapp.com/attachments/1/2/mystery"
-        for _, fields in warns
-    )
-
-    binary = _att(
-        filename="blob.bin", content_type="application/octet-stream", payload=b"\x00\x01\xff"
-    )
-    assert await renderer.render_file(attachment=binary, cache_key="blob.bin") is None
-    assert any(
-        fields.get("filename") == "blob.bin" and fields.get("_exc_info") is True
+        fields.get("filename") == "blob.bin"
+        and fields.get("cache_key") == "https://cdn.discordapp.com/attachments/1/2/blob.bin"
+        and fields.get("_exc_info") is True
         for _, fields in warns
     )
 
@@ -189,6 +182,6 @@ def test_unreadable_lru_evicts_oldest_entry_past_cap() -> None:
         )
 
     assert len(renderer._unreadable) == 128
-    assert renderer.carries(content_type="text/plain", cache_key="k0", size=None)
-    assert not renderer.carries(content_type="text/plain", cache_key="k1", size=None)
-    assert not renderer.carries(content_type="text/plain", cache_key="k128", size=None)
+    assert renderer.carries(source=_att_source(content_type="text/plain", cache_key="k0"))
+    assert not renderer.carries(source=_att_source(content_type="text/plain", cache_key="k1"))
+    assert not renderer.carries(source=_att_source(content_type="text/plain", cache_key="k128"))

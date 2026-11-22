@@ -421,6 +421,21 @@ async def test_handle_video_reply_refines_prompt_before_render() -> None:
     assert message.replies[-1].file is not None
 
 
+async def test_handle_video_reply_skips_persona_upload_when_file_api_disabled() -> None:
+    """With `file_api_enabled=False`, `_reply_about_video` forwards the flag and skips the upload."""
+    cog = _cog(file_api_enabled=False)
+    cog.config.video_refine_prompt_enabled = False
+    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
+
+    await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
+        user_prompt="video", context_task=_ready_context_task()
+    )
+
+    assert _recorded(cog).responses.create_streams == []
+    assert _recorded_video(cog).aio.files.upload_calls == []
+    assert message.replies[-1].file is not None
+
+
 async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     """With VIDEO_REFINE_PROMPT_ENABLED off, the raw request reaches omni with no director call."""
     cog = _cog()
@@ -440,17 +455,20 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     assert _recorded(cog).responses.create_models == [cog.toolkit.runtime_models.fast_model.name]
 
 
-async def _one_source_clip(builder: object, message: object) -> list[LoadedMedia]:
-    """Stands in for `get_video_sources`: the message carries one raw source clip."""
-    del builder, message
-    return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
+async def _one_source_clip(
+    builder: object, message: object, replied_to: object
+) -> LoadedMedia | None:
+    """Stands in for `get_turn_video_source`: the turn carries one raw source clip."""
+    del builder, message, replied_to
+    return LoadedMedia(data=b"clip", mime_type="video/mp4")
 
 
 async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
     """A source video is edited in place: uploaded and sent to omni with task=edit, no director."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", _one_source_clip
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_turn_video_source",
+        _one_source_clip,
     )
     message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
 
@@ -513,7 +531,8 @@ async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
         return uploaded
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", _one_source_clip
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_turn_video_source",
+        _one_source_clip,
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.0)
     _recorded_video(cog).aio.files.upload = upload

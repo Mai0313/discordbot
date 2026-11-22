@@ -477,7 +477,7 @@ def _link_cog(
         "link_context_sources": sources,
     })
     cog.config = _link_config(gemini_api_key=gemini_api_key)
-    cog.toolkit.gemini_api_key = gemini_api_key
+    cog.toolkit.config = cog.config
     return cog
 
 

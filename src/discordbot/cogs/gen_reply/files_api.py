@@ -3,7 +3,7 @@
 Uploads go directly to Google and are polled to `FileState.ACTIVE` before returning a full URI
 for `input_file` `file_id` parts. `upload_file` and `poll_while_processing` are unguarded
 primitives; `upload_until_active` requires `ACTIVE` or raises; `upload_as_input_file` is
-best-effort and gated on `LLMConfig.file_api_enabled`.
+best-effort and gated on `file_api_enabled`.
 """
 
 import io
@@ -16,7 +16,6 @@ import logfire
 from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.llm import LLMConfig
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 
 # Provider ceiling (2 GiB); callers with a Content-Length abort before downloading.
@@ -127,17 +126,18 @@ async def upload_until_active(
     return uploaded.uri
 
 
-async def upload_as_input_file(
+async def upload_as_input_file(  # noqa: PLR0913 -- client, source, metadata, timeout, and kill-switch
     client: genai.Client,
     source: Path | bytes,
     mime_type: str,
     filename: str,
     timeout_seconds: float,
+    file_api_enabled: bool = True,
 ) -> ResponseInputFileParam | None:
     """Returns an `input_file` part referencing the uploaded `FileState.ACTIVE` URI, or None on failure.
 
-    Best-effort and gated on `LLMConfig.file_api_enabled`; returns None when disabled, timed
-    out, or failed so callers degrade without raising into the reply pipeline.
+    Best-effort and gated on `file_api_enabled`; returns None when disabled, timed out, or failed
+    so callers degrade without raising into the reply pipeline.
 
     Args:
         client (genai.Client): Direct-to-Google Gemini client.
@@ -146,8 +146,9 @@ async def upload_as_input_file(
         filename (str): Filename with its real extension (used by the Interactions path to
             classify the media kind).
         timeout_seconds (float): Timeout in seconds covering both the upload and activation poll.
+        file_api_enabled (bool): Whether Gemini Files API uploads are enabled.
     """
-    if not LLMConfig().file_api_enabled:
+    if not file_api_enabled:
         logfire.info("files api upload skipped by kill-switch", name=filename)
         return None
     started = time.monotonic()

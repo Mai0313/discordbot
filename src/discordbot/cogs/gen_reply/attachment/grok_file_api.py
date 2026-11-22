@@ -20,13 +20,16 @@ from functools import cached_property
 
 import logfire
 from xai_sdk import AsyncClient
-from nextcord import Attachment, StickerItem
 from pydantic import Field
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.typings.timeouts import GROK_FILE_UPLOAD_TIMEOUT_SECONDS
-from discordbot.cogs.gen_reply.attachment.base import UploadKind, FileUploadRenderer
+from discordbot.cogs.gen_reply.attachment.base import (
+    UploadKind,
+    AttachmentSource,
+    FileUploadRenderer,
+)
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 
 # Upload TTL in seconds (1h min, 30d max); xAI files persist forever without one.
@@ -57,20 +60,16 @@ class GrokFileUploader(FileUploadRenderer):
         return AsyncClient(api_key=self.config.xai_api_key)
 
     async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
+        self, source: AttachmentSource, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
         """Returns `source` rendered inline via `image_renderer`, since xAI takes no image file ID.
 
         Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to render.
-            cache_key (int | str): Per-source identifier.
+            source (AttachmentSource): Classified image attachment, sticker, or URL to render.
             allow_dead_cache (bool): Passed through to `image_renderer`.
         """
         return await self.image_renderer.render_image(
-            source=source, cache_key=cache_key, allow_dead_cache=allow_dead_cache
+            source=source, allow_dead_cache=allow_dead_cache
         )
 
     async def _upload_file(

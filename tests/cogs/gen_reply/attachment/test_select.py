@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
@@ -11,9 +9,6 @@ from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploa
 
 from tests.helpers.casting import as_client
 from tests.helpers.gen_reply import FakeGeminiClient
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
@@ -49,15 +44,14 @@ def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
     )
 
 
-def test_the_file_api_kill_switch_inlines_gemini_attachments(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_file_api_kill_switch_inlines_gemini_attachments() -> None:
     """With the switch off, even a keyed Gemini answer model gets inlined attachments."""
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     client = as_client(fake=FakeGeminiClient())
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: client
+            model=ModelSettings(name="gemini-3.8-flash"),
+            gemini_client=lambda: client,
+            file_api_enabled=False,
         ),
         InlineRenderer,
     )
