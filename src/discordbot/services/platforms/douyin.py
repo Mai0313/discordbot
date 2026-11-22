@@ -10,7 +10,6 @@ import time
 from typing import Any, ClassVar
 from pathlib import Path
 import threading
-from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
 
 import logfire
@@ -18,6 +17,7 @@ from pydantic import Field, BaseModel, ValidationError, model_validator
 import requests
 from requests.exceptions import RequestException
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.utils.urls import (
     URL_START_ANCHOR,
     normalized_url,
@@ -263,34 +263,29 @@ class _DouyinVideoInfo(_DouyinPayload):
 
 
 # Bounded LRU cache of validated payloads; TTL stays well under CDN `x-expires` lifetime.
-_PAYLOAD_CACHE: OrderedDict[str, tuple[float, _DouyinVideoInfo]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
 _PAYLOAD_CACHE_MAX_ENTRIES = 128
+_PAYLOAD_CACHE: BoundedLRU[str, tuple[float, _DouyinVideoInfo]] = BoundedLRU(
+    max_entries=_PAYLOAD_CACHE_MAX_ENTRIES
+)
 
 # Permanent LRU cache mapping short-link URLs to aweme ids to skip repeat redirect probes.
-_LINK_ID_CACHE: OrderedDict[str, str] = OrderedDict()
 _LINK_ID_CACHE_MAX_ENTRIES = 512
-# Guards both LRU dicts across worker threads; never held across network I/O.
+_LINK_ID_CACHE: BoundedLRU[str, str] = BoundedLRU(max_entries=_LINK_ID_CACHE_MAX_ENTRIES)
+# Guards both LRU caches across worker threads; never held across network I/O.
 _PAYLOAD_CACHE_LOCK = threading.Lock()
 
 
 def _cached_link_id(url: str) -> str:
     """Returns the cached post id for a URL, or an empty string on a miss."""
     with _PAYLOAD_CACHE_LOCK:
-        aweme_id = _LINK_ID_CACHE.get(url)
-        if aweme_id is not None:
-            _LINK_ID_CACHE.move_to_end(url)
-            return aweme_id
-    return ""
+        return _LINK_ID_CACHE.get(key=url) or ""
 
 
 def _remember_link_id(url: str, aweme_id: str) -> None:
     """Records a URL's resolved post id, evicting the least recently used entry past the cap."""
     with _PAYLOAD_CACHE_LOCK:
-        _LINK_ID_CACHE[url] = aweme_id
-        _LINK_ID_CACHE.move_to_end(url)
-        if len(_LINK_ID_CACHE) > _LINK_ID_CACHE_MAX_ENTRIES:
-            _LINK_ID_CACHE.popitem(last=False)
+        _LINK_ID_CACHE.set(key=url, value=aweme_id)
 
 
 # Process-wide guest `ttwid` cookie; retained across failures to avoid extra cookieless WAF hits.
@@ -400,12 +395,12 @@ class DouyinDownloader(PlatformDownloader):
     def _fetch_share_payload(self, aweme_id: str) -> _DouyinVideoInfo:
         """Returns the cached or fetched `videoInfoRes` for `aweme_id`."""
         with _PAYLOAD_CACHE_LOCK:
-            cached = _PAYLOAD_CACHE.get(aweme_id)
-            if cached:
+            cached = _PAYLOAD_CACHE.peek(key=aweme_id)
+            if cached is not None:
                 if time.monotonic() - cached[0] < _PAYLOAD_CACHE_TTL_SECONDS:
-                    _PAYLOAD_CACHE.move_to_end(aweme_id)
+                    _PAYLOAD_CACHE.touch(key=aweme_id)
                     return cached[1]
-                _PAYLOAD_CACHE.pop(aweme_id, None)
+                _PAYLOAD_CACHE.pop(key=aweme_id)
 
         url = f"https://www.iesdouyin.com/share/note/{aweme_id}"
         html = self._get_share_page(url=url)
@@ -433,10 +428,7 @@ class DouyinDownloader(PlatformDownloader):
             raise DouyinError(f"Douyin returned an unreadable post {aweme_id}: {e}") from e
 
         with _PAYLOAD_CACHE_LOCK:
-            _PAYLOAD_CACHE[aweme_id] = (time.monotonic(), info)
-            _PAYLOAD_CACHE.move_to_end(aweme_id)
-            if len(_PAYLOAD_CACHE) > _PAYLOAD_CACHE_MAX_ENTRIES:
-                _PAYLOAD_CACHE.popitem(last=False)
+            _PAYLOAD_CACHE.set(key=aweme_id, value=(time.monotonic(), info))
         return info
 
     def _get_share_page(self, url: str) -> str:

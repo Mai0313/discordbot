@@ -3,7 +3,6 @@
 import time
 from typing import TYPE_CHECKING, Literal, ClassVar
 from datetime import UTC, datetime, timedelta
-from collections import OrderedDict
 
 import logfire
 from nextcord import Attachment, StickerItem
@@ -11,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.cogs.gen_reply.attachment.loaders import (
@@ -63,7 +63,7 @@ class AttachmentRenderer(BaseModel):
     dropped_modalities: ClassVar[frozenset[str]] = frozenset()
 
     # Per-instance LRU (max 128) of `cache_key -> first_failure_at` for dead-source skipping.
-    _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
+    _dead_sources: BoundedLRU[int | str, datetime] = PrivateAttr(default_factory=BoundedLRU)
 
     def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
         """Returns whether this renderer can carry the unfetched source.
@@ -108,21 +108,18 @@ class AttachmentRenderer(BaseModel):
 
     def _is_known_dead(self, cache_key: int | str) -> bool:
         """Returns whether `cache_key` failed a fetch within `DEAD_SOURCE_TTL`, evicting expired entries."""
-        dead_at = self._dead_sources.get(cache_key)
+        dead_at = self._dead_sources.peek(key=cache_key)
         if dead_at is None:
             return False
         if datetime.now(tz=UTC) - dead_at < DEAD_SOURCE_TTL:
-            self._dead_sources.move_to_end(cache_key)
+            self._dead_sources.touch(key=cache_key)
             return True
-        self._dead_sources.pop(cache_key, None)
+        self._dead_sources.pop(key=cache_key)
         return False
 
     def _mark_dead(self, cache_key: int | str) -> None:
         """Records a source's fetch failure so it is skipped for DEAD_SOURCE_TTL."""
-        self._dead_sources[cache_key] = datetime.now(tz=UTC)
-        self._dead_sources.move_to_end(cache_key)
-        if len(self._dead_sources) > 128:
-            self._dead_sources.popitem(last=False)
+        self._dead_sources.set(key=cache_key, value=datetime.now(tz=UTC))
 
     async def _load_source_bytes(
         self,

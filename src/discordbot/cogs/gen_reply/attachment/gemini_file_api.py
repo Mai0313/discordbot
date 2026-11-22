@@ -10,7 +10,6 @@ elapses are cached per source and re-polled on later turns instead of re-uploade
 import time
 import asyncio
 from datetime import UTC, datetime, timedelta
-from collections import OrderedDict
 from collections.abc import Callable
 
 from google import genai
@@ -20,6 +19,7 @@ from pydantic import Field, BaseModel, PrivateAttr
 from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.typings.timeouts import (
     FILES_API_READ_TIMEOUT_SECONDS,
@@ -88,9 +88,7 @@ class GeminiFileUploader(FileUploadRenderer):
     )
     # Uploads that timed out while still `PROCESSING`, keyed by attachment source `cache_key`.
     # Re-polled on the next reference and kept until provider expiry; bounded at 128 entries.
-    _pending_uploads: OrderedDict[int | str, PendingUpload] = PrivateAttr(
-        default_factory=OrderedDict
-    )
+    _pending_uploads: BoundedLRU[int | str, PendingUpload] = PrivateAttr(default_factory=BoundedLRU)
 
     async def render_image(
         self,
@@ -123,12 +121,12 @@ class GeminiFileUploader(FileUploadRenderer):
 
     async def _repoll_pending_upload(self, cache_key: int | str) -> PendingUploadRepoll:
         """Re-polls a prior pending upload once, without re-downloading the source."""
-        pending = self._pending_uploads.get(cache_key)
+        pending = self._pending_uploads.peek(key=cache_key)
         client = self.gemini_client()
         if pending is None or client is None:
             return PendingUploadRepoll(handled=False)
         if datetime.now(tz=UTC) >= pending.expires_at:
-            self._pending_uploads.pop(cache_key, None)
+            self._pending_uploads.pop(key=cache_key)
             return PendingUploadRepoll(handled=False)
         try:
             async with asyncio.timeout(delay=FILES_API_READ_TIMEOUT_SECONDS):
@@ -144,7 +142,7 @@ class GeminiFileUploader(FileUploadRenderer):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            self._pending_uploads.pop(cache_key, None)
+            self._pending_uploads.pop(key=cache_key)
             return PendingUploadRepoll(handled=False)
         logfire.debug(
             "gemini pending upload repoll",
@@ -153,14 +151,14 @@ class GeminiFileUploader(FileUploadRenderer):
             adopted=uploaded.state == FileState.ACTIVE,
         )
         if uploaded.state == FileState.ACTIVE:
-            self._pending_uploads.pop(cache_key, None)
+            self._pending_uploads.pop(key=cache_key)
             return PendingUploadRepoll(
                 handled=True, uploaded=UploadedFile(uri=pending.uri, expires_at=pending.expires_at)
             )
         if uploaded.state == FileState.PROCESSING:
-            self._pending_uploads.move_to_end(cache_key)
+            self._pending_uploads.touch(key=cache_key)
             return PendingUploadRepoll(handled=True)
-        self._pending_uploads.pop(cache_key, None)
+        self._pending_uploads.pop(key=cache_key)
         return PendingUploadRepoll(handled=False)
 
     async def _resolve_file_upload(
@@ -192,10 +190,7 @@ class GeminiFileUploader(FileUploadRenderer):
             filename=filename, data=data, content_type=content_type
         )
         if isinstance(result, PendingUpload):
-            self._pending_uploads[cache_key] = result
-            self._pending_uploads.move_to_end(cache_key)
-            if len(self._pending_uploads) > 128:
-                self._pending_uploads.popitem(last=False)
+            self._pending_uploads.set(key=cache_key, value=result)
             return None
         return result
 

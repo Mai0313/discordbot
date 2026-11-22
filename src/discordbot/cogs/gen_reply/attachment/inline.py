@@ -1,7 +1,6 @@
 """Inline attachment renderer for whenever attachments cannot go by Gemini Files URI."""
 
 from datetime import UTC, datetime, timedelta
-from collections import OrderedDict
 
 import logfire
 from nextcord import Attachment, StickerItem
@@ -10,6 +9,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import LoadedMedia, RenderedAttachment
 from discordbot.utils.llm_transcript import defuse_separator_fences
 from discordbot.cogs.gen_reply.images import to_data_uri
@@ -44,7 +44,7 @@ class InlineRenderer(AttachmentRenderer):
     dropped_modalities = frozenset({"video", "audio"})
 
     # Per-instance LRU (max 128) of unreadable non-PDF/non-UTF-8 keys refused by `carries`.
-    _unreadable: OrderedDict[int | str, None] = PrivateAttr(default_factory=OrderedDict)
+    _unreadable: BoundedLRU[int | str, None] = PrivateAttr(default_factory=BoundedLRU)
 
     def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
         """Returns whether `content_type`, `size`, and `cache_key` are eligible for inline rendering.
@@ -172,9 +172,7 @@ class InlineRenderer(AttachmentRenderer):
                 cache_key=loggable_cache_key(cache_key=cache_key),
                 _exc_info=True,
             )
-            self._unreadable[cache_key] = None
-            if len(self._unreadable) > 128:
-                self._unreadable.popitem(last=False)
+            self._unreadable.set(key=cache_key, value=None)
             return None
         text_part = ResponseInputTextParam(
             type="input_text",

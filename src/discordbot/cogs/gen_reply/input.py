@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
 from mimetypes import guess_type
-from collections import OrderedDict
 
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem, MessageSnapshot
@@ -13,6 +12,7 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.media import (
     VOICE_REPLY_FILENAME,
     LoadedMedia,
@@ -115,9 +115,9 @@ class MessageInputBuilder(BaseModel):
     )
     # Per-message rendered parts keyed on (message_id, edited_at, source_keys) with earliest
     # handle expiry, so edits and late embed unfurls re-render and handles refresh before expiry.
-    _attachment_cache: OrderedDict[
+    _attachment_cache: BoundedLRU[
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
-    ] = PrivateAttr(default_factory=OrderedDict)
+    ] = PrivateAttr(default_factory=BoundedLRU)
 
     def get_user_prompt(self, content: str) -> str:
         """Returns `content` with bot mention syntax removed and surrounding whitespace stripped.
@@ -524,9 +524,9 @@ class MessageInputBuilder(BaseModel):
         cache_key = (message.id, message.edited_at, source_keys)
         # Refresh handles before expiry; a borderline-expired URI 400s the whole answer.
         cache_safety_margin = timedelta(hours=2)
-        cached = self._attachment_cache.get(cache_key)
+        cached = self._attachment_cache.peek(key=cache_key)
         if cached is not None and datetime.now(tz=UTC) < cached[0] - cache_safety_margin:
-            self._attachment_cache.move_to_end(cache_key)
+            self._attachment_cache.touch(key=cache_key)
             logfire.debug(
                 "gen_reply attachment cache hit", message_id=message.id, source_count=len(sources)
             )
@@ -549,9 +549,9 @@ class MessageInputBuilder(BaseModel):
         # Skip caching if any source failed so the next turn retries; expire at earliest handle.
         if None not in rendered:
             expires_at = min(item.expires_at for item in rendered if item is not None)
-            self._attachment_cache[cache_key] = (expires_at, [part.copy() for part in resolved])
-            if len(self._attachment_cache) > 128:
-                self._attachment_cache.popitem(last=False)
+            self._attachment_cache.set(
+                key=cache_key, value=(expires_at, [part.copy() for part in resolved])
+            )
         # Keep a placeholder so an attachment-only message does not read as blank.
         return [
             item.part

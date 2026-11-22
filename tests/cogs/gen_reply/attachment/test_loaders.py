@@ -48,7 +48,9 @@ async def test_dead_source_skipped_within_ttl_then_retried(
     assert await uploader.render_image(source=url, cache_key=url, allow_dead_cache=True) is None
     assert calls["n"] == 1
     # Backdating the marker past the TTL retries the fetch exactly once (self-heal).
-    uploader._dead_sources[url] = datetime.now(tz=UTC) - DEAD_SOURCE_TTL - timedelta(seconds=1)
+    uploader._dead_sources.set(
+        key=url, value=datetime.now(tz=UTC) - DEAD_SOURCE_TTL - timedelta(seconds=1)
+    )
     assert await uploader.render_image(source=url, cache_key=url, allow_dead_cache=True) is None
     assert calls["n"] == 2
 

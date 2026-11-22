@@ -174,10 +174,13 @@ async def test_a_stalled_pending_repoll_falls_back_to_a_fresh_upload(
     """A re-poll read that never returns costs a re-upload, as a failed re-poll does."""
     files = FakeGeminiFiles()
     uploader = _fake_uploader(files=files)
-    uploader._pending_uploads["vid"] = PendingUpload(
-        name="files/vid",
-        uri="https://files.test/files/vid",
-        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    uploader._pending_uploads.set(
+        key="vid",
+        value=PendingUpload(
+            name="files/vid",
+            uri="https://files.test/files/vid",
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        ),
     )
     monkeypatch.setattr(files, "get", _stalled(call=files.get))
     monkeypatch.setattr(
