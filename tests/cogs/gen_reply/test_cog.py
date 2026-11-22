@@ -5,11 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
+import contextlib
 
 import pytest
 from nextcord import Attachment
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs.gen_reply import cog as gen_reply_cog
 from discordbot.typings.memory import MemoryOwner
 from discordbot.typings.models import ModelSettings, RouteClassification, RuntimeModelCatalog
 from discordbot.services.memory import database as memory_db
@@ -487,7 +489,7 @@ async def test_resume_memory_leaves_a_turn_this_process_staged(
 
 
 async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """on_ready guards the resume so a gateway reconnect does not re-sweep."""
+    """on_ready guards the resume and price-table loop so reconnects start each only once."""
     cog = _cog(bot_user_id=999)
     calls = 0
 
@@ -496,11 +498,49 @@ async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> Non
         calls += 1
 
     monkeypatch.setattr(cog, "_resume_memory", fake_resume_memory)
-    await cog.on_ready()
-    await cog.on_ready()
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
-    assert calls == 1
+    starts = 0
+    real_start = cog.price_table_task.start
+
+    def recording_start() -> asyncio.Task[None]:
+        nonlocal starts
+        starts += 1
+        return real_start()
+
+    monkeypatch.setattr(cog.price_table_task, "start", recording_start)
+    try:
+        await cog.on_ready()
+        await cog.on_ready()
+        while cog._tasks:
+            await asyncio.gather(*list(cog._tasks))
+        assert calls == 1
+        assert starts == 1
+        assert cog.price_table_task.is_running()
+    finally:
+        task = cog.price_table_task.get_task()
+        cog.cog_unload()
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert not cog.price_table_task.is_running()
+
+
+async def test_price_table_task_logs_error_type_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Broad catch in `price_table_task` attaches both `error_type` and `_exc_info`."""
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+
+    def boom() -> None:
+        raise ValueError("price refresh blew up")
+
+    monkeypatch.setattr(target=gen_reply_cog, name="refresh_model_info", value=boom)
+
+    await ReplyGeneratorCogs.price_table_task.coro(_cog(bot_user_id=999))
+
+    assert len(errors) == 1
+    _, fields = errors[0]
+    assert fields["error_type"] == "ValueError"
+    assert isinstance(fields["_exc_info"], ValueError)
 
 
 def _ask_cog(

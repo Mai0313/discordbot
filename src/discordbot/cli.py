@@ -12,27 +12,19 @@ import platform
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
-from nextcord import Game, Intents, Message, Interaction, HTTPException
-from nextcord.ext import tasks, commands
+from nextcord import Game, Intents, Interaction, HTTPException
+from nextcord.ext import commands
 from nextcord.errors import ApplicationError
 
 from discordbot import setup_logging
-from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.utils.timezone import database_now
-from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.asyncio_locks import spawn_tracked
-from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
 from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.media_delivery import AttachmentLimitInteraction
 from discordbot.utils.message_cleanup import (
     delete_tracked_public_messages,
     schedule_public_message_delete,
-)
-from discordbot.services.economy.database import (
-    credit_with_repayment,
-    record_guild_participant,
-    reject_loan_proposals_created_before,
 )
 
 if TYPE_CHECKING:
@@ -58,7 +50,6 @@ class DiscordBot(commands.Bot):
             logger.setLevel(level=level)
             if not any(isinstance(handler, LogfireLoggingHandler) for handler in logger.handlers):
                 logger.addHandler(hdlr=LogfireLoggingHandler())
-        Path("./data/memories").mkdir(parents=True, exist_ok=True)
         # Core public-message cleanup lives in its own DB; optional cogs upgrade their own in setup().
         ensure_database_upgraded(section="cleanup")
         # Load cogs synchronously before gateway connect so application_commands is populated.
@@ -71,21 +62,6 @@ class DiscordBot(commands.Bot):
         # it, and nothing this one records can, the interactions run ahead of `on_ready` included.
         self._started_at = database_now()
         self._startup_tasks: set[asyncio.Task[None]] = set()
-        # Process-local per-user reward cooldown; resets on restart by design.
-        self._message_reward_at: dict[int, float] = {}
-        self._message_reward_pruned_at = 0.0
-
-    def _prune_message_reward_cooldowns(self, now: float) -> None:
-        """Drops expired message-reward cooldown entries."""
-        if now - self._message_reward_pruned_at < MESSAGE_REWARD_COOLDOWN_SECONDS:
-            return
-        cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
-        self._message_reward_at = {
-            user_id: rewarded_at
-            for user_id, rewarded_at in self._message_reward_at.items()
-            if rewarded_at > cutoff
-        }
-        self._message_reward_pruned_at = now
 
     def _load_cogs_sync(self) -> None:
         """Loads every cog directory under `cogs/`; raises on incomplete cog directories."""
@@ -118,16 +94,13 @@ class DiscordBot(commands.Bot):
         return cls(data=data, state=self._connection)
 
     async def on_connect(self) -> None:
-        """Restores the local application-command registry and starts background tasks on connect.
+        """Restores the local application-command registry on connect.
 
         `ConnectionState.parse_ready` clears the local registry on every `READY`; restoring it
         here without an API call prevents nextcord's guildless-interaction lazy load from
         running `delete_unknown` and wiping global commands. `on_ready` owns command sync.
         """
         self.add_all_application_commands()
-        # Started on connect so an error during `on_ready`'s command sync cannot prevent it.
-        if not self.price_table_task.is_running():
-            self.price_table_task.start()
         bot_user = self.user
         if bot_user is None:
             return
@@ -191,12 +164,6 @@ class DiscordBot(commands.Bot):
                 tasks=self._startup_tasks,
                 name="delete-stale-public-responses",
             )
-            # Reject stale loan proposals whose decision views died with the previous process.
-            spawn_tracked(
-                coro=reject_loan_proposals_created_before(cutoff=self._started_at),
-                tasks=self._startup_tasks,
-                name="reject-stale-loan-requests",
-            )
 
             logfire.info(
                 "Logged in",
@@ -229,83 +196,6 @@ class DiscordBot(commands.Bot):
             invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
             logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
             logfire.info("Invite Link", invite_url=invite_url)
-
-    @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
-    async def price_table_task(self) -> None:
-        """Refreshes the LiteLLM model price table off the event loop.
-
-        Runs immediately on start to warm the cache, retries while degraded, and refreshes daily
-        once upstream has succeeded.
-        """
-        try:
-            await asyncio.to_thread(refresh_model_info)
-        except Exception as exc:
-            # Broad on purpose: an uncaught exception stops the tasks.loop permanently, and
-            # nextcord's bound `_error` crashes silently on class methods (`_injected` arg).
-            logfire.error(
-                "model price table refresh failed; retrying next pass",
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-
-    async def on_message(self, message: Message) -> None:
-        """Awards the cooldown-gated message reward.
-
-        This is the only faucet that pays an action reward, and it is best-effort: a failed
-        credit or participation write is logged and swallowed.
-
-        Args:
-            message (Message): The message that was sent.
-        """
-        if message.author == self.user or message.author.bot:
-            return
-
-        now = monotonic()
-        self._prune_message_reward_cooldowns(now=now)
-        last_rewarded_at = self._message_reward_at.get(message.author.id)
-        if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
-            # Reserve the cooldown slot before awaiting to prevent double-credits on rapid
-            # messages; restored in the except block if crediting fails.
-            self._message_reward_at[message.author.id] = now
-            guild = message.guild
-            try:
-                avatar_url = await guild_avatar_url(user=message.author, guild=guild)
-                await credit_with_repayment(
-                    user_id=message.author.id,
-                    name=message.author.name,
-                    avatar_url=avatar_url,
-                    amount=BASE_MESSAGE_REWARD_AMOUNT,
-                )
-            except Exception as exc:
-                if self._message_reward_at.get(message.author.id) == now:
-                    if last_rewarded_at is None:
-                        self._message_reward_at.pop(message.author.id, None)
-                    else:
-                        self._message_reward_at[message.author.id] = last_rewarded_at
-                # Broad on purpose: the reward is best-effort and must never raise out of
-                # the listener, so every failure mode (DB, avatar fetch) is swallowed.
-                logfire.warn(
-                    "Failed to award base message points",
-                    user_id=message.author.id,
-                    guild_id=guild.id if guild else None,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
-                )
-            if guild is not None:
-                # Kept outside the reward try block so a failure here cannot roll back the
-                # cooldown slot and double-pay the reward on the next message.
-                try:
-                    await record_guild_participant(guild_id=guild.id, user_id=message.author.id)
-                except Exception as exc:
-                    # Broad on purpose: participation tracking is best-effort and must never
-                    # raise out of the listener.
-                    logfire.warn(
-                        "Failed to record economy participation",
-                        user_id=message.author.id,
-                        guild_id=guild.id,
-                        error_type=type(exc).__name__,
-                        _exc_info=exc,
-                    )
 
     async def on_application_command_error(
         self, interaction: Interaction[commands.Bot], exception: ApplicationError

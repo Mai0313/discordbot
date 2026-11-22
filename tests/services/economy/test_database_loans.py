@@ -1,5 +1,6 @@
 """Tests for long-term lending and central bank lending."""
 
+from types import SimpleNamespace
 import asyncio
 from datetime import timedelta
 
@@ -7,7 +8,6 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import text, select, update
 
-from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
@@ -17,6 +17,7 @@ from discordbot.typings.economy import (
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanProposalStatus,
 )
+from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.services.economy.holds import hold_stake, release_stake
 from discordbot.services.economy.database import (
     UserWallet,
@@ -45,7 +46,7 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.casting import as_discord_bot
+from tests.helpers.casting import as_bot
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
@@ -54,7 +55,6 @@ from tests.helpers.economy import (
     backdate_proposal,
     open_personal_loan,
 )
-from tests.helpers.discord_mocks import on_ready_bot
 from tests.helpers.economy_invariants import assert_wallet_consistent
 
 OTHER_GUILD = 777
@@ -218,16 +218,10 @@ async def test_a_restart_rejects_the_requests_an_earlier_process_left_waiting() 
         borrower_id=3, borrower_name="carol", amount=500
     )
 
-    async def stop_after_the_startup_sweeps() -> None:
-        """Ends `on_ready` at the command sync, which everything after needs a live bot for."""
-        raise RuntimeError("stop")
-
-    stub = on_ready_bot(
-        started_at=started_at, sync_all_application_commands=stop_after_the_startup_sweeps
-    )
-    with pytest.raises(RuntimeError, match="stop"):
-        await DiscordBot.on_ready(as_discord_bot(fake=stub))
-    await asyncio.gather(*stub._startup_tasks)
+    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog._started_at = started_at
+    await cog.on_ready()
+    await asyncio.gather(*cog._startup_tasks)
 
     async with open_session() as session:
         result = await session.execute(statement=select(LoanProposal.id, LoanProposal.status))

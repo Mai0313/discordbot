@@ -1,4 +1,4 @@
-"""Tests for `cli.DiscordBot`: cog discovery, the command registry, the message reward, error logs.
+"""Tests for `cli.DiscordBot`: cog discovery, the command registry, startup isolation, error logs.
 
 `ConnectionState.parse_ready` clears the application-command registry on every gateway READY,
 and `DiscordBot` overrides the one nextcord hook that rebuilds it. What an empty registry costs
@@ -6,17 +6,18 @@ is not a missing command but a deleted one: nextcord's lazy-load path answers an
 cannot resolve by deleting every command Discord holds, so the failure is silent, global and
 outlives the process.
 
-Every method is called unbound on a stub rather than on a real bot: constructing one loads every
-cog, and each contract under test lives in one method.
+Most methods are called unbound on a stub rather than on a real bot: each contract under test
+lives in one method, while the subset-boot test instantiates a real `DiscordBot` over a stripped
+`cogs/` tree.
 """
 
 from __future__ import annotations
 
+import ast
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import logging
-from functools import partial
 from importlib import import_module
 
 import pytest
@@ -27,16 +28,14 @@ from discordbot import cli
 from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
 from discordbot.utils.media_delivery import upload_limit_for
-from discordbot.services.economy.database import CreditResult
 
 from tests.helpers.casting import (
     as_bot,
     as_guild,
-    as_message,
     as_discord_bot,
     make_invalid_webhook_token,
 )
-from tests.helpers.source_tree import REPO_ROOT
+from tests.helpers.source_tree import PACKAGE, REPO_ROOT
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.message_cleanup import record_scheduled_deletes
@@ -50,22 +49,6 @@ if TYPE_CHECKING:
     from nextcord.errors import ApplicationError
 
 
-class _LoopStub:
-    """Stands in for a `tasks.Loop`: running from its first start on, counting starts."""
-
-    def __init__(self) -> None:
-        """Not started yet."""
-        self.starts = 0
-
-    def is_running(self) -> bool:
-        """Whether `start` has been called."""
-        return self.starts > 0
-
-    def start(self) -> None:
-        """Counts a start."""
-        self.starts += 1
-
-
 class _ConnectStub:
     """The attributes `DiscordBot.on_connect` touches."""
 
@@ -73,7 +56,6 @@ class _ConnectStub:
         """Starts with no logged-in user, so the method stops at its own guard."""
         self.user = None
         self.rebuilds = 0
-        self.price_table_task = _LoopStub()
 
     def add_all_application_commands(self) -> None:
         """Stands in for nextcord's registry rebuild."""
@@ -110,19 +92,6 @@ def test_interactions_carry_discords_attachment_size_limit_to_the_upload_ceiling
 
     guild = as_guild(fake=FakeGuild(filesize_limit=100 * 1024 * 1024))
     assert upload_limit_for(guild=guild, interaction=interaction) == 1024**3
-
-
-async def test_on_connect_starts_the_price_table_refresh_once() -> None:
-    """The refresh starts at the first READY, ahead of a command sync that can raise.
-
-    A later READY finds it running and leaves it alone, since a second start raises.
-    """
-    stub = _ConnectStub()
-
-    await DiscordBot.on_connect(as_discord_bot(fake=stub))
-    await DiscordBot.on_connect(as_discord_bot(fake=stub))
-
-    assert stub.price_table_task.starts == 1
 
 
 async def test_the_registered_command_count_is_read_before_the_sync_overwrites_it() -> None:
@@ -222,24 +191,6 @@ async def test_on_ready_does_not_overlap_in_flight_command_sync() -> None:
     assert sync_calls == 1
 
 
-def _reward_bot(**state: object) -> SimpleNamespace:
-    """A bot double carrying everything `on_message`'s reward path reads off a real bot.
-
-    These tests invoke `cli.DiscordBot.on_message` UNBOUND with this namespace as `self`, so the
-    double has to answer every attribute the real method reaches for — the cooldown map, its
-    prune stamp, and the prune helper itself. `on_message` calls that helper as an ordinary
-    `self.` method, so it is bound here rather than being reached through the class.
-    """
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True), _message_reward_at={}, _message_reward_pruned_at=0.0
-    )
-    bot.__dict__.update(state)
-    bot._prune_message_reward_cooldowns = partial(
-        cli.DiscordBot._prune_message_reward_cooldowns, as_discord_bot(fake=bot)
-    )
-    return bot
-
-
 def _load_cogs_from(root: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], bool]]:
     """Runs `_load_cogs_sync` over the `cogs/` tree under `root`, recording what it loads."""
     loaded: list[tuple[list[str], bool]] = []
@@ -332,132 +283,6 @@ def test_setup_functions_register_cogs(tmp_path: Path, monkeypatch: pytest.Monke
         assert override is True, name
         assert type(cog).__module__ == module.__name__, name
     assert len(added) == len(loaded)
-
-
-@pytest.fixture
-def rewards(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Every credit the message reward asks for, recorded instead of paid."""
-    recorded: list[dict[str, Any]] = []
-
-    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records base reward arguments and returns a fake credit result."""
-        recorded.append(kwargs)
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    return recorded
-
-
-async def test_cli_message_reward_pays_a_member_and_never_the_bot(
-    rewards: list[dict[str, Any]],
-) -> None:
-    """A member's message earns the base reward; the bot's own message earns nothing."""
-    bot = _reward_bot()
-    user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
-    await cli.DiscordBot.on_message(
-        as_discord_bot(fake=bot), message=as_message(fake=user_message)
-    )
-    assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
-    await cli.DiscordBot.on_message(
-        as_discord_bot(fake=bot),
-        message=as_message(fake=SimpleNamespace(author=bot.user, guild=None)),
-    )
-    assert len(rewards) == 1
-
-
-async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
-    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A second message within the cooldown earns nothing; a later one earns again."""
-    clock = [1_000.0]
-    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: clock[0])
-    bot = _reward_bot()
-    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
-
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-    clock[0] += cli.MESSAGE_REWARD_COOLDOWN_SECONDS - 1
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-    assert len(rewards) == 1
-
-    clock[0] += 2
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-    assert len(rewards) == 2
-
-
-async def test_cli_message_reward_cooldown_prunes_expired_users(
-    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Expired per-user cooldown slots are dropped lazily on later messages."""
-    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
-    cooldown = cli.MESSAGE_REWARD_COOLDOWN_SECONDS
-    bot = _reward_bot(_message_reward_at={1: 1_000.0 - cooldown - 1, 2: 1_000.0 - cooldown / 2})
-
-    await cli.DiscordBot.on_message(
-        as_discord_bot(fake=bot),
-        message=as_message(
-            fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False), guild=None)
-        ),
-    )
-
-    assert 1 not in bot._message_reward_at
-    assert bot._message_reward_at[2] == 1_000.0 - cooldown / 2
-    assert bot._message_reward_at[3] == 1_000.0
-    assert len(rewards) == 1
-
-
-async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A failed credit must not leave the user on cooldown for the next message."""
-    attempts = 0
-
-    async def flaky_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("transient DB failure")
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=flaky_reward)
-    bot = _reward_bot()
-    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
-
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-    # The first credit failed, so the slot is rolled back and the next message retries.
-    assert 1 not in bot._message_reward_at
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-    assert attempts == 2
-    assert bot._message_reward_at.get(1) is not None
-
-
-async def test_message_reward_stores_guild_avatar(
-    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Base message rewards pass the guild avatar into the economy DB facade."""
-    recorded_participation: list[tuple[int, int]] = []
-
-    async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
-        """Records the participation upsert instead of writing to the live economy DB."""
-        recorded_participation.append((guild_id, user_id))
-
-    monkeypatch.setattr(cli, "record_guild_participant", fake_record_guild_participant)
-    author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
-    cached_member = FakeUser(
-        user_id=7,
-        avatar_url="https://cdn.test/global.png",
-        guild_avatar_url="https://cdn.test/server.png",
-    )
-    guild = FakeGuild(members=[cached_member], cached=True)
-    message = SimpleNamespace(author=author, guild=guild)
-
-    await cli.DiscordBot.on_message(
-        as_discord_bot(fake=_reward_bot()), message=as_message(fake=message)
-    )
-
-    assert [reward["avatar_url"] for reward in rewards] == ["https://cdn.test/server.png"]
-    # The faucet is the only bulk source of central-bank participation, and it rides the
-    # reward rather than every message.
-    assert recorded_participation == [(100, 7)]
 
 
 async def _fail_command(fake: FakeInteraction) -> None:
@@ -607,59 +432,54 @@ async def test_cli_counts_registered_commands_and_survives_a_failed_read(
     assert warned
 
 
-async def test_cli_message_reward_rollback_does_not_clobber_a_newer_cooldown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A late failure from an earlier message must not erase a newer message's cooldown slot."""
-    first_entered = asyncio.Event()
-    release_first = asyncio.Event()
-    clock = [1_000.0]
-    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: clock[0])
-
-    async def racing_reward(**_kwargs: Any) -> CreditResult:  # noqa: ANN401 -- facade double
-        if not first_entered.is_set():
-            first_entered.set()
-            await release_first.wait()
-            raise RuntimeError("late failure")
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=racing_reward)
-    bot = _reward_bot()
-    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
-
-    first_task = asyncio.create_task(
-        coro=cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+def test_cli_imports_no_feature_modules() -> None:
+    """`cli.py` stays feature-agnostic: zero imports from services, cogs, economy, or pricing."""
+    tree = ast.parse(source=(PACKAGE / "cli.py").read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    forbidden = (
+        "discordbot.services.",
+        "discordbot.cogs.",
+        "discordbot.typings.economy",
+        "discordbot.utils.model_pricing",
     )
-    await first_entered.wait()
-
-    # Cooldown elapses while the first credit is stuck; a newer message succeeds at t=2000.
-    clock[0] = 2_000.0
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-    assert bot._message_reward_at[1] == 2_000.0
-
-    # First credit now fails; it must leave the newer 2000.0 timestamp intact.
-    release_first.set()
-    await first_task
-    assert bot._message_reward_at[1] == 2_000.0
+    offenders = sorted(name for name in imported if name.startswith(forbidden))
+    assert not offenders, f"cli.py imports feature modules: {offenders}"
 
 
-async def test_price_table_task_logs_error_type_on_failure(
+@pytest.mark.parametrize(
+    ("kept_cogs", "expected_dbs"),
+    [
+        (("template",), {"cleanup.db"}),
+        (("template", "economy"), {"cleanup.db", "economy.db"}),
+        (("template", "games"), {"cleanup.db", "economy.db", "games.db"}),
+        (("template", "memory"), {"cleanup.db", "reply.db"}),
+    ],
+)
+def test_discord_bot_boots_with_subsets_of_cogs_removed(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    kept_cogs: tuple[str, ...],
+    expected_dbs: set[str],
 ) -> None:
-    """Broad catch in `price_table_task` attaches both `error_type` and `_exc_info`."""
-    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    """`DiscordBot` boots cleanly over any subset of `cogs/` and upgrades only their databases."""
+    (tmp_path / "alembic.ini").symlink_to(target=REPO_ROOT / "alembic.ini")
+    (tmp_path / "migrations").symlink_to(target=REPO_ROOT / "migrations")
+    fake_pkg = tmp_path / "pkg"
+    for name in kept_cogs:
+        _cog_entry(path=fake_pkg / "cogs" / name, files=("__init__.py", "cog.py"))
+    monkeypatch.chdir(path=tmp_path)
+    monkeypatch.setattr(target=cli, name="__file__", value=str(fake_pkg / "cli.py"))
 
-    def boom() -> None:
-        raise ValueError("price refresh blew up")
+    bot = DiscordBot()
 
-    monkeypatch.setattr(target=cli, name="refresh_model_info", value=boom)
-
-    await cli.DiscordBot.price_table_task.coro(as_discord_bot(fake=SimpleNamespace()))
-
-    assert len(errors) == 1
-    _, fields = errors[0]
-    assert fields["error_type"] == "ValueError"
-    assert isinstance(fields["_exc_info"], ValueError)
+    assert len(bot.cogs) == len(kept_cogs)
+    assert {path.name for path in (tmp_path / "data" / "database").iterdir()} == expected_dbs
+    assert not (tmp_path / "data" / "memories").exists()
 
 
 def test_discord_bot_init_does_not_duplicate_logfire_handlers(

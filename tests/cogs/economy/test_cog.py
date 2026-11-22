@@ -35,6 +35,7 @@ from discordbot.cogs.economy.embeds import (
 )
 from discordbot.utils.message_cleanup import list_pending_public_messages
 from discordbot.services.economy.database import (
+    CreditResult,
     LoanProposal,
     top_n,
     buy_vip,
@@ -52,7 +53,7 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.casting import as_bot, as_message, as_interaction
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
@@ -892,3 +893,175 @@ async def test_balance_uses_portfolio_vip_flag_without_second_session(
 
     assert len(interaction.followup.sent) == 1
     assert "VIP" in str(interaction.followup.sent[0]["embed"].footer.text)
+
+
+@pytest.fixture
+def message_rewards(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every credit the economy message reward asks for, recorded instead of paid."""
+    recorded: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Records base reward arguments and returns a fake credit result."""
+        recorded.append(kwargs)
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=economy, name="credit_with_repayment", value=record_reward)
+    return recorded
+
+
+async def test_economy_message_reward_pays_a_member_and_never_the_bot(
+    message_rewards: list[dict[str, Any]],
+) -> None:
+    """A member's message earns the base reward; the bot's own message earns nothing."""
+    cog = EconomyCogs(bot=_bot())
+    user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+    await cog.on_message(message=as_message(fake=user_message))
+    assert message_rewards[0]["amount"] == economy.BASE_MESSAGE_REWARD_AMOUNT
+    await cog.on_message(message=as_message(fake=SimpleNamespace(author=cog.bot.user, guild=None)))
+    assert len(message_rewards) == 1
+
+
+async def test_economy_message_reward_cooldown_suppresses_rapid_repeat(
+    message_rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second message within the cooldown earns nothing; a later one earns again."""
+    clock = [1_000.0]
+    monkeypatch.setattr(target=economy, name="monotonic", value=lambda: clock[0])
+    cog = EconomyCogs(bot=_bot())
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+
+    await cog.on_message(message=as_message(fake=message))
+    clock[0] += economy.MESSAGE_REWARD_COOLDOWN_SECONDS - 1
+    await cog.on_message(message=as_message(fake=message))
+    assert len(message_rewards) == 1
+
+    clock[0] += 2
+    await cog.on_message(message=as_message(fake=message))
+    assert len(message_rewards) == 2
+
+
+async def test_economy_message_reward_cooldown_prunes_expired_users(
+    message_rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expired per-user cooldown slots are dropped lazily on later messages."""
+    monkeypatch.setattr(target=economy, name="monotonic", value=lambda: 1_000.0)
+    cooldown = economy.MESSAGE_REWARD_COOLDOWN_SECONDS
+    cog = EconomyCogs(bot=_bot())
+    cog._message_reward_at = {1: 1_000.0 - cooldown - 1, 2: 1_000.0 - cooldown / 2}
+
+    await cog.on_message(
+        message=as_message(fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False), guild=None))
+    )
+
+    assert 1 not in cog._message_reward_at
+    assert cog._message_reward_at[2] == 1_000.0 - cooldown / 2
+    assert cog._message_reward_at[3] == 1_000.0
+    assert len(message_rewards) == 1
+
+
+async def test_economy_message_reward_cooldown_rolls_back_on_credit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed credit must not leave the user on cooldown for the next message."""
+    attempts = 0
+
+    async def flaky_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient DB failure")
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=economy, name="credit_with_repayment", value=flaky_reward)
+    cog = EconomyCogs(bot=_bot())
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+
+    await cog.on_message(message=as_message(fake=message))
+    # The first credit failed, so the slot is rolled back and the next message retries.
+    assert 1 not in cog._message_reward_at
+    await cog.on_message(message=as_message(fake=message))
+    assert attempts == 2
+    assert cog._message_reward_at.get(1) is not None
+
+
+async def test_economy_message_reward_stores_guild_avatar(
+    message_rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Base message rewards pass the guild avatar into the economy DB facade."""
+    recorded_participation: list[tuple[int, int]] = []
+
+    async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
+        """Records the participation upsert instead of writing to the live economy DB."""
+        recorded_participation.append((guild_id, user_id))
+
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
+    author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
+    cached_member = FakeUser(
+        user_id=7,
+        avatar_url="https://cdn.test/global.png",
+        guild_avatar_url="https://cdn.test/server.png",
+    )
+    guild = FakeGuild(members=[cached_member], cached=True)
+    message = SimpleNamespace(author=author, guild=guild)
+
+    await EconomyCogs(bot=_bot()).on_message(message=as_message(fake=message))
+
+    assert [reward["avatar_url"] for reward in message_rewards] == ["https://cdn.test/server.png"]
+    # The faucet is the only bulk source of central-bank participation, and it rides the
+    # reward rather than every message.
+    assert recorded_participation == [(100, 7)]
+
+
+async def test_economy_message_reward_rollback_does_not_clobber_a_newer_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late failure from an earlier message must not erase a newer message's cooldown slot."""
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    clock = [1_000.0]
+    monkeypatch.setattr(target=economy, name="monotonic", value=lambda: clock[0])
+
+    async def racing_reward(**_kwargs: Any) -> CreditResult:  # noqa: ANN401 -- facade double
+        if not first_entered.is_set():
+            first_entered.set()
+            await release_first.wait()
+            raise RuntimeError("late failure")
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=economy, name="credit_with_repayment", value=racing_reward)
+    cog = EconomyCogs(bot=_bot())
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+
+    first_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    await first_entered.wait()
+
+    # Cooldown elapses while the first credit is stuck; a newer message succeeds at t=2000.
+    clock[0] = 2_000.0
+    await cog.on_message(message=as_message(fake=message))
+    assert cog._message_reward_at[1] == 2_000.0
+
+    # First credit now fails; it must leave the newer 2000.0 timestamp intact.
+    release_first.set()
+    await first_task
+    assert cog._message_reward_at[1] == 2_000.0
+
+
+async def test_economy_on_ready_runs_stale_loan_sweep_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`on_ready` spawns the stale-loan sweep once across reconnects."""
+    calls: list[object] = []
+
+    async def record_sweep(cutoff: object) -> None:
+        calls.append(cutoff)
+
+    monkeypatch.setattr(
+        target=economy, name="reject_loan_proposals_created_before", value=record_sweep
+    )
+    cog = EconomyCogs(bot=_bot())
+
+    await cog.on_ready()
+    await cog.on_ready()
+    await asyncio.gather(*list(cog._startup_tasks))
+
+    assert calls == [cog._started_at]

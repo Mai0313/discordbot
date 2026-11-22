@@ -2,6 +2,7 @@
 
 from typing import cast
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 
 import pytest
@@ -337,10 +338,17 @@ async def test_on_ready_registers_persistent_feedback_view_once(
     cog = _cog()
     monkeypatch.setattr(cog, "_resume_memory", lambda: asyncio.sleep(0))
 
-    await cog.on_ready()
-    await cog.on_ready()
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
+    try:
+        await cog.on_ready()
+        await cog.on_ready()
+        while cog._tasks:
+            await asyncio.gather(*list(cog._tasks))
+    finally:
+        task = cog.price_table_task.get_task()
+        cog.cog_unload()
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     added = getattr(cog.bot, "added_views", [])
     assert len(added) == 1

@@ -14,6 +14,7 @@ _LEDGER_MUTATIONS = frozenset({
     "call_personal_loans",
     "create_central_bank_loan_request",
     "create_personal_loan_request",
+    "credit_with_repayment",
     "repay_central_bank_loans",
     "repay_personal_loans",
     "transfer",
@@ -21,6 +22,7 @@ _LEDGER_MUTATIONS = frozenset({
     "cancel_loan_proposal",
     "reject_expired_loan_proposal",
     "reject_loan_proposal",
+    "reject_loan_proposals_created_before",
     # An upsert of its own row, so it takes the write lock like any other.
     "record_guild_participant",
 })
@@ -42,10 +44,14 @@ _LEDGER_READS = frozenset({
 })
 
 
-# The one writer in these modules with no interaction to acknowledge: a view's expiry fires on
-# its own timer. Exempt by name rather than by skipping the file it sits in, so the buttons
-# beside it stay swept.
-_ACK_SWEEP_EXEMPT = frozenset({("views.py", "on_timeout")})
+# Writers in these modules with no interaction to acknowledge: a view's expiry timer and gateway
+# listeners (`on_message`, `on_ready`). Exempt by name rather than skipping the file so commands
+# and buttons beside them stay swept.
+_ACK_SWEEP_EXEMPT = frozenset({
+    ("views.py", "on_timeout"),
+    ("cog.py", "on_message"),
+    ("cog.py", "on_ready"),
+})
 
 
 def _first_unavoidable_ack(node: ast.AST) -> ast.Call | None:
