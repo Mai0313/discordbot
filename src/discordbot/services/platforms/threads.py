@@ -5,7 +5,6 @@ import json
 import time
 from typing import Any
 from pathlib import Path
-from datetime import UTC, datetime
 from functools import cached_property
 from urllib.parse import urlparse
 
@@ -39,7 +38,7 @@ from discordbot.services.platforms.base import (
     PlatformDownloader,
     PlatformConversation,
 )
-from discordbot.services.platforms.page_json import FetchedPage, walk, fetch_page
+from discordbot.services.platforms.page_json import FetchedPage, walk, time_of, fetch_page
 
 # Matches `/@user/post/<code>` and `/share/<code>` on threads.net/com; ASCII tail stops at CJK.
 THREADS_URL_RE = re.compile(
@@ -155,16 +154,11 @@ class MediaContainer(_ThreadsModel):
     def media_urls(self) -> list[str]:
         """Returns the first media URL from each carousel item, or the first standalone video or image URL."""
         urls: list[str] = []
-        if self.carousel_media:
-            for item in self.carousel_media:
-                if item.video_versions:
-                    urls.append(item.video_versions[0].url)
-                elif item.image_versions2 and item.image_versions2.candidates:
-                    urls.append(item.image_versions2.candidates[0].url)
-        elif self.video_versions:
-            urls.append(self.video_versions[0].url)
-        elif self.image_versions2 and self.image_versions2.candidates:
-            urls.append(self.image_versions2.candidates[0].url)
+        for item in self.carousel_media or [self]:
+            if item.video_versions:
+                urls.append(item.video_versions[0].url)
+            elif item.image_versions2 and item.image_versions2.candidates:
+                urls.append(item.image_versions2.candidates[0].url)
         return [u for u in urls if u]
 
 
@@ -810,7 +804,7 @@ class ThreadsDownloader(PlatformDownloader):
             else:
                 image_urls.append(media_url)
 
-        taken_at = datetime.fromtimestamp(post.taken_at, tz=UTC) if post.taken_at else None
+        taken_at = time_of(value=post.taken_at)
 
         # Threads degrades quote-of-a-quote payloads to username-only stubs, so stop at depth 1.
         quoted_post = post.quoted_post if include_quoted else None

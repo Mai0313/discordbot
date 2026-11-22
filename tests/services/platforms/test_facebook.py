@@ -574,3 +574,23 @@ def test_clean_url_keeps_the_owner_id_a_permalink_needs() -> None:
     )
 
     assert "id=100077759593577" in parsed.clean_url
+
+
+def test_clean_url_encodes_preserved_query_values() -> None:
+    """Preserved query parameters are URL-encoded so decoded reserved characters stay safe."""
+    parsed = FacebookURL(
+        raw_url="https://m.facebook.com/permalink.php?story_fbid=a%26b&id=123&rdid=dropme"
+    )
+
+    assert parsed.clean_url == "https://www.facebook.com/permalink.php?story_fbid=a%26b&id=123"
+
+
+def test_comment_count_ignores_boolean_feedback_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A boolean in `total_comment_count` is ignored rather than counted as 1."""
+    story = _story()
+    story["feedback"]["total_comment_count"] = True
+    downloader = _downloader(monkeypatch, html=_page(stories=[story]))
+
+    post = _parse(downloader, _PERMALINK)
+
+    assert post.comment_count == 0

@@ -192,11 +192,12 @@ def _estimate_entry_bytes(
                 session=session,
                 stop_signal=stop_signal,
             )
-            if estimated is not None:
-                total += estimated
-                any_known = True
-                if max_bytes is not None and total > max_bytes:
-                    return total
+            if estimated is None:
+                continue
+            total += estimated
+            any_known = True
+            if max_bytes is not None and total > max_bytes:
+                return total
         if any_known:
             return total
 
@@ -259,32 +260,36 @@ def _build_byte_cap_hook(max_bytes: int, url: str) -> Callable[[dict[str, Any]],
 
 def _extract_entry_paths(ydl: YoutubeDL, entry: dict[str, Any]) -> list[Path]:
     """Returns existing downloaded file paths recorded on one yt-dlp entry dict."""
-    paths: list[Path] = []
     requested_downloads = entry.get("requested_downloads")
-    if isinstance(requested_downloads, list):
-        for item in requested_downloads:
-            if isinstance(item, dict) and isinstance(item.get("filepath"), str):
-                candidate = Path(item["filepath"])
-                if candidate not in paths:
-                    paths.append(candidate)
+    paths = (
+        list(
+            dict.fromkeys(
+                Path(item["filepath"])
+                for item in requested_downloads
+                if isinstance(item, dict) and isinstance(item.get("filepath"), str)
+            )
+        )
+        if isinstance(requested_downloads, list)
+        else []
+    )
     if not paths:
-        paths.append(Path(ydl.prepare_filename(entry)))
+        paths = [Path(ydl.prepare_filename(entry))]
     return [path for path in paths if path.is_file()]
 
 
 def _collect_downloaded_paths(ydl: YoutubeDL, info: dict[str, Any]) -> list[Path]:
     """Returns all existing downloaded file paths from a single-video or playlist info dict."""
     entries = info.get("entries")
-    if entries is not None:
-        paths: list[Path] = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            for path in _extract_entry_paths(ydl=ydl, entry=entry):
-                if path not in paths:
-                    paths.append(path)
-        return paths
-    return _extract_entry_paths(ydl=ydl, entry=info)
+    if entries is None:
+        return _extract_entry_paths(ydl=ydl, entry=info)
+    return list(
+        dict.fromkeys(
+            path
+            for entry in entries
+            if isinstance(entry, dict)
+            for path in _extract_entry_paths(ydl=ydl, entry=entry)
+        )
+    )
 
 
 def _playlist_total(info: dict[str, Any]) -> int:

@@ -157,4 +157,9 @@ def time_of(value: JsonValue) -> datetime | None:
     Args:
         value (JsonValue): Raw timestamp value from the page.
     """
-    return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None

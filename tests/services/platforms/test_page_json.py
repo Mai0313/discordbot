@@ -4,10 +4,12 @@ Each platform's own tests stub the fetch and serve canned payloads, so what the 
 promise is pinned here once.
 """
 
+from datetime import UTC, datetime
+
 import pytest
 
 from discordbot.services.platforms import page_json
-from discordbot.services.platforms.page_json import JsonValue, count_of, fetch_page
+from discordbot.services.platforms.page_json import JsonValue, time_of, count_of, fetch_page
 
 
 def test_fetch_page_reports_where_the_request_landed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,3 +57,23 @@ def test_a_count_reads_the_same_in_any_shape_the_page_serves(
 ) -> None:
     """A formatted or wrapped count is still the number, and a flag is not a count."""
     assert count_of(value=served) == expected
+
+
+@pytest.mark.parametrize(
+    argnames=("served", "expected"),
+    argvalues=[
+        (1788598024, datetime.fromtimestamp(1788598024, tz=UTC)),
+        (True, None),
+        (False, None),
+        (0, None),
+        (-10, None),
+        (10**20, None),
+        ("1788598024", None),
+        (None, None),
+    ],
+)
+def test_time_of_accepts_only_in_range_positive_int_timestamps(
+    served: JsonValue, expected: datetime | None
+) -> None:
+    """Booleans, non-positive integers, and out-of-range epochs all return None."""
+    assert time_of(value=served) == expected
