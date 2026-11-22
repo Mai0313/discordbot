@@ -31,6 +31,7 @@ from discordbot.services.memory.store import (
 from tests.helpers.memory import STAMPED_AT
 from tests.helpers.user_memory import _fact
 from tests.helpers.server_memory import SERVER_SCOPE, _alias_fact, _server_fact, _server_document
+from tests.helpers.logfire_capture import capture_logs
 
 
 def test_fact_file_round_trips() -> None:
@@ -79,6 +80,22 @@ def test_malformed_fact_files_parse_to_none(text: str) -> None:
         parse_fact_file(text=text, compartment=GLOBAL_COMPARTMENT, scope="111", filename="fact.md")
         is None
     )
+
+
+def test_malformed_fact_header_logs_reason_and_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fact file with missing/invalid header fields logs `reason` alongside `error_type`."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    text = f"---\ncompartment: {GLOBAL_COMPARTMENT}\n---\nbody\n"
+
+    assert (
+        parse_fact_file(text=text, compartment=GLOBAL_COMPARTMENT, scope="111", filename="fact.md")
+        is None
+    )
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields["error_type"] == "KeyError"
+    assert fields["reason"] == "'id'"
+    assert isinstance(fields["_exc_info"], KeyError)
 
 
 def test_minted_ids_are_stable_per_compartment_and_summary() -> None:

@@ -73,6 +73,7 @@ from tests.helpers.economy import (
     open_personal_loan,
     hide_from_leaderboard,
 )
+from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.economy_invariants import (
     assert_wallet_consistent,
     assert_daily_casino_stats,
@@ -1460,3 +1461,22 @@ async def test_apply_jackpot_settlement_batch_accumulates_deltas_for_same_player
 
     assert result.applied_player_deltas == {1: -350}
     assert result.player_balances[1] == 650
+
+
+async def test_rollback_session_logs_error_type_and_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rollback failure is logged at `warn` with `error_type` and `_exc_info` without raising."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    boom = RuntimeError("rollback failed")
+
+    async def failing_rollback() -> None:
+        raise boom
+
+    await economy_database._rollback_session(
+        session=cast("AsyncSession", SimpleNamespace(rollback=failing_rollback))
+    )
+
+    assert len(warns) == 1
+    _, fields = warns[0]
+    assert fields == {"error_type": "RuntimeError", "_exc_info": boom}

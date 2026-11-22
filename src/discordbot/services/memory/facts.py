@@ -225,6 +225,7 @@ def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> M
             compartment=compartment,
             filename=filename,
             error_type=type(error).__name__,
+            reason=str(error),
             _exc_info=error,
         )
         return None

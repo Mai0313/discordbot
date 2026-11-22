@@ -536,7 +536,7 @@ class ReplyContextBuilder(BaseModel):
         )
         if not text_only:
             logfire.info(
-                "gen_reply attachment render done",
+                "gen_reply turn attachment render done",
                 elapsed_seconds=time.monotonic() - started,
                 reference_count=len(reference_messages),
                 current_count=len(current_message),
