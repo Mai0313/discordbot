@@ -431,3 +431,62 @@ async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() 
         is None
     )
     assert await get_balance(user_id=1) == 1_000
+
+
+@pytest.mark.parametrize(
+    argnames=("custom_id", "presser_id", "patched_call"),
+    argvalues=[
+        ("credit:approve", 2, "accept_loan_proposal"),
+        ("credit:reject", 2, "reject_loan_proposal"),
+        ("credit:cancel", 1, "cancel_loan_proposal"),
+    ],
+    ids=["approve", "reject", "cancel"],
+)
+async def test_loan_decision_buttons_notify_user_on_unexpected_error_after_defer(
+    monkeypatch: pytest.MonkeyPatch, custom_id: str, presser_id: int, patched_call: str
+) -> None:
+    """An unexpected post-defer failure sends an ephemeral error notice before re-raising."""
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
+    )
+
+    async def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("ledger crashed")
+
+    monkeypatch.setattr(views, patched_call, boom)
+    panel = FakeDiscordMessage()
+    view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
+    view.message = as_message(fake=panel)
+    press = FakeInteraction(user=FakeUser(user_id=presser_id, name="actor"), message=panel)
+
+    with pytest.raises(RuntimeError, match="ledger crashed"):
+        await attached_button(view=view, custom_id=custom_id).callback(as_interaction(fake=press))
+
+    assert len(press.followup.sent) == 1
+    assert press.followup.sent[0]["ephemeral"] is True
+    assert "失敗，請稍後再試" in str(press.followup.sent[0]["content"])
+
+
+async def test_loan_decision_schedules_cleanup_and_notifies_when_post_commit_edit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If editing the panel fails after commit, cleanup is still scheduled and the user is told."""
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
+    )
+    panel = FakeDiscordMessage()
+    view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
+    view.message = as_message(fake=panel)
+    press = FakeInteraction(user=FakeUser(user_id=1, name="alice"), message=panel)
+    press.edit_failure = make_server_error()
+
+    with pytest.raises(type(press.edit_failure)):
+        await attached_button(view=view, custom_id="credit:cancel").callback(
+            as_interaction(fake=press)
+        )
+
+    assert await _status(proposal_id=proposal.proposal_id) == LoanProposalStatus.CANCELED
+    assert scheduled.messages == [panel]
+    assert len(press.followup.sent) == 1
+    assert press.followup.sent[0]["ephemeral"] is True

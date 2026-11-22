@@ -123,10 +123,18 @@ class EconomyCogs(commands.Cog):
         self.economy_config = EconomyConfig()
 
     @staticmethod
-    async def _spending_held_by_table(user_id: int) -> bool:
-        """Returns whether a table hold leaves the user with zero spendable balance."""
-        return (
-            held_amount(user_id=user_id) != 0 and await get_spendable_balance(user_id=user_id) == 0
+    async def _spending_held_by_table(
+        user_id: int, lender_type: LoanLenderType, lender_id: int | None = None
+    ) -> bool:
+        """Returns whether a table hold leaves the user unable to repay a matching active loan."""
+        if held_amount(user_id=user_id) == 0 or await get_spendable_balance(user_id=user_id) != 0:
+            return False
+        contracts = await list_loan_contracts(user_id=user_id)
+        return any(
+            contract.borrower_id == user_id
+            and contract.lender_type == lender_type
+            and (lender_type != LoanLenderType.USER or contract.lender_id == lender_id)
+            for contract in contracts
         )
 
     @nextcord.slash_command(
@@ -254,11 +262,13 @@ class EconomyCogs(commands.Cog):
         """Runs a gated admin balance adjustment and publishes successful results."""
         if interaction.user is None:
             return
+        # Defer ephemerally before avatar/DB lookups so non-admin refusals stay private and
+        # no REST/SQLite wait can outlast Discord's 3s ack deadline.
+        await interaction.response.defer(ephemeral=True)
         actor = interaction.user
         guild = interaction.guild
         actor_avatar_url = await guild_avatar_url(user=actor, guild=guild)
         if not await get_admin(user_id=actor.id):
-            await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
                 embed=build_error_embed(
@@ -269,7 +279,6 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        await interaction.response.defer()
         member_avatar_url = await guild_avatar_url(user=member, guild=guild)
         result = await adjust_balance(
             user_id=member.id,
@@ -288,7 +297,7 @@ class EconomyCogs(commands.Cog):
             result=result,
             is_collect_clamped=result.applied_delta != delta,
         )
-        await send_expiring_followup(interaction=interaction, embed=embed)
+        await send_expiring_followup_after_private_defer(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="balance",
@@ -329,13 +338,12 @@ class EconomyCogs(commands.Cog):
         target = member or interaction.user
         target_avatar_url = await guild_avatar_url(user=target, guild=interaction.guild)
         portfolio = await get_portfolio(user_id=target.id)
-        is_vip = await get_vip(user_id=target.id)
         age_days = (datetime.now(tz=UTC) - target.created_at).days
         embed = build_balance_embed(
             display_name=target.display_name,
             avatar_url=target_avatar_url,
             portfolio=portfolio,
-            is_vip=is_vip,
+            is_vip=portfolio.is_vip,
             age_days=age_days,
         )
         await send_private_followup(interaction=interaction, embed=embed)
@@ -772,12 +780,10 @@ class EconomyCogs(commands.Cog):
         )
         if parsed_amount is None:
             return
+        # Defer before avatar lookup and DB write (3s ack deadline; failure stays private).
+        await interaction.response.defer(ephemeral=True)
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
-
-        # Defer before the DB write (SQLite lock wait can outlast Discord's 3s ack deadline),
-        # ephemerally so failure stays private while success uses a public expiring followup.
-        await interaction.response.defer(ephemeral=True)
         result = await repay_personal_loans(
             borrower_id=user.id,
             borrower_name=user.name,
@@ -792,7 +798,9 @@ class EconomyCogs(commands.Cog):
                     title="還款失敗",
                     description=(
                         f"### 沒有可還的餘額\n{ON_TABLE_NOTE}"
-                        if await self._spending_held_by_table(user_id=user.id)
+                        if await self._spending_held_by_table(
+                            user_id=user.id, lender_type=LoanLenderType.USER, lender_id=member.id
+                        )
                         else f"### 沒有可還給 {member.display_name} 的有效個人借款"
                     ),
                     author_name=user.display_name,
@@ -858,12 +866,12 @@ class EconomyCogs(commands.Cog):
         )
         if collect_amount is None:
             return
+        # Defer ephemerally before avatar lookups and DB write (3s ack deadline; failure stays private).
+        await interaction.response.defer(ephemeral=True)
         user = interaction.user
         guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=user, guild=guild)
-        # Defer ephemerally before the DB write (3s ack deadline; failure stays private).
-        await interaction.response.defer(ephemeral=True)
         result = await call_personal_loans(
             lender_id=user.id,
             borrower_id=member.id,
@@ -1070,10 +1078,10 @@ class EconomyCogs(commands.Cog):
         )
         if parsed_amount is None:
             return
+        # Defer ephemerally before avatar lookup and DB write (3s ack deadline; failure stays private).
+        await interaction.response.defer(ephemeral=True)
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
-        # Defer ephemerally before the DB write (3s ack deadline; failure stays private).
-        await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is not None:
             await record_guild_participant(guild_id=interaction.guild_id, user_id=user.id)
         result = await repay_central_bank_loans(
@@ -1089,7 +1097,9 @@ class EconomyCogs(commands.Cog):
                     title="央行還款失敗",
                     description=(
                         f"### 沒有可還的餘額\n{ON_TABLE_NOTE}"
-                        if await self._spending_held_by_table(user_id=user.id)
+                        if await self._spending_held_by_table(
+                            user_id=user.id, lender_type=LoanLenderType.CENTRAL_BANK
+                        )
                         else "### 沒有有效央行借款，或目前無可扣餘額"
                     ),
                 ),
@@ -1152,19 +1162,18 @@ class EconomyCogs(commands.Cog):
         if collect_amount is None:
             return
         if interaction.guild_id is None or not is_guild_admin(interaction=interaction):
-            await interaction.response.defer(ephemeral=True)
-            await send_private_followup(
+            await send_ephemeral_response(
                 interaction=interaction,
                 embed=build_error_embed(
                     title="權限不足", description="### 只有這個伺服器的管理員可以執行央行催收"
                 ),
             )
             return
+        # Defer ephemerally before avatar lookups and DB write (3s ack deadline; failure stays private).
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=guild)
-        # Defer ephemerally before the DB write (3s ack deadline; failure stays private).
-        await interaction.response.defer(ephemeral=True)
         await record_guild_participant(guild_id=interaction.guild_id, user_id=interaction.user.id)
         result = await call_central_bank_loans(
             guild_id=interaction.guild_id,
@@ -1269,8 +1278,8 @@ class EconomyCogs(commands.Cog):
                 )
             else:
                 embed = build_error_embed(
-                    title="VIP purchase failed",
-                    description="The purchase could not be completed. Please try again.",
+                    title="VIP 購買未完成",
+                    description="### 購買未能完成，請稍後再試",
                     author_name=user.display_name,
                     author_icon_url=user_avatar_url,
                 )
@@ -1283,4 +1292,4 @@ def setup(bot: commands.Bot) -> None:
     Args:
         bot (commands.Bot): Bot instance registering the cog.
     """
-    bot.add_cog(EconomyCogs(bot), override=True)
+    bot.add_cog(cog=EconomyCogs(bot=bot), override=True)

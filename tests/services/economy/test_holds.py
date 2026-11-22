@@ -288,15 +288,23 @@ async def test_every_voluntary_debit_reads_the_hold_under_the_payers_spending_lo
 
 
 @pytest.mark.parametrize(
-    argnames=("held", "blames_table"),
-    argvalues=[(1_000, True), (400, False)],
-    ids=["table-holds-it-all", "no-such-loan"],
+    argnames=("has_loan", "held", "blames_table"),
+    argvalues=[(True, 1_000, True), (False, 1_000, False), (False, 400, False)],
+    ids=["active-loan-table-holds-all", "no-loan-even-when-table-holds-all", "no-loan-spendable"],
 )
-async def test_a_refused_repayment_blames_the_table_only_when_it_holds_everything(
-    held: int, blames_table: bool
+async def test_a_refused_repayment_blames_the_table_only_when_a_loan_exists_and_table_holds_all(
+    has_loan: bool, held: int, blames_table: bool
 ) -> None:
-    """With money to spend, a refused repayment means there is no such loan."""
-    await seed_balance(user_id=1, name="alice", amount=1_000)
+    """Blame the table only when a matching loan exists and the table holds every spendable coin."""
+    await seed_balance(user_id=1, name="alice", amount=800 if has_loan else 1_000)
+    await seed_balance(user_id=2, name="bob", amount=500)
+    if has_loan:
+        proposal = await create_personal_loan_request(
+            borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=200
+        )
+        await accept_loan_proposal(
+            proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob", actor_avatar_url=""
+        )
     hold_stake(user_id=1, holder=_Holder(), amount=held)
     cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
