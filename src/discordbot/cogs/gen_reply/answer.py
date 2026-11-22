@@ -13,7 +13,7 @@ import contextlib
 from collections.abc import Callable, Sequence, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import Message, HTTPException, AllowedMentions
+from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
@@ -25,7 +25,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.typings.models import BLIND_TEST_MODEL_LABEL, ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
     render_author_identity,
@@ -70,6 +69,24 @@ from discordbot.cogs.gen_reply.feedback_store import (
 )
 from discordbot.cogs.gen_reply.feedback_views import ReplyFeedbackView
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
+
+
+class RegenOptions(BaseModel):
+    """Parameters carried into `ReplyPipeline` and `AnswerTurn` when regenerating an earlier QA reply."""
+
+    regen_of_reply_message_id: int = Field(
+        ..., description="Discord message id of the reply being replaced."
+    )
+    regen_count: int = Field(
+        ..., description="1-based regeneration depth of the new reply in its chain."
+    )
+    excluded_models: frozenset[str] = Field(
+        default_factory=frozenset,
+        description="Models already tried earlier in this regen chain, excluded in blind-test mode.",
+    )
+    forced_effort: Literal["low", "medium", "high"] | None = Field(
+        default=None, description="Reasoning effort preserved from the replaced turn, when valid."
+    )
 
 
 def max_regens_for(config: LLMConfig, candidates: Sequence[str]) -> int:
@@ -229,7 +246,7 @@ class AnswerTurn(BaseModel):
         effort: str,
         backend: str,
         question: str,
-        prefer_default_model: bool = False,
+        model_override: str | None = None,
         regen_of_reply_message_id: int | None = None,
     ) -> Callable[[ResponseStreamer], Awaitable[None]] | None:
         """Returns the `on_final_message` hook when feedback is enabled, else None."""
@@ -237,15 +254,10 @@ class AnswerTurn(BaseModel):
             return None
 
         async def record(active: ResponseStreamer) -> None:
-            recorded_model = (
-                default_model or active.model_name
-                if prefer_default_model
-                else active.model_name or default_model
-            )
             await self._record_feedback_turn(
                 streamer=active,
                 route=route,
-                model=recorded_model,
+                model=model_override or active.model_name or default_model,
                 effort=effort,
                 backend=backend,
                 question=question,
@@ -317,11 +329,11 @@ class AnswerTurn(BaseModel):
                 ),
                 on_final_message=self._feedback_hook(
                     route="IMAGE" if media_noun == "image" else "VIDEO",
-                    default_model=media_model or model.name,
+                    default_model=model.name,
                     effort="",
                     backend="interactions" if media_noun == "video" else "responses",
                     question=question,
-                    prefer_default_model=bool(media_model),
+                    model_override=media_model or None,
                 ),
             )
             with logfire.span(
@@ -396,24 +408,12 @@ class AnswerTurn(BaseModel):
         Raises:
             HTTPException: Sending failed for a reason other than a deleted reply target.
         """
-        try:
-            return await self.surface.send(
-                content=content,
-                file=media.to_file() if media else None,
-                allowed_mentions=allowed_mentions,
-            )
-        except HTTPException as exc:
-            if not is_reply_target_gone(error=exc):
-                raise
-            logfire.info(
-                "Source message deleted before the media reply; sending unparented",
-                message_id=self.message.id,
-            )
-            return await self.surface.send_unparented(
-                content=content,
-                file=media.to_file() if media else None,
-                allowed_mentions=allowed_mentions,
-            )
+        return await self.surface.send_or_unparented(
+            content=content,
+            file=media.to_file if media else None,
+            allowed_mentions=allowed_mentions,
+            unparented_log="Source message deleted before the media reply; sending unparented",
+        )
 
     def _select_qa_model(
         self,
@@ -444,6 +444,16 @@ class AnswerTurn(BaseModel):
             BLIND_TEST_MODEL_LABEL,
         )
 
+    def _interactions_decline_reason(self, slow_model: ModelSettings) -> str | None:
+        """Returns why the Interactions YouTube backend cannot run for `slow_model`, or None."""
+        if not slow_model.is_gemini:
+            return "model"
+        if not self.config.youtube_video_enabled:
+            return "kill-switch"
+        if not self.config.gemini_key_configured:
+            return "no-gemini-key"
+        return None
+
     async def stream_answer(  # noqa: PLR0913 -- QA turn parameters from pipeline
         self,
         system_prompt: str,
@@ -452,9 +462,7 @@ class AnswerTurn(BaseModel):
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
-        regen_count: int = 0,
-        regen_of_reply_message_id: int | None = None,
-        excluded_models: frozenset[str] = frozenset(),
+        regen: RegenOptions | None = None,
     ) -> int | None:
         """Streams the QA answer from `context`, launches any research brief, and schedules memory updates.
 
@@ -469,9 +477,7 @@ class AnswerTurn(BaseModel):
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.
-            regen_count (int): 0 for an initial reply, or 1-based depth for a regenerated reply.
-            regen_of_reply_message_id (int | None): Parent reply id replaced by this regen turn.
-            excluded_models (frozenset[str]): Candidate models already tried earlier in this chain.
+            regen (RegenOptions | None): Regeneration depth, parent reply id, and excluded models.
 
         Returns:
             int | None: Discord message id of the final landed reply chunk, or None if not sent.
@@ -481,42 +487,44 @@ class AnswerTurn(BaseModel):
         image_generator = toolkit.image_generator if self.config.inline_image_enabled else None
         music_generator = toolkit.music_generator if self.config.music_available else None
         video_generator = toolkit.video_generator if self.config.video_available else None
+        research_offered = allow_research and self.config.deep_research_available
+        offered_markers = (
+            ("voice", None, voice_generator is not None),
+            ("image", INLINE_IMAGE_INSTRUCTION, image_generator is not None),
+            ("music", MUSIC_INSTRUCTION, music_generator is not None),
+            ("video", VIDEO_INSTRUCTION, video_generator is not None),
+            ("research", DEEP_RESEARCH_INSTRUCTION, research_offered),
+        )
         # Disabled renderers still strip tags silently; voice is removed from the base prompt
         # while optional media instructions are appended.
         if voice_generator is None:
             system_prompt = system_prompt.replace(VOICE_INSTRUCTION, "")
-        for instruction, offered in (
-            (INLINE_IMAGE_INSTRUCTION, image_generator is not None),
-            (MUSIC_INSTRUCTION, music_generator is not None),
-            (VIDEO_INSTRUCTION, video_generator is not None),
-        ):
-            if offered:
+        for _name, instruction, offered in offered_markers:
+            if offered and instruction is not None:
                 system_prompt = f"{system_prompt}\n{instruction}"
-        research_offered = allow_research and self.config.deep_research_available
-        if research_offered:
-            system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
+        regen_count = regen.regen_count if regen is not None else 0
+        regen_of_reply_message_id = regen.regen_of_reply_message_id if regen is not None else None
+        excluded_models = regen.excluded_models if regen is not None else frozenset()
         slow_model, system_prompt, model_display_name = self._select_qa_model(
             effort=effort, system_prompt=system_prompt, excluded_models=excluded_models
         )
         dispatched_model.set(slow_model.name)
         answer_input = context.answer_input(config=self.config)
 
-        use_interactions = (
-            yt_url is not None
-            and slow_model.is_gemini
-            and self.config.youtube_video_enabled
-            and self.config.gemini_key_configured
+        decline_reason = (
+            self._interactions_decline_reason(slow_model=slow_model)
+            if yt_url is not None
+            else None
         )
-        backend = "interactions" if use_interactions else "responses"
-        if yt_url is not None and not use_interactions:
+        use_interactions = yt_url is not None and decline_reason is None
+        backend: Literal["responses", "interactions"] = (
+            "interactions" if use_interactions else "responses"
+        )
+        if decline_reason is not None:
             logfire.info(
                 "gen_reply youtube watch declined; answering on the responses backend",
                 message_id=self.message.id,
-                reason="model"
-                if not slow_model.is_gemini
-                else "kill-switch"
-                if not self.config.youtube_video_enabled
-                else "no-gemini-key",
+                reason=decline_reason,
                 model=slow_model.name,
             )
         if use_interactions:
@@ -569,17 +577,7 @@ class AnswerTurn(BaseModel):
             user_memory=context.memory_block is not None,
             tone=context.tone_block is not None,
             # Joined string avoids multi-line list formatting in the console exporter.
-            markers=",".join(
-                name
-                for name, offered in (
-                    ("voice", voice_generator is not None),
-                    ("image", image_generator is not None),
-                    ("music", music_generator is not None),
-                    ("video", video_generator is not None),
-                    ("research", research_offered),
-                )
-                if offered
-            ),
+            markers=",".join(name for name, _instruction, offered in offered_markers if offered),
         )
         instructions = build_runtime_instructions(
             system_prompt=system_prompt, message=self.message, guild_id=self.surface.guild_id

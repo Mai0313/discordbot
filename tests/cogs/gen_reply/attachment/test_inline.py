@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
+import asyncio
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 
 from tests.helpers.reply_fakes import FakeAttachment, _att, _png_bytes
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     import pytest
     from nextcord import Attachment
-
-    from discordbot.typings.media import LoadedMedia
 
 
 async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
@@ -113,3 +114,61 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="blob.bin",
     )
     assert binary_rendered is None
+
+
+async def test_inline_renderer_bounds_loads_with_media_semaphore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inline downloads share `media_semaphore` so bursty turns stay bounded."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.base.MEDIA_CONCURRENCY", 2)
+    state = {"active": 0, "peak": 0}
+
+    async def slow_load_image(source: object) -> LoadedMedia:
+        del source
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        return LoadedMedia(data=_png_bytes(), mime_type="image/png")
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.inline.load_image_bytes", slow_load_image
+    )
+    renderer = InlineRenderer()
+    results = await asyncio.gather(*[
+        renderer.render_image(source=f"https://cdn.example/{i}.png", cache_key=f"k{i}")
+        for i in range(6)
+    ])
+
+    assert all(result is not None for result in results)
+    assert state["peak"] == 2
+
+
+async def test_inline_renderer_masks_signed_url_and_attaches_decode_exc_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown-MIME logs strip query tokens, and UTF-8 decode drops attach `_exc_info=True`."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    renderer = InlineRenderer()
+    unknown = FakeAttachment(
+        filename="mystery",
+        content_type=None,
+        url="https://cdn.discordapp.com/attachments/1/2/mystery?ex=1&hm=secret",
+    )
+    assert (
+        await renderer.render_file(attachment=cast("Attachment", unknown), cache_key="mystery")
+        is None
+    )
+    assert any(
+        fields.get("url") == "https://cdn.discordapp.com/attachments/1/2/mystery"
+        for _, fields in warns
+    )
+
+    binary = _att(
+        filename="blob.bin", content_type="application/octet-stream", payload=b"\x00\x01\xff"
+    )
+    assert await renderer.render_file(attachment=binary, cache_key="blob.bin") is None
+    assert any(
+        fields.get("filename") == "blob.bin" and fields.get("_exc_info") is True
+        for _, fields in warns
+    )

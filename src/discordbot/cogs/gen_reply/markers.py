@@ -201,7 +201,7 @@ def extract_inline_markers(text: str) -> InlineMarkers:
     cleaned = text
     pulled: dict[str, list[str]] = {}
     for marker in _PULLED:
-        pulled[marker.open], cleaned = marker.pull(cleaned)
+        pulled[marker.open], cleaned = marker.pull(text=cleaned)
 
     # Complete voice blocks only: an unclosed <generate-voice> stays visible, so speaking it would
     # read unmarked text.
@@ -242,7 +242,7 @@ def scrub_markers_for_preview(text: str) -> str:
     """
     cleaned = text
     for marker in _PULLED:
-        cleaned = marker.hide(cleaned)
+        cleaned = marker.hide(text=cleaned)
     cleaned = _VOICE.tag.sub("", _VOICE.block.sub(r"\1", cleaned))
     stripped = cleaned.rstrip()
     lowered = stripped.lower()

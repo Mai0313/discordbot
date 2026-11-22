@@ -20,6 +20,7 @@ from discordbot.cogs.gen_reply.streaming import (
     REASONING_PREVIEW_MAX_LINES,
     ResponseStreamer,
     _cut_cleanly,
+    _citation_domain,
 )
 from discordbot.cogs.gen_reply.status_marks import ANSWER_EMOJI, DROPPED_HINT_EMOJI
 
@@ -747,6 +748,7 @@ async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> N
     streamer = ResponseStreamer(
         message=surface.message, surface=surface, reply=reply, media_delivery=hosting_off_planner()
     )
+    streamer._body_text = "答案"
     streamer.stored_content = f"答案{footer}"
     streamer._usage_footer = footer
     await surface.hint(emoji="⚠️")
@@ -757,7 +759,34 @@ async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> N
     assert written.startswith("答案")
     assert written.endswith(footer)
     assert DROPPED_HINT_EMOJI in written
-    assert streamer._without_added_lines(text=streamer.stored_content) == f"答案{footer}"
+    assert streamer.final_answer_text() == f"答案{footer}"
+
+
+def test_split_reply_for_discord_handles_zero_max_messages() -> None:
+    """`max_messages=0` still truncates cleanly instead of bypassing the cap."""
+    footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
+    parent, chunks = ResponseStreamer._split_reply_for_discord(
+        content="x" * (DISCORD_MESSAGE_LIMIT + 100), footer=footer, max_messages=0
+    )
+
+    assert chunks == []
+    assert len(parent) <= DISCORD_MESSAGE_LIMIT
+    assert TRUNCATED_NOTICE.strip() in parent
+    assert parent.endswith(footer)
+
+
+def test_citation_domain_handles_malformed_and_redirect_urls() -> None:
+    """Malformed URLs return None without raising; Vertex redirects fall back to title."""
+    assert _citation_domain(url="https://[unbalanced/path", title="ignored") is None
+    assert _citation_domain(url="", title="ignored") is None
+    assert _citation_domain(url="https://Example.COM/page", title="Page") == "example.com"
+    assert (
+        _citation_domain(
+            url="https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc",
+            title="Docs.Python.ORG",
+        )
+        == "docs.python.org"
+    )
 
 
 async def test_a_capped_surface_stops_chunking_where_its_budget_ends() -> None:

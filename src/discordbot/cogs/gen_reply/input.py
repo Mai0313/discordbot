@@ -20,7 +20,7 @@ from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
     FORWARDED_MESSAGE_MARKER,
-    sanitize_identity,
+    render_author_identity,
     defuse_separator_fences,
 )
 from discordbot.typings.context_budgets import HISTORY_EARLIER_REPLY_MAX_CHARS
@@ -115,7 +115,7 @@ class MessageInputBuilder(BaseModel):
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
 
-    async def get_user_prompt(self, content: str) -> str:
+    def get_user_prompt(self, content: str) -> str:
         """Returns `content` with bot mention syntax removed and surrounding whitespace stripped.
 
         Args:
@@ -169,7 +169,7 @@ class MessageInputBuilder(BaseModel):
             text = MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds))
         return text
 
-    def _forwardedsnapshot_text(self, message: Message) -> str:
+    def _forwarded_snapshot_text(self, message: Message) -> str:
         """Renders `message.snapshots` with each snapshot prefixed by `[forwarded message]`."""
         blocks: list[str] = []
         for snapshot in message.snapshots:
@@ -192,7 +192,7 @@ class MessageInputBuilder(BaseModel):
         ]
         return "\n".join(texts)
 
-    async def get_cleaned_content(self, message: Message, shorten: bool = False) -> str:
+    def get_cleaned_content(self, message: Message, shorten: bool = False) -> str:
         """Returns `message`'s cleaned text, with embed/system fallbacks and forwarded snapshots.
 
         Strips the usage footer from the bot's own messages.
@@ -211,7 +211,7 @@ class MessageInputBuilder(BaseModel):
         if not content and message.is_system():
             content = message.system_content
         # A forward can also carry the forwarder's own comment, so append rather than replace.
-        forwarded = self._forwardedsnapshot_text(message=message)
+        forwarded = self._forwarded_snapshot_text(message=message)
         if forwarded:
             content = f"{content}\n{forwarded}".strip() if content else forwarded
         return shorten_earlier_reply(text=content) if shorten else content
@@ -279,24 +279,16 @@ class MessageInputBuilder(BaseModel):
                 )
             )
         for embed in embeds:
-            if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                sources.append(
-                    AttachmentSource(
-                        handle=url,
-                        kind="image",
-                        content_type=guess_type(url)[0] or "image/png",
-                        cache_key=url,
+            for media in (embed.image, embed.thumbnail):
+                if media and (url := media.proxy_url or media.url):
+                    sources.append(
+                        AttachmentSource(
+                            handle=url,
+                            kind="image",
+                            content_type=guess_type(url)[0] or "image/png",
+                            cache_key=url,
+                        )
                     )
-                )
-            if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                sources.append(
-                    AttachmentSource(
-                        handle=url,
-                        kind="image",
-                        content_type=guess_type(url)[0] or "image/png",
-                        cache_key=url,
-                    )
-                )
         return sources
 
     def _split_on_modality(
@@ -356,6 +348,16 @@ class MessageInputBuilder(BaseModel):
             )
         return accepted
 
+    def supported_sources(self, message: Message) -> list[AttachmentSource]:
+        """Returns the modality- and renderer-accepted attachment sources for `message`, logging skips.
+
+        Args:
+            message (Message): Message whose attachment sources are classified and filtered.
+        """
+        return self._supported_sources(
+            sources=self.collect_attachment_sources(message=message), message_id=message.id
+        )
+
     async def get_image_sources_with_mime(self, message: Message) -> list[LoadedMedia]:
         """Returns downscaled `(bytes, mime_type)` `LoadedMedia` items for `message`'s image sources.
 
@@ -370,6 +372,9 @@ class MessageInputBuilder(BaseModel):
             if source.kind == "image":
                 tasks.append(load_image_bytes(source=source.handle))
         loaded = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in loaded:
+            if isinstance(item, BaseException) and not isinstance(item, Exception):
+                raise item
         for item in loaded:
             if isinstance(item, BaseException):
                 logfire.warn(
@@ -572,11 +577,12 @@ class MessageInputBuilder(BaseModel):
         if is_bot and not has_attachments:
             return EasyInputMessageParam(role="assistant", content=content)
 
-        prefixed = (
-            f"{sanitize_identity(value=message.author.display_name)} "
-            f"({sanitize_identity(value=message.author.name)}) "
-            f"[id: {message.author.id}]: {content}"
+        author = render_author_identity(
+            display_name=message.author.display_name,
+            username=message.author.name,
+            user_id=message.author.id,
         )
+        prefixed = f"{author}: {content}"
 
         if not has_attachments:
             return EasyInputMessageParam(role="user", content=prefixed)
@@ -586,7 +592,7 @@ class MessageInputBuilder(BaseModel):
             role="user", content=[ResponseInputTextParam(text=prefixed, type="input_text"), *parts]
         )
 
-    async def render_text_only(
+    def render_text_only(
         self, message: Message, sources: list[AttachmentSource], shorten: bool = False
     ) -> EasyInputMessageParam:
         """Returns `message` rendered as cleaned text plus `[attachment: ...]` markers without uploading.
@@ -598,7 +604,7 @@ class MessageInputBuilder(BaseModel):
             sources (list[AttachmentSource]): Modality-filtered attachment sources for `message`.
             shorten (bool): Whether to cut the text to its opening (`shorten_earlier_reply`).
         """
-        content = await self.get_cleaned_content(message=message, shorten=shorten)
+        content = self.get_cleaned_content(message=message, shorten=shorten)
         markers: list[ResponseInputTextParam] = [
             ResponseInputTextParam(text=f"[attachment: {source.marker_kind}]", type="input_text")
             for source in sources
@@ -613,6 +619,7 @@ class MessageInputBuilder(BaseModel):
         text_only: bool = False,
         allow_dead_cache: bool = False,
         shorten: bool = False,
+        supported_sources: list[AttachmentSource] | None = None,
     ) -> EasyInputMessageParam:
         """Returns `message` rendered as a Responses API input message, degrading to empty text on error.
 
@@ -623,19 +630,18 @@ class MessageInputBuilder(BaseModel):
                 (set on history scrollback only).
             shorten (bool): Whether to cut the text to its opening (`shorten_earlier_reply`); set
                 on an earlier bot reply in history only.
+            supported_sources (list[AttachmentSource] | None): Pre-classified supported sources for
+                `message` when the caller already classified it, avoiding duplicate skip logs.
         """
         try:
-            if text_only:
-                sources = self._supported_sources(
-                    sources=self.collect_attachment_sources(message=message), message_id=message.id
-                )
-                return await self.render_text_only(
-                    message=message, sources=sources, shorten=shorten
-                )
-            content = await self.get_cleaned_content(message=message, shorten=shorten)
-            sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message), message_id=message.id
+            sources = (
+                self.supported_sources(message=message)
+                if supported_sources is None
+                else supported_sources
             )
+            if text_only:
+                return self.render_text_only(message=message, sources=sources, shorten=shorten)
+            content = self.get_cleaned_content(message=message, shorten=shorten)
             attachment_parts = await self.get_attachment_parts(
                 message=message, sources=sources, allow_dead_cache=allow_dead_cache
             )

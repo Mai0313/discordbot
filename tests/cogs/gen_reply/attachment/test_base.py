@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 import asyncio
 
 from discordbot.typings.media import LoadedMedia
 from discordbot.cogs.gen_reply.attachment.base import loggable_cache_key
 
-from tests.helpers.reply_fakes import _fake_uploader
+from tests.helpers.reply_fakes import FakeAttachment, _fake_uploader
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     import pytest
+    from nextcord import Attachment
 
 
 async def test_media_semaphore_bounds_media_io_concurrency(
@@ -53,3 +55,26 @@ def test_loggable_cache_key_strips_url_query_token() -> None:
         == "https://media.discordapp.net/x/y.png"
     )
     assert loggable_cache_key(cache_key="https://cdn.example/a.png") == "https://cdn.example/a.png"
+
+
+async def test_file_upload_renderer_masks_signed_url_on_unknown_mime_warn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown-MIME warnings never leak signed Discord CDN query parameters."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    attachment = FakeAttachment(
+        filename="mystery",
+        content_type=None,
+        url="https://cdn.discordapp.com/attachments/1/2/mystery?ex=1&hm=secret",
+    )
+
+    assert (
+        await _fake_uploader().render_file(
+            attachment=cast("Attachment", attachment), cache_key="mystery"
+        )
+        is None
+    )
+    assert any(
+        fields.get("url") == "https://cdn.discordapp.com/attachments/1/2/mystery"
+        for _, fields in warns
+    )

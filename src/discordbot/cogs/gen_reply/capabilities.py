@@ -56,6 +56,17 @@ def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
         (_MEDIA_LIST, len(offered) == len(media), media_list),
         ("an image or a video (or", config.gemini_key_configured, "an image (or"),
         (
+            "Finished replies also carry 👍 and 👎 feedback buttons underneath so anyone can rate the "
+            "answer; clicking again cancels the rating, switching overwrites it, and a 👎 offers "
+            "optional quick reason buttons (plus a short free-text form under 其他) visible only to "
+            "the person who clicked. Normal text replies in a server or DM (not `/ask`, image, or "
+            "video replies) also carry a 🔄 button so the original asker can regenerate the answer "
+            "in place, replacing the old reply once the new one lands; normally a reply can be "
+            "regenerated once, or across the remaining candidate models during a blind test.\n\n",
+            config.feedback_enabled,
+            "",
+        ),
+        (
             "- **YouTube**: mention me with a YouTube link, or mention me in a reply to a message carrying one, and I watch the video before answering.\n",
             config.youtube_video_enabled and config.gemini_key_configured,
             "",

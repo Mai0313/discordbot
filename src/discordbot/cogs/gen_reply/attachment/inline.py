@@ -11,10 +11,15 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.images import to_data_uri
-from discordbot.typings.media import RenderedAttachment
+from discordbot.typings.media import LoadedMedia, RenderedAttachment
 from discordbot.utils.llm_transcript import defuse_separator_fences
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
-from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
+from discordbot.cogs.gen_reply.attachment.base import (
+    FileBytesLoader,
+    AttachmentRenderer,
+    media_semaphore,
+    loggable_cache_key,
+)
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
@@ -60,6 +65,22 @@ class InlineRenderer(AttachmentRenderer):
             return False
         return cache_key not in self._unreadable
 
+    async def _load_source_bytes(
+        self,
+        cache_key: int | str,
+        filename: str,
+        load_data: FileBytesLoader,
+        allow_dead_cache: bool,
+    ) -> LoadedMedia | None:
+        """Fetches one source's bytes under the process-wide media concurrency semaphore."""
+        async with media_semaphore.get():
+            return await super()._load_source_bytes(
+                cache_key=cache_key,
+                filename=filename,
+                load_data=load_data,
+                allow_dead_cache=allow_dead_cache,
+            )
+
     async def render_image(
         self,
         source: Attachment | StickerItem | str,
@@ -103,7 +124,7 @@ class InlineRenderer(AttachmentRenderer):
             logfire.warn(
                 "skipping attachment with unknown MIME type",
                 filename=attachment.filename,
-                url=attachment.url,
+                url=loggable_cache_key(cache_key=attachment.url),
             )
             return None
         if mime_type.partition("/")[0] in self.dropped_modalities:
@@ -149,6 +170,7 @@ class InlineRenderer(AttachmentRenderer):
                 filename=filename,
                 mime_type=mime_type,
                 cache_key=loggable_cache_key(cache_key=cache_key),
+                _exc_info=True,
             )
             self._unreadable[cache_key] = None
             if len(self._unreadable) > 128:

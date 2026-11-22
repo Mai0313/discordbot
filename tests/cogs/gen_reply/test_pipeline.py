@@ -29,6 +29,7 @@ from discordbot.cogs.gen_reply.speculation import (
     discard_link_tasks,
     run_until_deadline,
     await_deadline_bound_task,
+    drain_deadline_bound_task,
 )
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import DONE_EMOJI
@@ -205,19 +206,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
-        regen_count: int = 0,
-        regen_of_reply_message_id: int | None = None,
-        excluded_models: frozenset[str] = frozenset(),
+        regen: object = None,
     ) -> int | None:
         """Records slow message handler dispatch."""
-        del (
-            yt_url,
-            allow_research,
-            question,
-            regen_count,
-            regen_of_reply_message_id,
-            excluded_models,
-        )
+        del yt_url, allow_research, question, regen
         calls.append("stream_answer")
         effort_flags.append(effort)
         contexts.append(context)
@@ -1068,3 +1060,58 @@ async def test_handle_message_reply_uses_route_effort(
     await _run_pipeline(cog=cog, message=message)
 
     assert _recorded(cog).responses.create_reasonings[-1]["effort"] == effort
+
+
+async def test_drain_deadline_bound_task_reraises_outer_cancellation_after_cleanup() -> None:
+    """An outer cancellation during drain still finishes waiting for cleanup, then propagates."""
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def cleaning_task() -> str:
+        cleanup_started.set()
+        await release_cleanup.wait()
+        cleanup_finished.set()
+        return "done"
+
+    task = asyncio.create_task(coro=cleaning_task())
+    await cleanup_started.wait()
+    # Past deadline so `drain_deadline_bound_task` waits for cleanup instead of cancelling `task`.
+    past_deadline = asyncio.get_running_loop().time() - 1.0
+    drainer = asyncio.create_task(
+        coro=drain_deadline_bound_task(
+            task=task, deadline=past_deadline, label="bilibili", message_id=1
+        )
+    )
+    await asyncio.sleep(0)
+    drainer.cancel()
+    await asyncio.sleep(0)
+    assert not drainer.done(), "drainer must wait for cleanup before propagating cancellation"
+    assert not cleanup_finished.is_set()
+
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await drainer
+    assert cleanup_finished.is_set()
+
+
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_drains_link_tasks_if_marking_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`link_builds` is bound before `_mark_link_sources` so a mark failure still cancels builds."""
+    cog = _link_cog(sources=["bilibili"])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source="bilibili", delay=30)
+
+    async def fail_mark(self: object, emoji: str) -> None:
+        del self, emoji
+        await asyncio.sleep(0)
+        raise RuntimeError("reaction failed")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.surface.TurnSurface.mark", fail_mark)
+
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['bilibili']}"))
+    )
+
+    assert builder.cancellations == 1

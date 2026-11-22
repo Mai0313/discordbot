@@ -228,13 +228,13 @@ async def adapt_interactions_stream(
                     "ResponseStreamEvent",
                     SimpleNamespace(type="response.output_text.delta", delta=delta.text),
                 )
-            elif delta.type == "thought_summary":
-                text = getattr(delta.content, "text", "") if delta.content is not None else ""
-                if text:
-                    yield cast(
-                        "ResponseStreamEvent",
-                        SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
-                    )
+            elif delta.type == "thought_summary" and (
+                text := getattr(delta.content, "text", "") if delta.content is not None else ""
+            ):
+                yield cast(
+                    "ResponseStreamEvent",
+                    SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
+                )
         elif event.event_type == "interaction.completed":
             usage = event.interaction.usage or streamed_usage
             usage_ns = (

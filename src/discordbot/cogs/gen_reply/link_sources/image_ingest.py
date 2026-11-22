@@ -113,34 +113,49 @@ async def upload_image(
     )
 
 
+async def gather_media_parts(
+    tasks: Sequence[Coroutine[Any, Any, ResponseInputFileParam | None]], warning: str, url: str
+) -> list[ResponseInputFileParam]:
+    """Runs `tasks` concurrently, returning uploaded parts while logging per-item failures.
+
+    Re-raises non-`Exception` `BaseException`s so cancellations and signals are never swallowed.
+
+    Args:
+        tasks (Sequence[Coroutine[Any, Any, ResponseInputFileParam | None]]): Per-item upload
+            coroutines.
+        warning (str): Log message recorded for each failing item.
+        url (str): Post URL attached to failure logs.
+    """
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result
+    parts: list[ResponseInputFileParam] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            logfire.warn(warning, url=url, error_type=type(result).__name__, _exc_info=result)
+            continue
+        if result is not None:
+            parts.append(result)
+    return parts
+
+
 async def _upload_each(
     platform: str, post_url: str, image_urls: list[str], gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the images concurrently, keeping whatever succeeded."""
-    results = await asyncio.gather(
-        *(
+    tasks: list[Coroutine[Any, Any, ResponseInputFileParam | None]] = []
+    for index, image_url in enumerate(image_urls):
+        tasks.append(
             upload_image(
                 image_url=image_url,
                 filename=f"{platform.lower()}_image_{index}.jpg",
                 gemini_client=gemini_client,
             )
-            for index, image_url in enumerate(image_urls)
-        ),
-        return_exceptions=True,
+        )
+    return await gather_media_parts(
+        tasks=tasks, warning=f"{platform} image ingestion failed for one item", url=post_url
     )
-    parts: list[ResponseInputFileParam] = []
-    for result in results:
-        if isinstance(result, BaseException):
-            logfire.warn(
-                f"{platform} image ingestion failed for one item",
-                url=post_url,
-                error_type=type(result).__name__,
-                _exc_info=result,
-            )
-            continue
-        if result is not None:
-            parts.append(result)
-    return parts
 
 
 async def upload_post_images(  # noqa: PLR0913 -- the post, its images and cap, the client and the build's deadline

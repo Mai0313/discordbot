@@ -13,14 +13,11 @@ from functools import cached_property
 
 from openai import AsyncOpenAI
 import logfire
-from nextcord import Attachment, StickerItem
 from pydantic import Field
-from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.media import UploadedFile, RenderedAttachment
+from discordbot.typings.media import UploadedFile
 from discordbot.cogs.gen_reply.attachment.base import UploadKind, FileUploadRenderer
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
 
 type OpenAIFilePurpose = Literal["user_data", "vision"]
 
@@ -30,7 +27,9 @@ OPENAI_FILE_EXPIRY_SECONDS = 2_592_000
 class OpenAIFileUploader(FileUploadRenderer):
     """Uploads attachments to OpenAI Files API and references them by file id."""
 
-    model_name: str = Field(description="Selected answer model name for LiteLLM file routing.")
+    model_name: str = Field(
+        ..., description="Selected answer model name for LiteLLM file routing."
+    )
     config: LLMConfig = Field(
         default_factory=LLMConfig,
         description="Runtime LLM config supplying the OpenAI-compatible file upload client.",
@@ -40,32 +39,6 @@ class OpenAIFileUploader(FileUploadRenderer):
     def client(self) -> AsyncOpenAI:
         """Returns the OpenAI-compatible client used for Files API uploads."""
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
-
-    async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
-    ) -> RenderedAttachment | None:
-        """Returns `source` uploaded to the OpenAI Files API as an `input_image` part, or `None`.
-
-        Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
-            cache_key (int | str): Per-source identifier for dead-source caching.
-            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
-        """
-        source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=source_name,
-            load_data=lambda: load_image_bytes(source=source),
-            kind="image",
-            allow_dead_cache=allow_dead_cache,
-        )
-        if uploaded is None:
-            return None
-        part = ResponseInputImageParam(type="input_image", file_id=uploaded.uri, detail="auto")
-        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _upload_file(
         self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind

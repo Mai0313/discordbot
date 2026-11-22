@@ -8,7 +8,7 @@ from functools import cached_property
 
 from google import genai
 from openai import AsyncOpenAI
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from google.genai.types import HttpOptions
 
@@ -44,6 +44,7 @@ class ReplyToolkit(BaseModel):
             "gate themselves off as they already do."
         ),
     )
+    _memory_writer: MemoryWriterAI | None = PrivateAttr(default=None)
 
     @cached_property
     def runtime_models(self) -> RuntimeModelCatalog:
@@ -117,11 +118,19 @@ class ReplyToolkit(BaseModel):
             ),
         )
 
-    @cached_property
+    @property
     def memory_writer(self) -> MemoryWriterAI:
         """Returns the memory writer service for user and server scopes."""
-        return MemoryWriterAI(
+        bot_user_id = self.bot.user.id if self.bot.user is not None else None
+        if self._memory_writer is not None and (
+            self._memory_writer.bot_user_id == bot_user_id or bot_user_id is None
+        ):
+            return self._memory_writer
+        writer = MemoryWriterAI(
             client=self.openai_client,
             model=self.runtime_models.memory_model,
-            bot_user_id=self.bot.user.id if self.bot.user is not None else None,
+            bot_user_id=bot_user_id,
         )
+        if bot_user_id is not None:
+            self._memory_writer = writer
+        return writer

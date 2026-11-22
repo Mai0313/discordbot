@@ -80,12 +80,14 @@ async def drain_deadline_bound_task[DeadlineT](
     """
     if not task.done() and asyncio.get_running_loop().time() < deadline:
         task.cancel()
+    outer_cancel: asyncio.CancelledError | None = None
     while not task.done():
         try:
             await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
                 break
+            outer_cancel = exc
         except Exception:
             break
     try:
@@ -94,6 +96,8 @@ async def drain_deadline_bound_task[DeadlineT](
         pass
     except Exception as exc:
         _report_discarded_failure(exc=exc, label=label, message_id=message_id)
+    if outer_cancel is not None:
+        raise outer_cancel
 
 
 async def discard_link_tasks[DeadlineT](
@@ -107,11 +111,19 @@ async def discard_link_tasks[DeadlineT](
         deadline (float): Shared monotonic event-loop deadline for the link builds.
         message_id (int): Triggering Discord message id for log correlation.
     """
-    for name, task in link_tasks.items():
-        await drain_deadline_bound_task(
-            task=task, deadline=deadline, label=name, message_id=message_id
-        )
-    link_tasks.clear()
+    outer_cancel: asyncio.CancelledError | None = None
+    try:
+        for name, task in link_tasks.items():
+            try:
+                await drain_deadline_bound_task(
+                    task=task, deadline=deadline, label=name, message_id=message_id
+                )
+            except asyncio.CancelledError as exc:
+                outer_cancel = exc
+    finally:
+        link_tasks.clear()
+    if outer_cancel is not None:
+        raise outer_cancel
 
 
 async def run_until_deadline[DeadlineT](

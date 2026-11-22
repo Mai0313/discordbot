@@ -61,51 +61,11 @@ class DownvoteReasonModal(LoggedModal):
 
     async def callback(self, interaction: Interaction[commands.Bot]) -> None:
         """Acknowledges the submit, persists the free-text reason, and updates the ephemeral notice."""
-        if interaction.user is None:
-            return
-        await interaction.response.defer()
-        text = (self.reason_input.value or "").strip()
-        try:
-            result = await set_feedback_reason(
-                reply_message_id=self.parent_view.reply_message_id,
-                user_id=interaction.user.id,
-                reason_tag="other",
-                reason_text=text,
-            )
-            if not result.updated:
-                await interaction.edit_original_message(
-                    content="你已變更或取消這則評分", view=None
-                )
-                return
-            self.parent_view.apply_selection(
-                reason_tag=result.reason_tag, reason_text=result.reason_text
-            )
-            logfire.info(
-                "gen_reply feedback reason",
-                reply_message_id=self.parent_view.reply_message_id,
-                source_message_id=result.source_message_id,
-                model=result.model,
-                effort=result.effort,
-                route=result.route,
-                user_id=interaction.user.id,
-                reason_tag=result.reason_tag,
-                reason_chars=len(result.reason_text or ""),
-                is_asker=result.is_asker,
-            )
-            await interaction.edit_original_message(
-                content=self.parent_view.status_text(), view=self.parent_view
-            )
-        except Exception as exc:
-            # Broad on purpose: deferred modal submit must surface an error instead of stalling.
-            logfire.error(
-                "Failed to save downvote reason modal",
-                reply_message_id=self.parent_view.reply_message_id,
-                user_id=interaction.user.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            with contextlib.suppress(HTTPException):
-                await interaction.edit_original_message(content="記錄原因時發生錯誤，請稍後再試")
+        await self.parent_view.save_reason(
+            interaction=interaction,
+            reason_tag="other",
+            reason_text=(self.reason_input.value or "").strip(),
+        )
 
 
 class _ReasonButton(Button["DownvoteReasonView"]):
@@ -124,44 +84,7 @@ class _ReasonButton(Button["DownvoteReasonView"]):
         if self.reason_tag == "other":
             await interaction.response.send_modal(modal=DownvoteReasonModal(parent_view=view))
             return
-        await interaction.response.defer()
-        try:
-            result = await set_feedback_reason(
-                reply_message_id=view.reply_message_id,
-                user_id=interaction.user.id,
-                reason_tag=self.reason_tag,
-            )
-            if not result.updated:
-                await interaction.edit_original_message(
-                    content="你已變更或取消這則評分", view=None
-                )
-                return
-            view.apply_selection(reason_tag=result.reason_tag, reason_text=result.reason_text)
-            logfire.info(
-                "gen_reply feedback reason",
-                reply_message_id=view.reply_message_id,
-                source_message_id=result.source_message_id,
-                model=result.model,
-                effort=result.effort,
-                route=result.route,
-                user_id=interaction.user.id,
-                reason_tag=result.reason_tag,
-                reason_chars=0,
-                is_asker=result.is_asker,
-            )
-            await interaction.edit_original_message(content=view.status_text(), view=view)
-        except Exception as exc:
-            # Broad on purpose: deferred button presses must surface a notice instead of hanging.
-            logfire.error(
-                "Failed to save downvote reason tag",
-                reply_message_id=view.reply_message_id,
-                user_id=interaction.user.id,
-                reason_tag=self.reason_tag,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            with contextlib.suppress(HTTPException):
-                await interaction.edit_original_message(content="記錄原因時發生錯誤，請稍後再試")
+        await view.save_reason(interaction=interaction, reason_tag=self.reason_tag)
 
 
 class _CancelVoteButton(Button[View]):
@@ -277,6 +200,55 @@ class DownvoteReasonView(LoggedView):
         else:
             headline = f"{prefix}（{REASON_LABELS[self.selected_tag]}）"
         return f"{headline}\n{FEEDBACK_POLICY_NOTE}"
+
+    async def save_reason(
+        self,
+        interaction: Interaction[commands.Bot],
+        reason_tag: DownvoteReasonTag,
+        reason_text: str | None = None,
+    ) -> None:
+        """Defers `interaction`, persists `reason_tag`/`reason_text`, and updates the ephemeral notice."""
+        if interaction.user is None:
+            return
+        await interaction.response.defer()
+        try:
+            result = await set_feedback_reason(
+                reply_message_id=self.reply_message_id,
+                user_id=interaction.user.id,
+                reason_tag=reason_tag,
+                reason_text=reason_text,
+            )
+            if not result.updated:
+                await interaction.edit_original_message(
+                    content="你已變更或取消這則評分", view=None
+                )
+                return
+            self.apply_selection(reason_tag=result.reason_tag, reason_text=result.reason_text)
+            logfire.info(
+                "gen_reply feedback reason",
+                reply_message_id=self.reply_message_id,
+                source_message_id=result.source_message_id,
+                model=result.model,
+                effort=result.effort,
+                route=result.route,
+                user_id=interaction.user.id,
+                reason_tag=result.reason_tag,
+                reason_chars=len(result.reason_text or ""),
+                is_asker=result.is_asker,
+            )
+            await interaction.edit_original_message(content=self.status_text(), view=self)
+        except Exception as exc:
+            # Broad on purpose: deferred reason interactions must surface a notice instead of stalling.
+            logfire.error(
+                "Failed to save downvote reason",
+                reply_message_id=self.reply_message_id,
+                user_id=interaction.user.id,
+                reason_tag=reason_tag,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            with contextlib.suppress(HTTPException):
+                await interaction.edit_original_message(content="記錄原因時發生錯誤，請稍後再試")
 
 
 class ReplyFeedbackView(LoggedView):

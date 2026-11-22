@@ -2,11 +2,10 @@
 
 import re
 import time
-from typing import Literal
+from typing import Literal, TypedDict
 import asyncio
 import contextlib
 import unicodedata
-from urllib.parse import urlsplit
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
@@ -18,13 +17,13 @@ from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import Response, ResponseOutputItem, ResponseStreamEvent
 
+from discordbot.utils.urls import normalized_host
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
-from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -90,11 +89,20 @@ REASONING_PREVIEW_MAX_LINES = 4
 REASONING_PREVIEW_MAX_CHARS = 320
 
 
+class _EditKwargs(TypedDict, total=False):
+    """Typed optional kwargs forwarded to `Message.edit` without passing None sentinels."""
+
+    content: str
+    files: list[File]
+    view: View
+    allowed_mentions: AllowedMentions
+
+
 def _citation_domain(url: str, title: str) -> str | None:
     """Returns the cited domain from `url`, falling back to `title` for Vertex redirects."""
-    host = urlsplit(url=url).hostname
+    host = normalized_host(url=url)
     if host != "vertexaisearch.cloud.google.com":
-        return host
+        return host or None
     if re.fullmatch(pattern=r"(?:[a-z0-9-]+\.)+[a-z]{2,}", string=title, flags=re.IGNORECASE):
         return title.lower()
     return None
@@ -389,6 +397,10 @@ class ResponseStreamer(BaseModel):
     )
     _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
     _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
+    # Final cleaned reply body before any hosted-link, hint, memory, or footer lines.
+    _body_text: str = PrivateAttr(default="")
+    # Hosted media URL block spliced above hint/memory/footer when it fits DISCORD_MESSAGE_LIMIT.
+    _hosted_block: str = PrivateAttr(default="")
     # Appended footer, kept so media and memory edits splice above it for USAGE_FOOTER_RE.
     _usage_footer: str = PrivateAttr(default="")
     # Active memory footnote on reply, replaced in place and stripped from returned text.
@@ -417,7 +429,7 @@ class ResponseStreamer(BaseModel):
         remaining = content
         while len(remaining) + len(footer) > DISCORD_MESSAGE_LIMIT:
             left = None if max_messages is None else max_messages - len(messages)
-            if left == 1:
+            if left is not None and left <= 1:
                 budget = DISCORD_MESSAGE_LIMIT - len(footer) - len(TRUNCATED_NOTICE)
                 # Last allowed message: close an overrun code block instead of breaking before it.
                 head, _ = _cut_cleanly(text=remaining, budget=budget, earliest=budget // 2)
@@ -467,26 +479,16 @@ class ResponseStreamer(BaseModel):
         kept.reverse()
         return "\n".join([header, *(f"-# {line}" for line in kept)])
 
-    async def _reply_or_send(self, content: str, view: View | None = None) -> Message:
-        """Replies with `content`, falling back to unparented send if the source was deleted."""
-        try:
-            return await self.surface.send(content=content, view=view)
-        except HTTPException as exc:
-            if not is_reply_target_gone(error=exc):
-                raise
-            logfire.info(
-                "Source message deleted before reply; sending unparented",
-                message_id=self.message.id,
-            )
-            return await self.surface.send_unparented(content=content, view=view)
-
     async def _write_preview_snapshot(self) -> None:
         """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
         preview = self._render_preview()
         if not preview or preview == self.displayed_content:
             return
         if self.reply is None:
-            self.reply = await self._reply_or_send(content=preview)
+            self.reply = await self.surface.send_or_unparented(
+                content=preview,
+                unparented_log="Source message deleted before reply; sending unparented",
+            )
         else:
             await self.reply.edit(content=preview)
         self.displayed_content = preview
@@ -564,13 +566,17 @@ class ResponseStreamer(BaseModel):
         parent_view = self.feedback_view if not follow_up_chunks else None
         # Record reply here when no preview ran so later media edits target it.
         if self.reply is None:
-            self.reply = await self._reply_or_send(content=parent_content, view=parent_view)
+            self.reply = await self.surface.send_or_unparented(
+                content=parent_content,
+                view=parent_view,
+                unparented_log="Source message deleted before reply; sending unparented",
+            )
         else:
+            edit_kwargs: _EditKwargs = {"content": parent_content}
+            if parent_view is not None:
+                edit_kwargs["view"] = parent_view
             try:
-                if parent_view is not None:
-                    await self.reply.edit(content=parent_content, view=parent_view)
-                else:
-                    await self.reply.edit(content=parent_content)
+                await self.reply.edit(**edit_kwargs)
             except NotFound:
                 logfire.info(
                     "Reply deleted while streaming; finishing without the final edit",
@@ -770,7 +776,8 @@ class ResponseStreamer(BaseModel):
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
         self.markers = extract_inline_markers(text=self.stored_content)
-        self.stored_content = self.markers.cleaned_text
+        self._body_text = self.markers.cleaned_text
+        self.stored_content = self._body_text
         self.voice_text = (
             speechify_discord_markup(
                 text=self.markers.voice_text, resolve_name=self._resolve_mention_name
@@ -794,14 +801,15 @@ class ResponseStreamer(BaseModel):
         # `utils/llm_transcript.py::USAGE_FOOTER_RE` anchors on the blank line opening the footer.
         usage_footer = f"\n\n{usage_line}{memory_line}{policy_line}"
 
-        reply_chars = len(self.stored_content)
+        reply_chars = len(self._body_text)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
+        self._usage_footer = usage_footer
         if self._wants_pending_memory_note(footer_chars=len(usage_footer)):
             self._memory_note = MEMORY_PENDING_NOTE
-            self.stored_content = f"{self.stored_content}\n{self._memory_note}"
-        await self._write_final_message(content=self.stored_content, footer=usage_footer)
-        self.stored_content += usage_footer
-        self._usage_footer = usage_footer
+        await self._write_final_message(
+            content=self._render_reply_content(include_footer=False), footer=usage_footer
+        )
+        self.stored_content = self._render_reply_content()
         # Persist feedback turn rows before slow inline media / research runs so live buttons
         # already have a backing row as soon as the message appears in Discord.
         if self.on_final_message is not None and self.last_reply is not None:
@@ -845,24 +853,35 @@ class ResponseStreamer(BaseModel):
             memory_lookups=self.memory_lookups.total,
             chunked=chunked,
         )
-        return self._without_added_lines(text=self.stored_content)
+        return self.final_answer_text()
 
-    def _without_memory_note(self, text: str) -> str:
-        """Returns `text` with the memory note currently on the reply removed, if any."""
-        if not self._memory_note:
-            return text
-        return text.replace(f"\n{self._memory_note}", "", 1)
+    def _render_reply_content(
+        self,
+        hosted_block: str | None = None,
+        hint_line: str | None = None,
+        memory_note: str | None = None,
+        include_added_lines: bool = True,
+        include_footer: bool = True,
+    ) -> str:
+        """Renders reply text from `_body_text`, hosted links, hint, memory note, and footer."""
+        hosted = self._hosted_block if hosted_block is None else hosted_block
+        hint = self._hint_line if hint_line is None else hint_line
+        memory = self._memory_note if memory_note is None else memory_note
+        text = self._body_text
+        if hosted:
+            text = f"{text}\n{hosted}"
+        if include_added_lines:
+            if hint:
+                text = f"{text}\n{hint}"
+            if memory:
+                text = f"{text}\n{memory}"
+        if include_footer:
+            text = f"{text}{self._usage_footer}"
+        return text
 
     def final_answer_text(self) -> str:
         """Returns the finalized reply text with memory notes and dropped-media hints stripped."""
-        return self._without_added_lines(text=self.stored_content)
-
-    def _without_added_lines(self, text: str) -> str:
-        """Returns `text` with `_memory_note` and `_hint_line` stripped."""
-        stripped = self._without_memory_note(text=text)
-        if not self._hint_line:
-            return stripped
-        return stripped.replace(f"\n{self._hint_line}", "", 1)
+        return self._render_reply_content(include_added_lines=False)
 
     def _wants_pending_memory_note(self, footer_chars: int) -> bool:
         """Returns whether `reply` should show `MEMORY_PENDING_NOTE` within Discord's cap."""
@@ -870,7 +889,7 @@ class ResponseStreamer(BaseModel):
             return False
         if not (self.markers.memory_notes or self.markers.forget_notes):
             return False
-        spliced = len(self.stored_content) + 1 + len(MEMORY_PENDING_NOTE) + footer_chars
+        spliced = len(self._body_text) + 1 + len(MEMORY_PENDING_NOTE) + footer_chars
         return spliced <= DISCORD_MESSAGE_LIMIT
 
     async def set_memory_note(self, line: str) -> None:
@@ -884,12 +903,12 @@ class ResponseStreamer(BaseModel):
         """
         if self.reply is None or not self._usage_footer:
             return
-        body = self._without_memory_note(text=self.stored_content.removesuffix(self._usage_footer))
-        updated = f"{body}\n{line}{self._usage_footer}"
+        updated = self._render_reply_content(memory_note=line)
         if len(updated) > DISCORD_MESSAGE_LIMIT:
             if not self._memory_note:
                 return
-            updated, line = f"{body}{self._usage_footer}", ""
+            line = ""
+            updated = self._render_reply_content(memory_note="")
         if not await self._edit_reply_text(
             reply=self.reply,
             content=updated,
@@ -931,10 +950,8 @@ class ResponseStreamer(BaseModel):
         hints = self.surface.take_hints()
         if not hints or self.reply is None or not self._usage_footer:
             return
-        body = self._without_memory_note(text=self.stored_content.removesuffix(self._usage_footer))
         line = f"-# {''.join(hints)}"
-        note = f"\n{self._memory_note}" if self._memory_note else ""
-        updated = f"{body}\n{line}{note}{self._usage_footer}"
+        updated = self._render_reply_content(hint_line=line)
         if len(updated) > DISCORD_MESSAGE_LIMIT:
             logfire.warn(
                 "No room left on the reply for the dropped-media hints",
@@ -1091,20 +1108,27 @@ class ResponseStreamer(BaseModel):
             return None
         return MediaItem(source=video_bytes, filename=INLINE_VIDEO_FILENAME)
 
-    async def _attach_generated_media(self) -> None:
-        """Builds inline media within the surface budget and attaches or hosts them in one edit."""
-        if self._reply_deleted:
-            # User deleted the reply; skip dropped-media hints.
-            return
-        if self.reply is None:
-            if self.markers.media_requested:
-                logfire.warn(
-                    "Media requested but the reply was never sent; dropping it",
-                    message_id=self.message.id,
-                )
-                await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
-            return
-        reply = self.reply
+    def _take_media_result[ResultT](
+        self, task: asyncio.Task[ResultT], completed: bool, default: ResultT, media: str
+    ) -> tuple[ResultT, bool]:
+        """Extracts one finished media task's result, logging unexpected exceptions as dropped."""
+        if not completed:
+            return default, False
+        try:
+            return task.result(), False
+        except Exception as exc:
+            # Broad: best-effort inline media builders must not escape `finalize_reply`.
+            logfire.warn(
+                "Inline media builder raised unexpectedly; dropping it",
+                message_id=self.message.id,
+                media=media,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return default, True
+
+    async def _collect_generated_media(self) -> list[MediaItem]:
+        """Runs inline media builders under the surface budget, cancelling stragglers on exit."""
         # Share one source-image fetch across inline image and video builders.
         source_images_task = (
             asyncio.ensure_future(self._load_marker_source_images())
@@ -1121,32 +1145,68 @@ class ResponseStreamer(BaseModel):
             self._build_image_candidates(source_images_task=source_images_task)
         )
         # Bound builders to /ask's budget so timed-out media still leaves room for a ⏱️ hint;
-        # cancel pending in finally because asyncio.wait does not cancel on outer cancellation.
-        builds = {voice_task, music_task, video_task, image_task}
+        # cancel and drain pending builds and `source_images_task` in finally because
+        # `asyncio.wait` does not cancel on outer cancellation.
+        builds: set[asyncio.Task[MediaItem | None] | asyncio.Task[list[MediaItem]]] = {
+            voice_task,
+            music_task,
+            video_task,
+            image_task,
+        }
         try:
             done, pending = await asyncio.wait(
                 builds, timeout=self.surface.delivery_budget_seconds()
             )
         finally:
-            for task in builds:
-                task.cancel()
+            to_drain: list[asyncio.Task[object]] = [task for task in builds if not task.done()]
+            if source_images_task is not None:
+                to_drain.append(source_images_task)
+            for task in to_drain:
+                if not task.done():
+                    task.cancel()
+            if to_drain:
+                await asyncio.gather(*to_drain, return_exceptions=True)
         if pending:
-            await asyncio.wait(pending)
             logfire.warn(
                 "gen_reply inline media outlived the /ask window; dropping it",
                 message_id=self.message.id,
                 pending=len(pending),
             )
             await self.surface.hint(emoji=TIMEOUT_HINT_EMOJI)
-        voice_candidate = voice_task.result() if voice_task in done else None
-        music_candidate = music_task.result() if music_task in done else None
-        video_candidate = video_task.result() if video_task in done else None
-        image_candidates = image_task.result() if image_task in done else []
-        items = [
+        voice_candidate, voice_failed = self._take_media_result(
+            task=voice_task, completed=voice_task in done, default=None, media="voice"
+        )
+        music_candidate, music_failed = self._take_media_result(
+            task=music_task, completed=music_task in done, default=None, media="music"
+        )
+        video_candidate, video_failed = self._take_media_result(
+            task=video_task, completed=video_task in done, default=None, media="video"
+        )
+        image_candidates, image_failed = self._take_media_result(
+            task=image_task, completed=image_task in done, default=[], media="image"
+        )
+        if voice_failed or music_failed or video_failed or image_failed:
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
+        return [
             item
             for item in (voice_candidate, music_candidate, video_candidate, *image_candidates)
             if item is not None
         ]
+
+    async def _attach_generated_media(self) -> None:
+        """Builds inline media within the surface budget and attaches or hosts them in one edit."""
+        if self._reply_deleted:
+            # User deleted the reply; skip dropped-media hints.
+            return
+        if self.reply is None:
+            if self.markers.media_requested:
+                logfire.warn(
+                    "Media requested but the reply was never sent; dropping it",
+                    message_id=self.message.id,
+                )
+                await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
+            return
+        items = await self._collect_generated_media()
         if not items:
             return
         plan = await self.media_delivery.plan(
@@ -1158,7 +1218,7 @@ class ResponseStreamer(BaseModel):
         )
         files = [item.to_file() for item in plan.native]
         if not await self._finalize_media_edit(
-            reply=reply, files=files, hosted_urls=plan.hosted_urls
+            reply=self.reply, files=files, hosted_urls=plan.hosted_urls
         ):
             return
         if plan.dropped_items or plan.clamped_items:
@@ -1170,62 +1230,75 @@ class ResponseStreamer(BaseModel):
             hosted_count=len(plan.hosted_urls),
         )
 
+    async def _send_hosted_follow_up(
+        self, reply: Message, follow_up: str, hosted_count: int, file_count: int
+    ) -> bool:
+        """Posts hosted media links as a follow-up message when appending them overflows `reply`."""
+        try:
+            hosted_message = await self.surface.follow_up(
+                previous=reply, content=follow_up, allowed_mentions=AllowedMentions.none()
+            )
+            self.reply_messages.append(hosted_message)
+            return True
+        except Exception as exc:
+            # Broad: best-effort hosted-link follow-up must not raise into the reply pipeline.
+            logfire.warn(
+                "Hosted media link follow-up failed; the media URL was never posted",
+                message_id=self.message.id,
+                hosted_url_count=hosted_count,
+                file_count=file_count,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
+            return False
+
     async def _finalize_media_edit(
         self, reply: Message, files: list[File], hosted_urls: list[str]
     ) -> bool:
         """Edits `files` and `hosted_urls` onto `reply` (or follow-up), returning success."""
         if not files and not hosted_urls:
             return True
+        hosted_block = ""
         content: str | None = None
         follow_up: str | None = None
         if hosted_urls:
-            link_line = "\n-# 媒體過大，改用連結\n" + "\n".join(hosted_urls)
-            if len(self.stored_content) + len(link_line) <= DISCORD_MESSAGE_LIMIT:
-                # Splice before _usage_footer so USAGE_FOOTER_RE still strips it from history.
-                body = self.stored_content.removesuffix(self._usage_footer)
-                self.stored_content = f"{body}{link_line}{self._usage_footer}"
-                content = self.stored_content
+            hosted_block = "-# 媒體過大，改用連結\n" + "\n".join(hosted_urls)
+            candidate = self._render_reply_content(hosted_block=hosted_block)
+            if len(candidate) <= DISCORD_MESSAGE_LIMIT:
+                content = candidate
             else:
-                follow_up = link_line.lstrip("\n")
-        try:
-            if files and content is not None:
-                await reply.edit(
-                    content=content, files=files, allowed_mentions=AllowedMentions.none()
-                )
-            elif files:
-                await reply.edit(files=files, allowed_mentions=AllowedMentions.none())
-            elif content is not None:
-                await reply.edit(content=content, allowed_mentions=AllowedMentions.none())
-        except Exception as exc:
-            # Broad: best-effort media attach must not raise into the reply pipeline.
-            logfire.warn(
-                "Failed to attach generated media onto the reply",
-                message_id=self.message.id,
-                file_count=len(files),
-                hosted_count=len(hosted_urls),
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
-            return False
-        if follow_up is not None:
+                follow_up = hosted_block
+        if files or content is not None:
+            edit_kwargs: _EditKwargs = {"allowed_mentions": AllowedMentions.none()}
+            if content is not None:
+                edit_kwargs["content"] = content
+            if files:
+                edit_kwargs["files"] = files
             try:
-                hosted_message = await self.surface.follow_up(
-                    previous=reply, content=follow_up, allowed_mentions=AllowedMentions.none()
-                )
-                self.reply_messages.append(hosted_message)
+                await reply.edit(**edit_kwargs)
             except Exception as exc:
-                # Broad: best-effort hosted-link follow-up must not raise into the reply pipeline.
+                # Broad: best-effort media attach must not raise into the reply pipeline.
                 logfire.warn(
-                    "Hosted media link follow-up failed; the media URL was never posted",
+                    "Failed to attach generated media onto the reply",
                     message_id=self.message.id,
-                    hosted_url_count=len(hosted_urls),
                     file_count=len(files),
+                    hosted_count=len(hosted_urls),
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
                 await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
                 return False
+            if content is not None:
+                self._hosted_block = hosted_block
+                self.stored_content = content
+        if follow_up is not None:
+            return await self._send_hosted_follow_up(
+                reply=reply,
+                follow_up=follow_up,
+                hosted_count=len(hosted_urls),
+                file_count=len(files),
+            )
         return True
 
     async def consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> None:

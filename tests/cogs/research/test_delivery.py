@@ -291,7 +291,7 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
     )
 
     history = [
-        await builder.get_cleaned_content(
+        builder.get_cleaned_content(
             message=as_message(
                 fake=SimpleNamespace(
                     content=content,

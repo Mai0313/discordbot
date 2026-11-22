@@ -20,8 +20,12 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryCredits
-from discordbot.cogs.gen_reply.input import MessageInputBuilder, shorten_earlier_reply
-from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, sanitize_identity
+from discordbot.cogs.gen_reply.input import (
+    AttachmentSource,
+    MessageInputBuilder,
+    shorten_earlier_reply,
+)
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, render_author_identity
 from discordbot.cogs.gen_reply.recall import (
     NO_STORED_MEMORY,
     UserMemory,
@@ -258,29 +262,40 @@ def trim_history_to_budget(
 
 
 def history_media_over_budget(
-    builder: MessageInputBuilder, hist_messages: list[Message]
+    builder: MessageInputBuilder,
+    hist_messages: list[Message],
+    supported_by_id: dict[int, list[AttachmentSource]] | None = None,
 ) -> dict[int, int]:
     """Returns a mapping of over-budget history message ids to their supported attachment counts.
 
-    Walks newest-first against `MAX_HISTORY_MEDIA_PARTS` using `count_supported_sources`. The
-    newest attachment-bearing message is exempt, and once one older message overflows, it and
-    every earlier message are marked to render as text-only markers so kept media forms an
-    unbroken suffix.
+    Walks newest-first against `MAX_HISTORY_MEDIA_PARTS` using `supported_by_id` when pre-classified,
+    else `count_supported_sources`. The newest attachment-bearing message is exempt, and once one
+    older message overflows, it and every earlier message are marked to render as text-only markers
+    so kept media forms an unbroken suffix.
 
     Args:
-        builder (MessageInputBuilder): Input builder used to count supported attachment sources.
+        builder (MessageInputBuilder): Input builder used when `supported_by_id` is omitted.
         hist_messages (list[Message]): History messages ordered oldest-first.
+        supported_by_id (dict[int, list[AttachmentSource]] | None): Pre-classified supported
+            sources keyed by message id; messages absent from it are skipped so their later render
+            fails and logs once.
     """
     over: dict[int, int] = {}
     spent = 0
     for candidate in reversed(hist_messages):
-        try:
-            count = builder.count_supported_sources(message=candidate)
-        except Exception:  # noqa: S112
-            # Broad on purpose: runs inside `build`'s unguarded gather, so an unexpected nextcord
-            # shape must not abort the reply. Silent (S112) because leaving the message out lets
-            # `process_single_message` re-fail and log it once with id and traceback.
-            continue
+        if supported_by_id is not None:
+            sources = supported_by_id.get(candidate.id)
+            if sources is None:
+                continue
+            count = len(sources)
+        else:
+            try:
+                count = builder.count_supported_sources(message=candidate)
+            except Exception:  # noqa: S112
+                # Broad on purpose: runs inside `build`'s unguarded gather, so an unexpected nextcord
+                # shape must not abort the reply. Silent (S112) because leaving the message out lets
+                # `process_single_message` re-fail and log it once with id and traceback.
+                continue
         if not count:
             continue
         if over or (spent and spent + count > MAX_HISTORY_MEDIA_PARTS):
@@ -321,10 +336,12 @@ def reference_header(ref: Message) -> EasyInputMessageParam:
     Args:
         ref (Message): The referenced message being replied to.
     """
+    author = render_author_identity(
+        display_name=ref.author.display_name, username=ref.author.name, user_id=ref.author.id
+    )
     return marker_block(
         text=(
-            f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
-            f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
+            f"==== Reference Message from {author}. "
             "The user is directly replying to this message; it is the primary context for "
             "the Current Message below. When the Current Message points at something "
             "without naming it, that something is here, this message's attachments "
@@ -340,9 +357,14 @@ def current_header(message: Message, has_reference: bool) -> EasyInputMessagePar
         message (Message): The current message being answered.
         has_reference (bool): Whether a Reference Message block is rendered above it.
     """
+    author = render_author_identity(
+        display_name=message.author.display_name,
+        username=message.author.name,
+        user_id=message.author.id,
+    )
     reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
     return marker_block(
-        text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ===="
+        text=f"==== Current Message that needs to be answered from {author}.{reply_note} ===="
     )
 
 
@@ -403,20 +425,33 @@ class ReplyContextBuilder(BaseModel):
         if not hist_messages:
             return []
         input_builder = self.toolkit.input_builder
-        over_budget = history_media_over_budget(builder=input_builder, hist_messages=hist_messages)
+        supported_by_id: dict[int, list[AttachmentSource]] = {}
+        for m in hist_messages:
+            try:
+                supported_by_id[m.id] = input_builder.supported_sources(message=m)
+            except Exception:  # noqa: S112
+                # Broad on purpose: runs inside `build`'s unguarded gather, so an unexpected nextcord
+                # shape must not abort the reply. Silent (S112) because omitting `m.id` lets
+                # `process_single_message` re-fail and log it once with id and traceback.
+                continue
+        over_budget = history_media_over_budget(
+            builder=input_builder, hist_messages=hist_messages, supported_by_id=supported_by_id
+        )
         latest = latest_reply_ids(messages=hist_messages, bot_user_id=self.bot_user_id)
         shortened = {
             m.id for m in hist_messages if m.author.id == self.bot_user_id and m.id not in latest
         }
-        tasks: list[Awaitable[EasyInputMessageParam]] = [
-            input_builder.process_single_message(
-                message=m,
-                text_only=m.id in over_budget,
-                allow_dead_cache=True,
-                shorten=m.id in shortened,
+        tasks: list[Awaitable[EasyInputMessageParam]] = []
+        for m in hist_messages:
+            tasks.append(
+                input_builder.process_single_message(
+                    message=m,
+                    text_only=m.id in over_budget,
+                    allow_dead_cache=True,
+                    shorten=m.id in shortened,
+                    supported_sources=supported_by_id.get(m.id),
+                )
             )
-            for m in hist_messages
-        ]
         started = time.monotonic()
         processed = await asyncio.gather(*tasks)
         payload_capped = [
@@ -430,6 +465,7 @@ class ReplyContextBuilder(BaseModel):
                 message=hist_messages[index],
                 text_only=True,
                 shorten=hist_messages[index].id in shortened,
+                supported_sources=supported_by_id.get(hist_messages[index].id),
             )
         blocks: list[EasyInputMessageParam] = []
         for index, rendered in enumerate(processed):
@@ -551,14 +587,13 @@ class ReplyContextBuilder(BaseModel):
         # channel because that grants no new access. Only a public channel may offer absent
         # nickname-table members to the route call.
         if server_memory and self.message.guild is not None:
-            widen_allowlist_with_aliases(allowed=deterministic_allowed, memory=server_memory)
+            aliases = allowlist_ids_from_server_memory(memory=server_memory)
+            widen_allowlist_with_aliases(allowed=deterministic_allowed, aliases=aliases)
             if channel_is_public(guild=self.message.guild, channel=self.message.channel):
                 # Omit credit label for absent members; `RecallCandidate` owns footer attribution.
                 optional_allowed = {
                     user_id: RecallCandidate(prompt_label=label)
-                    for user_id, label in allowlist_ids_from_server_memory(
-                        memory=server_memory
-                    ).items()
+                    for user_id, label in aliases.items()
                     if user_id not in deterministic_allowed and user_id != bot_user.id
                 }
 

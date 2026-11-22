@@ -9,10 +9,16 @@ import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
+from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
-from discordbot.cogs.gen_reply.attachment.loaders import attachment_mime, load_attachment_bytes
+from discordbot.cogs.gen_reply.attachment.loaders import (
+    attachment_mime,
+    load_image_bytes,
+    load_attachment_bytes,
+    resolve_source_filename,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
@@ -150,9 +156,35 @@ class AttachmentRenderer(BaseModel):
 class FileUploadRenderer(AttachmentRenderer):
     """Renderer that uploads each source to a provider's Files API and references its handle.
 
-    Subclasses implement `_upload_file` and `render_image`, and may override
-    `_resolve_file_upload` to short-circuit before downloading bytes.
+    Subclasses implement `_upload_file`, and may override `render_image` or `_resolve_file_upload`
+    to customize part shape or short-circuit before downloading bytes.
     """
+
+    async def render_image(
+        self,
+        source: Attachment | StickerItem | str,
+        cache_key: int | str,
+        allow_dead_cache: bool = False,
+    ) -> RenderedAttachment | None:
+        """Returns `source` uploaded to the provider's Files API as an `input_image` part, or `None`.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
+            cache_key (int | str): Per-source identifier for dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
+        source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
+        uploaded = await self._resolve_file_upload(
+            cache_key=cache_key,
+            filename=source_name,
+            load_data=lambda: load_image_bytes(source=source),
+            kind="image",
+            allow_dead_cache=allow_dead_cache,
+        )
+        if uploaded is None:
+            return None
+        part = ResponseInputImageParam(type="input_image", file_id=uploaded.uri, detail="auto")
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
@@ -169,7 +201,7 @@ class FileUploadRenderer(AttachmentRenderer):
             logfire.warn(
                 "skipping attachment with unknown MIME type",
                 filename=attachment.filename,
-                url=attachment.url,
+                url=loggable_cache_key(cache_key=attachment.url),
             )
             return None
         uploaded = await self._resolve_file_upload(
