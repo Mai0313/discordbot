@@ -5,11 +5,10 @@ from nextcord.ext import commands
 from discordbot.typings.timeouts import INSTAGRAM_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.expansion_cog import ConversationExpansionCog
 from discordbot.services.platforms.instagram import (
-    INSTAGRAM_URL_RE,
+    INSTAGRAM_POST_LINK,
     InstagramOutput,
     InstagramDownloader,
     InstagramConversation,
-    is_instagram_post_url,
 )
 
 
@@ -18,24 +17,12 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
 
     SOURCE = "instagram"
     PLATFORM = "Instagram"
-    URL_PATTERN = INSTAGRAM_URL_RE
+    POST_LINK = INSTAGRAM_POST_LINK
     PLACEHOLDER_TEXT = "-# 正在讀取 Instagram 貼文⋯"
     READ_TIMEOUT_SECONDS = INSTAGRAM_EXPAND_TIMEOUT_SECONDS
     EMBED_COLOR = 0xE4405F
     DOWNLOAD_VIDEOS = True
     downloader_factory = InstagramDownloader
-
-    @staticmethod
-    def url_is_expandable(url: str) -> bool:
-        """Returns whether `url` names an Instagram post.
-
-        `INSTAGRAM_URL_RE` matches the host rather than the path, so profile and home-page links
-        are filtered here before the read.
-
-        Args:
-            url (str): The URL matched by `URL_PATTERN`.
-        """
-        return is_instagram_post_url(url=url)
 
     def _author_label(self, post: InstagramOutput) -> str:
         """Returns the author display string, falling back to whichever of full name or handle the page served."""

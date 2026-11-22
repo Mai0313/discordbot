@@ -15,7 +15,7 @@ from collections.abc import Iterator
 import logfire
 from pydantic import Field, BaseModel, computed_field
 
-from discordbot.utils.urls import URL_START_ANCHOR, host_matches_domain
+from discordbot.utils.urls import URL_START_ANCHOR, PostLink, host_matches_domain
 from discordbot.typings.timeouts import FACEBOOK_PAGE_TIMEOUT_SECONDS
 from discordbot.services.platforms.base import (
     LinkableComments,
@@ -82,6 +82,9 @@ def is_facebook_post_url(url: str) -> bool:
     """
     facebook_url = FacebookURL(raw_url=url)
     return bool(facebook_url.post_id or facebook_url.is_share_link or facebook_url.is_pfbid_link)
+
+
+FACEBOOK_POST_LINK = PostLink(pattern=FACEBOOK_URL_RE, accept=is_facebook_post_url)
 
 
 class FacebookURL(BaseModel):
@@ -203,7 +206,7 @@ def _comment_ids_of(node: dict[str, Any]) -> tuple[str, str]:
         return "", comment_id
     try:
         # Facebook omits base64 padding; extra `=` are ignored when already aligned.
-        decoded = base64.b64decode(node_id + "==").decode(encoding="utf-8", errors="replace")
+        decoded = base64.b64decode(s=node_id + "==").decode(encoding="utf-8", errors="replace")
     except ValueError:
         return "", comment_id
     match = _COMMENT_ID_RE.match(string=decoded)

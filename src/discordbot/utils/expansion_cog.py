@@ -23,6 +23,7 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 import requests
 from nextcord.ext import commands
 
+from discordbot.utils.urls import PostLink
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
@@ -442,8 +443,7 @@ class ExpansionDelivery(BaseModel):
 class ExpansionCog[ParsedT](commands.Cog):
     """Base for a cog that expands one platform's links.
 
-    A subclass declares the class attributes below, overrides `read` and `build_delivery`, and
-    overrides `url_is_expandable` when its pattern matches more than posts.
+    A subclass declares the class attributes below and overrides `read` and `build_delivery`.
 
     Attributes:
         bot (commands.Bot): The Discord bot instance that owns this cog.
@@ -455,8 +455,8 @@ class ExpansionCog[ParsedT](commands.Cog):
     PLATFORM: ClassVar[str]
     """The platform's display name, for log messages."""
 
-    URL_PATTERN: ClassVar[re.Pattern[str]]
-    """The first match in the open that `url_is_expandable` accepts selects the link to expand."""
+    POST_LINK: ClassVar[PostLink]
+    """The platform's URL matcher and post filter; first non-hidden match selects the link."""
 
     PLACEHOLDER_TEXT: ClassVar[str]
     """The line shown under the link until the card replaces it."""
@@ -480,19 +480,6 @@ class ExpansionCog[ParsedT](commands.Cog):
         self._resume_started = False
         # Captured before on_ready so the restart sweep skips expansions from this process.
         self._started_at = database_now()
-
-    @staticmethod
-    def url_is_expandable(url: str) -> bool:
-        """Returns whether a matched URL names a post worth reading.
-
-        Overridden by a cog whose pattern anchors on the host, where a profile or home page
-        matches but is not a post.
-
-        Args:
-            url (str): The URL the pattern matched.
-        """
-        del url
-        return True
 
     async def read(self, message: Message, url: str, stack: contextlib.AsyncExitStack) -> ParsedT:
         """Returns the parsed post read from `url` under this platform's wall-clock bound.
@@ -557,7 +544,7 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Expands the first non-hidden URL matched by `URL_PATTERN` and `url_is_expandable`.
+        """Expands the first non-hidden URL matched by `POST_LINK`.
 
         Skips bot messages, messages addressed to the bot, and links inside spoiler bars or angle
         brackets.
@@ -568,22 +555,10 @@ class ExpansionCog[ParsedT](commands.Cog):
         if message.author.bot:
             return
 
-        matches = list(self.URL_PATTERN.finditer(string=message.content))
-        if not matches:
+        if not self.POST_LINK.pattern.search(string=message.content):
             return
-        hidden_spans = [
-            (hidden.start(), hidden.end())
-            for hidden in _HIDDEN_LINK_RE.finditer(string=message.content)
-        ]
-        url = next(
-            (
-                match.group(0)
-                for match in matches
-                if not any(start < match.start() < end for start, end in hidden_spans)
-                and self.url_is_expandable(url=match.group(0))
-            ),
-            None,
-        )
+        visible = _HIDDEN_LINK_RE.sub(repl=" ", string=message.content)
+        url = self.POST_LINK.first_in(texts=(visible,))
         if url is None:
             return
 

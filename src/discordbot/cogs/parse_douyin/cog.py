@@ -24,12 +24,11 @@ from discordbot.utils.discord_embeds import (
 from discordbot.utils.media_delivery import upload_limit_for, build_media_delivery_planner
 from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
 from discordbot.services.platforms.douyin import (
-    DOUYIN_URL_RE,
+    DOUYIN_POST_LINK,
     DouyinDownload,
     DouyinMetadata,
     DouyinDownloader,
     douyin_url_locks,
-    is_douyin_post_url,
     douyin_fetch_semaphore,
 )
 
@@ -62,7 +61,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
 
     SOURCE = "douyin"
     PLATFORM = "Douyin"
-    URL_PATTERN = DOUYIN_URL_RE
+    POST_LINK = DOUYIN_POST_LINK
     PLACEHOLDER_TEXT = "-# 正在讀取抖音貼文⋯"
 
     def __init__(self, bot: commands.Bot):
@@ -74,18 +73,6 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         super().__init__(bot=bot)
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
-
-    @staticmethod
-    def url_is_expandable(url: str) -> bool:
-        """Returns whether `url` names a Douyin post.
-
-        `DOUYIN_URL_RE` matches the host rather than the path, so profile and live-room links are
-        filtered here before spending a rate-limited request.
-
-        Args:
-            url (str): The URL matched by `URL_PATTERN`.
-        """
-        return is_douyin_post_url(url=url)
 
     async def read(
         self, message: Message, url: str, stack: contextlib.AsyncExitStack

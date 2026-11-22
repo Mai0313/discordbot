@@ -765,7 +765,7 @@ async def test_download_videos_defaults_to_off_on_base_conversation_cog(
     class _OptOutConversationCog(ConversationExpansionCog[FacebookOutput, FacebookConversation]):
         SOURCE = FacebookCogs.SOURCE
         PLATFORM = FacebookCogs.PLATFORM
-        URL_PATTERN = FacebookCogs.URL_PATTERN
+        POST_LINK = FacebookCogs.POST_LINK
         PLACEHOLDER_TEXT = FacebookCogs.PLACEHOLDER_TEXT
         READ_TIMEOUT_SECONDS = FacebookCogs.READ_TIMEOUT_SECONDS
         EMBED_COLOR = FacebookCogs.EMBED_COLOR

@@ -20,6 +20,7 @@ from requests.exceptions import RequestException
 from discordbot.utils.lru import BoundedLRU
 from discordbot.utils.urls import (
     URL_START_ANCHOR,
+    PostLink,
     normalized_url,
     normalized_host,
     host_matches_domain,
@@ -106,6 +107,9 @@ def is_douyin_post_url(url: str) -> bool:
     if (parsed.hostname or "").lower() not in _SHORT_LINK_HOSTS:
         return False
     return len([segment for segment in parsed.path.split("/") if segment]) == 1
+
+
+DOUYIN_POST_LINK = PostLink(pattern=DOUYIN_URL_RE, accept=is_douyin_post_url)
 
 
 class DouyinError(LinkReadError):
@@ -536,7 +540,7 @@ class DouyinDownloader(PlatformDownloader):
         """Streams `url` to `output_folder/filename`, retrying stalls up to `max_retries`."""
         filepath = Path(self.output_folder) / filename
 
-        last_error: Exception | None = None
+        last_error: RequestException | None = None
         for attempt in range(self.max_retries):
             try:
                 return stream_to_file(
@@ -565,11 +569,13 @@ class DouyinDownloader(PlatformDownloader):
 
         # Keep exhausted retries classified (`DouyinBlockedError` on 429, `DouyinTransferError` otherwise).
         message = f"Failed to download Douyin media from {url}: {last_error}"
-        if isinstance(last_error, RequestException):
-            if last_error.response is not None and last_error.response.status_code == 429:
-                raise DouyinBlockedError(message) from last_error
-            raise DouyinTransferError(message) from last_error
-        raise DouyinError(message) from last_error
+        if (
+            last_error is not None
+            and last_error.response is not None
+            and last_error.response.status_code == 429
+        ):
+            raise DouyinBlockedError(message) from last_error
+        raise DouyinTransferError(message) from last_error
 
     def download(
         self,

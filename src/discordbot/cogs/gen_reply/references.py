@@ -4,14 +4,13 @@ Every scanner here reads the text a message renders to the model rather than raw
 fields, so URL detection never triggers on a link the answer model cannot see.
 """
 
-import re
-
 from nextcord import Message
 
+from discordbot.utils.urls import PostLink
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
-from discordbot.cogs.gen_reply.link_sources import LinkUrlFilter, LinkContextSource
+from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 
 
 def replied_to_message(message: Message) -> Message | None:
@@ -70,56 +69,32 @@ def authored_link_texts(message: Message) -> list[str]:
     return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
 
 
-def _first_url_match(
-    pattern: re.Pattern[str], texts: list[str], url_filter: LinkUrlFilter | None
-) -> re.Match[str] | None:
-    """First match of a URL pattern across one message's already-rendered text spans.
-
-    A match `url_filter` refuses is skipped rather than ending the scan, so a link the source
-    cannot read never hides one after it that it can.
-    """
-    for text in texts:
-        for match in pattern.finditer(string=text):
-            if url_filter is None or url_filter(url=match.group(0)):
-                return match
-    return None
-
-
 def link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
     """Returns the first readable URL for `source` in `message` or its replied-to message.
 
     Scans `message` via `message_link_texts` first; when `source.search_replied_to_message` is
     enabled, falls back to scanning `replied_to_message(message)` via `authored_link_texts`.
-    Matches rejected by `source.url_filter` are skipped.
+    Matches rejected by `source.post_link` are skipped.
 
     Args:
-        source (LinkContextSource): Link-context source definition with pattern and filter rules.
+        source (LinkContextSource): Link-context source definition with its `PostLink` rules.
         message (Message): Triggering Discord message.
     """
-    match = _first_url_match(
-        pattern=source.url_pattern,
-        texts=message_link_texts(message=message, strip_usage_footer=False),
-        url_filter=source.url_filter,
+    found = source.post_link.first_in(
+        texts=message_link_texts(message=message, strip_usage_footer=False)
     )
-    if match is None and source.search_replied_to_message:
+    if found is None and source.search_replied_to_message:
         replied_to = replied_to_message(message=message)
         if replied_to is not None:
-            match = _first_url_match(
-                pattern=source.url_pattern,
-                texts=authored_link_texts(message=replied_to),
-                url_filter=source.url_filter,
-            )
-    return match.group(0) if match else None
+            found = source.post_link.first_in(texts=authored_link_texts(message=replied_to))
+    return found
 
 
 def _youtube_url_in_message(message: Message, strip_usage_footer: bool) -> str | None:
     """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any."""
-    match = _first_url_match(
-        pattern=YOUTUBE_URL_RE,
-        texts=message_link_texts(message=message, strip_usage_footer=strip_usage_footer),
-        url_filter=None,
+    return PostLink(pattern=YOUTUBE_URL_RE).first_in(
+        texts=message_link_texts(message=message, strip_usage_footer=strip_usage_footer)
     )
-    return match.group(0) if match else None
 
 
 def find_youtube_url(message: Message) -> str | None:

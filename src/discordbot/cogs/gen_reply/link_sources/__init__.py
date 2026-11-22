@@ -21,6 +21,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
+from discordbot.utils.urls import PostLink
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
@@ -344,12 +345,6 @@ def reply_media_note(image_urls: Sequence[str], video_urls: Sequence[str]) -> st
     return f"(carries {' and '.join(counts)}, NOT attached)"
 
 
-class LinkUrlFilter(Protocol):
-    """Post-match guard rejecting a matched URL the source cannot read (e.g. a profile)."""
-
-    def __call__(self, url: str) -> bool: ...
-
-
 class LinkContextBuilder(Protocol):
     """Normalized builder signature every source adapter satisfies."""
 
@@ -374,11 +369,8 @@ class LinkContextSource(BaseModel):
         description="Source label used for logs, task-discard labels, and the splice order.",
         examples=["douyin"],
     )
-    url_pattern: SkipValidation[re.Pattern[str]] = Field(
-        ..., description="The first match `url_filter` accepts selects the URL to read."
-    )
-    url_filter: SkipValidation[LinkUrlFilter | None] = Field(
-        default=None, description="Optional post-match guard; None accepts every pattern match."
+    post_link: PostLink = Field(
+        ..., description="Platform URL pattern and post filter selecting the first readable link."
     )
     search_replied_to_message: bool = Field(
         default=False,

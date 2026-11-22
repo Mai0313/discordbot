@@ -8,7 +8,7 @@ falls outside `BILIBILI_URL_RE` while accepting `/video/` links that redirect to
 
 import re
 
-from discordbot.utils.urls import URL_START_ANCHOR
+from discordbot.utils.urls import URL_START_ANCHOR, PostLink
 
 # Host-anchored to reject lookalike domains/queries; BV ids require exactly 10 base-62 chars
 # (negative lookahead prevents truncated matches); trailing class stops before CJK/sentence marks.
@@ -20,3 +20,4 @@ BILIBILI_URL_RE = re.compile(
     r")"
     r"(?:\?[A-Za-z0-9=&%_.-]*[A-Za-z0-9_-])?"
 )
+BILIBILI_POST_LINK = PostLink(pattern=BILIBILI_URL_RE)
