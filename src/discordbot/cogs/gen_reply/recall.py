@@ -21,7 +21,11 @@ from nextcord.utils import escape_mentions
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import MemoryCredits
-from discordbot.utils.llm_transcript import sanitize_identity, defuse_separator_fences
+from discordbot.utils.llm_transcript import (
+    marker_block,
+    sanitize_identity,
+    defuse_separator_fences,
+)
 from discordbot.services.memory.facts import parse_member_alias_table
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
@@ -30,7 +34,6 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs.gen_reply.link_sources import marker_block
 
 # Sentinel for allowed users with no stored memory; also lets the footer exclude empty lookups.
 NO_STORED_MEMORY = "(no stored memory for this user)"

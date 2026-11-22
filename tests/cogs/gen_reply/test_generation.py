@@ -11,7 +11,7 @@ from openai import APITimeoutError
 import pytest
 from google.genai.types import FileState
 
-from discordbot.typings.media import LoadedMedia
+from discordbot.typings.media import LoadedMedia, music_filename
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT
 from discordbot.cogs.gen_reply.generation import (
@@ -19,7 +19,6 @@ from discordbot.cogs.gen_reply.generation import (
     VideoGenerator,
     VoiceGenerator,
     PromptGenerator,
-    music_filename,
     speechify_discord_markup,
 )
 

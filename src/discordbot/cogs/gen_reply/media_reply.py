@@ -15,10 +15,11 @@ from nextcord import Message
 from pydantic import Field, BaseModel
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.images import to_data_uri
+from discordbot.typings.media import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
 from discordbot.typings.timeouts import GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.utils.media_delivery import MediaItem, upload_limit_for
 from discordbot.cogs.gen_reply.answer import AnswerTurn
+from discordbot.cogs.gen_reply.images import to_data_uri
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import (
     IMAGE_PROMPT,
@@ -29,7 +30,6 @@ from discordbot.cogs.gen_reply.prompts import (
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
-from discordbot.cogs.gen_reply.generation import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import discard_task

@@ -20,6 +20,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.utils.llm_transcript import marker_block
 from discordbot.typings.context_budgets import (
     MAX_THREADS_POSTS,
     MAX_THREADS_REPLIES,
@@ -34,7 +35,6 @@ from discordbot.services.platforms.threads import (
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
     read_post,
-    marker_block,
     defuse_markers,
     reply_media_note,
     post_context_blocks,

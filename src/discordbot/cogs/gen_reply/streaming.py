@@ -18,7 +18,13 @@ from nextcord.utils import escape_mentions
 from openai.types.responses import Response, ResponseOutputItem, ResponseStreamEvent
 
 from discordbot.utils.urls import normalized_host
-from discordbot.typings.media import LoadedMedia
+from discordbot.typings.media import (
+    VOICE_REPLY_FILENAME,
+    INLINE_IMAGE_FILENAME,
+    INLINE_VIDEO_FILENAME,
+    LoadedMedia,
+    music_filename,
+)
 from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
@@ -39,14 +45,10 @@ from discordbot.cogs.gen_reply.markers import (
 )
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE, TurnSurface
 from discordbot.cogs.gen_reply.generation import (
-    VOICE_REPLY_FILENAME,
-    INLINE_IMAGE_FILENAME,
-    INLINE_VIDEO_FILENAME,
     ImageGenerator,
     MusicGenerator,
     VideoGenerator,
     VoiceGenerator,
-    music_filename,
     speechify_discord_markup,
 )
 from discordbot.cogs.gen_reply.references import replied_to_message

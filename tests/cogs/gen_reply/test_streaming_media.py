@@ -11,7 +11,13 @@ from collections import Counter
 import pytest
 import nextcord
 
-from discordbot.typings.media import LoadedMedia
+from discordbot.typings.media import (
+    VOICE_REPLY_FILENAME,
+    INLINE_IMAGE_FILENAME,
+    INLINE_VIDEO_FILENAME,
+    LoadedMedia,
+    music_filename,
+)
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import DISCORD_ATTACHMENT_LIMIT, MediaItem
 from discordbot.cogs.gen_reply.markers import MAX_INLINE_IMAGES, InlineMarkers
@@ -22,9 +28,6 @@ from discordbot.cogs.gen_reply.streaming import (
     stream_answer_with_retry,
 )
 from discordbot.cogs.gen_reply.generation import (
-    VOICE_REPLY_FILENAME,
-    INLINE_IMAGE_FILENAME,
-    INLINE_VIDEO_FILENAME,
     MusicClip,
     VoiceClip,
     VoiceOutcome,
@@ -32,7 +35,6 @@ from discordbot.cogs.gen_reply.generation import (
     MusicGenerator,
     VideoGenerator,
     VoiceGenerator,
-    music_filename,
 )
 from discordbot.cogs.gen_reply.status_marks import (
     IMAGE_EMOJI,

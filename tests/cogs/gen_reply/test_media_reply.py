@@ -12,14 +12,13 @@ from google.genai.types import FileState
 from google.genai.errors import ClientError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.typings.media import LoadedMedia
+from discordbot.typings.media import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME, LoadedMedia
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
-from discordbot.cogs.gen_reply.generation import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
 from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
 
 from tests.helpers.casting import as_message, step_dicts, make_not_found, make_invalid_form_body

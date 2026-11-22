@@ -132,7 +132,7 @@ async def test_a_linked_image_reaches_the_model_as_one_still_keeping_its_alpha(
 ) -> None:
     """A linked image keeps its transparency, and an animated one arrives as its first frame."""
     monkeypatch.setattr(
-        "discordbot.utils.images.requests.get",
+        "discordbot.cogs.gen_reply.images.requests.get",
         lambda url, timeout: SimpleNamespace(content=payload, raise_for_status=lambda: None),
     )
     loaded = await load_image_bytes(source="https://cdn.test/linked")
@@ -149,7 +149,7 @@ async def test_a_linked_page_that_is_not_an_image_still_raises(
 ) -> None:
     """A dead CDN's HTML error page is dropped, never handed on as an image."""
     monkeypatch.setattr(
-        "discordbot.utils.images.requests.get",
+        "discordbot.cogs.gen_reply.images.requests.get",
         lambda url, timeout: SimpleNamespace(
             content=b"<html>404</html>", raise_for_status=lambda: None
         ),

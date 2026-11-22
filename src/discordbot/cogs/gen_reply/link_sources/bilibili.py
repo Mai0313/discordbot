@@ -16,6 +16,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
+from discordbot.utils.llm_transcript import marker_block
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 from discordbot.services.platforms.ytdlp import (
@@ -23,11 +24,7 @@ from discordbot.services.platforms.ytdlp import (
     VideoDownloader,
     download_with_stop_signal,
 )
-from discordbot.cogs.gen_reply.link_sources import (
-    AI_INGEST_QUALITY,
-    marker_block,
-    link_context_blocks,
-)
+from discordbot.cogs.gen_reply.link_sources import AI_INGEST_QUALITY, link_context_blocks
 from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
 
