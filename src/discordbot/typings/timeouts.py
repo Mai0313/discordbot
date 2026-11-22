@@ -185,7 +185,8 @@ YTDLP_RETRIES: Final[int] = 3
 # Discord API
 # --------------------------------------------------------------------------------------
 
-# Bound on a settled game's final `message.edit` so a hung edit cannot skip cleanup.
+# Bound on best-effort public-message edits (`edit_or_report`) so a hung edit cannot stall
+# settlement or skip cleanup.
 GAME_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 # Reserve subtracted from `Interaction.expires_at` (15m) on `/ask` so delivery or its

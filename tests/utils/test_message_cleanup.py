@@ -5,15 +5,17 @@ from datetime import UTC, datetime, timedelta
 from collections import Counter
 
 import pytest
-from nextcord import Message, Interaction
+from nextcord import Message, Interaction, HTTPException
 from nextcord.abc import Messageable
 from nextcord.ext import commands
 
 from discordbot.utils.timezone import database_now
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
+    PressBoundView,
     PendingPublicMessage,
     _delete_tasks,
+    edit_or_report,
     track_public_message,
     delete_public_message,
     delete_public_message_after,
@@ -31,8 +33,9 @@ from tests.helpers.casting import (
     make_server_error,
     make_invalid_webhook_token,
 )
-from tests.helpers.discord_mocks import FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs, capture_levels
+from tests.helpers.message_cleanup import ScheduledDeletes
 
 
 class _CleanupMessage(FakeDiscordMessage):
@@ -431,3 +434,105 @@ def test_delete_tasks_registry_rebinds_across_event_loops(monkeypatch: pytest.Mo
 
     assert asyncio.run(main=_spawn_and_count()) == 1
     assert asyncio.run(main=_spawn_and_count()) == 1
+
+
+@pytest.mark.parametrize(
+    argnames=("failure", "level", "expected_message", "traceback"),
+    argvalues=[
+        (make_not_found(message="Unknown Message", code=10008), "info", "gone", False),
+        (make_forbidden(message="Missing Access", code=50001), "warn", "refused", False),
+        (make_server_error(code=50000), "warn", "failed", True),
+    ],
+    ids=["not_found", "forbidden", "server_error"],
+)
+async def test_edit_or_report_logs_structured_fields_and_returns_false_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: HTTPException,
+    level: str,
+    expected_message: str,
+    traceback: bool,
+) -> None:
+    """`edit_or_report` catches edit errors, attaches `code`/`error_type`, and returns False."""
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
+    message = FakeDiscordMessage()
+    message.edit_failure = failure
+
+    landed = await edit_or_report(
+        message=as_message(fake=message),
+        interaction=None,
+        payload={"content": "updated"},
+        not_found_message="gone",
+        forbidden_message="refused",
+        other_message="failed",
+        message_id=message.id,
+    )
+
+    assert landed is False
+    assert len(reports) == 1
+    logged_level, logged_message, fields = reports[0]
+    assert (logged_level, logged_message) == (level, expected_message)
+    assert fields["message_id"] == message.id
+    assert fields["code"] == failure.code
+    assert fields["error_type"] == type(failure).__name__
+    assert ("_exc_info" in fields) is traceback
+
+
+async def test_edit_or_report_enforces_timeout_and_logs_timeout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung edit trips `timeout_seconds`, logs `TimeoutError` with traceback, and returns False."""
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
+    message = FakeDiscordMessage()
+
+    async def hang(**_kwargs: object) -> None:
+        await asyncio.Future()
+
+    monkeypatch.setattr(target=message, name="edit", value=hang)
+
+    landed = await edit_or_report(
+        message=as_message(fake=message),
+        interaction=None,
+        payload={"content": "updated"},
+        not_found_message="gone",
+        forbidden_message="refused",
+        other_message="edit timed out",
+        timeout_seconds=0.01,
+        message_id=message.id,
+    )
+
+    assert landed is False
+    assert len(reports) == 1
+    logged_level, logged_message, fields = reports[0]
+    assert (logged_level, logged_message) == ("warn", "edit timed out")
+    assert fields["error_type"] == "TimeoutError"
+    assert isinstance(fields["_exc_info"], TimeoutError)
+
+
+async def test_press_bound_view_tracks_presses_and_schedules_press_first_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`PressBoundView` keeps the newest press, preserves `message`, and deletes through it."""
+    scheduled = ScheduledDeletes()
+    monkeypatch.setattr(
+        "discordbot.utils.message_cleanup.schedule_public_message_delete", scheduled
+    )
+    view = PressBoundView()
+    # Unbound view with no message is a safe no-op.
+    view.schedule_delete()
+    assert scheduled.messages == []
+
+    panel = FakeDiscordMessage()
+    first = FakeInteraction(user=FakeUser(name="alice"), message=panel)
+    view.keep_press(interaction=as_interaction(fake=first))
+    assert (view.message, view.last_press) == (panel, first)
+
+    # A follow-up press without `interaction.message` (e.g. a modal submit) preserves `view.message`.
+    second = FakeInteraction(user=FakeUser(name="bob"), message=None)
+    view.keep_press(interaction=as_interaction(fake=second))
+    assert (view.message, view.last_press) == (panel, second)
+
+    view.schedule_delete()
+    view.schedule_delete(interaction=as_interaction(fake=first))
+    assert scheduled.messages == [panel, panel]
+    assert scheduled.interactions == [second, first]
+    assert scheduled.user_names == [None, "alice"]
