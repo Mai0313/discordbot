@@ -1,6 +1,5 @@
 """Tests for Threads URL parsing and media extraction."""
 
-from typing import Self
 from pathlib import Path
 
 import pytest
@@ -16,6 +15,7 @@ from discordbot.services.platforms.threads import (
 )
 from discordbot.services.platforms.page_json import FetchedPage
 
+from tests.helpers.http import install_get, make_response
 from tests.helpers.link_sources import serve_page, sjs_script
 
 
@@ -1150,40 +1150,11 @@ def _stub_redirect(
     monkeypatch: pytest.MonkeyPatch, final_url: str, status_code: int = 200
 ) -> list[dict[str, object]]:
     """Stubs `requests.get` for `resolve_clean_url` and records every call without reading body."""
-    calls: list[dict[str, object]] = []
-
-    class _StreamingResponse:
-        url = final_url
-        body_read = False
-
-        @property
-        def text(self) -> str:
-            self.body_read = True
-            raise AssertionError("resolve_clean_url must not download the HTML body")
-
-        @property
-        def content(self) -> bytes:
-            self.body_read = True
-            raise AssertionError("resolve_clean_url must not download the HTML body")
-
-        def raise_for_status(self) -> None:
-            if status_code >= 400:
-                response = requests.Response()
-                response.status_code = status_code
-                raise requests.HTTPError(f"{status_code}", response=response)
-
-        def __enter__(self) -> Self:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-    def fake_get(url: str, **kwargs: object) -> _StreamingResponse:
-        calls.append({"url": url, **kwargs})
-        return _StreamingResponse()
-
-    monkeypatch.setattr(target=requests, name="get", value=fake_get)
-    return calls
+    return install_get(
+        monkeypatch=monkeypatch,
+        target=requests,
+        response=make_response(url=final_url, status_code=status_code, forbid_body_read=True),
+    )
 
 
 def test_resolving_a_clean_url_from_a_share_link_reads_its_redirect(

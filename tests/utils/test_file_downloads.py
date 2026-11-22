@@ -7,7 +7,7 @@ called.
 """
 
 import shutil
-from typing import IO, Self
+from typing import IO
 from pathlib import Path
 from collections.abc import Iterator
 
@@ -17,68 +17,16 @@ import requests
 from discordbot.utils import file_downloads
 from discordbot.utils.file_downloads import DownloadTooLargeError, stream_to_file
 
+from tests.helpers.http import StreamedResponse, make_response, install_session
+
 _URL = "https://cdn.test/clip.mp4"
 
 
-class _Response:
-    """A streamed response carrying a canned body, optionally dying part-way through it."""
-
-    def __init__(
-        self, body: bytes = b"", headers: dict[str, str] | None = None, stall: bool = False
-    ) -> None:
-        """Stores the body, its headers, and whether the transfer dies after the first chunk."""
-        self.body = body
-        self.headers = headers or {}
-        self.stall = stall
-        self.body_reads = 0
-        self.closed = False
-
-    def __enter__(self) -> Self:
-        """Enters the response context."""
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        """Leaves the response context, releasing the connection."""
-        self.close()
-
-    def raise_for_status(self) -> None:
-        """Accepts the transfer."""
-
-    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-        """Yields the body, counting the read, then fails if this transfer stalls."""
-        del chunk_size
-        self.body_reads += 1
-        yield self.body
-        if self.stall:
-            raise requests.ConnectionError("read timed out")
-
-    def close(self) -> None:
-        """Releases the connection."""
-        self.closed = True
-
-
-def _serve(monkeypatch: pytest.MonkeyPatch, response: _Response) -> list[str]:
-    """Answers every GET with `response`, returning each URL asked for."""
-    requested: list[str] = []
-
-    class _Session:
-        """A session answering with the canned response."""
-
-        def __enter__(self) -> Self:
-            """Enters the session context."""
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            """Leaves the session context."""
-
-        def get(self, url: str, **kwargs: object) -> _Response:
-            """Records the URL and answers."""
-            del kwargs
-            requested.append(url)
-            return response
-
-    monkeypatch.setattr(target=file_downloads.requests, name="Session", value=_Session)
-    return requested
+def _serve(monkeypatch: pytest.MonkeyPatch, response: StreamedResponse) -> list[dict[str, object]]:
+    """Answers every GET with `response`, returning each captured call."""
+    return install_session(
+        monkeypatch=monkeypatch, target=file_downloads.requests, response=response
+    )
 
 
 def _stream(filepath: Path, max_bytes: int | None = None, allow_empty: bool = True) -> Path:
@@ -97,7 +45,7 @@ def test_a_file_under_the_cap_is_written_whole_and_closes_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A file inside the cap downloads whole and releases its streamed HTTP response."""
-    response = _Response(body=b"video-bytes", headers={"Content-Length": "11"})
+    response = make_response(body=b"video-bytes", headers={"Content-Length": "11"})
     _serve(monkeypatch=monkeypatch, response=response)
 
     written = _stream(filepath=tmp_path / "clip.mp4", max_bytes=1024)
@@ -114,7 +62,7 @@ def test_an_oversize_content_length_is_refused_before_the_body_is_read(
     So the raise alone proves nothing: the body must never have been read, no file opened, and
     the response closed.
     """
-    response = _Response(body=b"x" * 100, headers={"Content-Length": "100"})
+    response = make_response(body=b"x" * 100, headers={"Content-Length": "100"})
     _serve(monkeypatch=monkeypatch, response=response)
 
     with pytest.raises(DownloadTooLargeError):
@@ -131,7 +79,7 @@ def test_non_decimal_content_length_falls_through_to_stream_check(
     """Unicode digits like `'²'` pass `.isdigit()` but not `int()`; `.isdecimal()` skips them."""
     _serve(
         monkeypatch=monkeypatch,
-        response=_Response(body=b"ok", headers={"Content-Length": "\u00b2"}),
+        response=make_response(body=b"ok", headers={"Content-Length": "\u00b2"}),
     )
 
     written = _stream(filepath=tmp_path / "clip.mp4", max_bytes=10)
@@ -143,7 +91,7 @@ def test_an_oversize_stream_without_a_content_length_is_still_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A missing or lying Content-Length is caught mid-stream, and the partial file is removed."""
-    response = _Response(body=b"x" * 100)
+    response = make_response(body=b"x" * 100)
     _serve(monkeypatch=monkeypatch, response=response)
 
     with pytest.raises(DownloadTooLargeError):
@@ -157,7 +105,7 @@ def test_empty_body_behavior_follows_allow_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Empty bodies succeed when `allow_empty=True` and raise `ValueError` with cleanup when False."""
-    _serve(monkeypatch=monkeypatch, response=_Response(body=b""))
+    _serve(monkeypatch=monkeypatch, response=make_response(body=b""))
 
     allowed = _stream(filepath=tmp_path / "allowed.mp4", max_bytes=100, allow_empty=True)
     assert allowed.read_bytes() == b""
@@ -176,7 +124,7 @@ def test_a_transfer_dying_mid_body_leaves_no_partial_file(
     The transfer dies after a chunk was written, so a partial file really was on disk; one that
     failed before the first chunk would pass whether or not the cleanup exists.
     """
-    response = _Response(body=b"half-a-video", stall=True)
+    response = make_response(body=b"half-a-video", stall=True)
     _serve(monkeypatch=monkeypatch, response=response)
 
     with pytest.raises(requests.ConnectionError):
@@ -190,7 +138,7 @@ def test_a_local_write_failure_leaves_no_partial_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A full disk fails the write after some bytes landed, and the partial file goes with it."""
-    _serve(monkeypatch=monkeypatch, response=_Response(body=b"video-bytes"))
+    _serve(monkeypatch=monkeypatch, response=make_response(body=b"video-bytes"))
     real_open = Path.open
 
     def failing_open(self: Path, mode: str = "r") -> IO[bytes]:
@@ -226,7 +174,7 @@ def test_a_removed_folder_is_never_recreated(
     It has to hold in the gap BETWEEN two files as well, or a post carrying a second clip would
     rebuild the directory it was just stopped with and download straight through the give-up.
     """
-    _serve(monkeypatch=monkeypatch, response=_Response(body=b"clip"))
+    _serve(monkeypatch=monkeypatch, response=make_response(body=b"clip"))
     scratch = tmp_path / "gone"  # the scratch dir a caller that gave up has already removed
 
     for name in ("clip.mp4", "clip2.mp4"):
@@ -248,18 +196,15 @@ def test_a_folder_removed_mid_transfer_stops_the_file_being_written(
     scratch.mkdir()
     pulled: list[int] = []
 
-    class _RemovedMidStream(_Response):
-        """Removes the scratch dir after the first chunk, the way a caller giving up would."""
+    def removed_mid_stream(chunk_size: int) -> Iterator[bytes]:
+        """Yields five chunks, removing the scratch dir after the first."""
+        for index in range(5):
+            if index == 1:
+                shutil.rmtree(path=scratch)
+            pulled.append(index)
+            yield b"x" * chunk_size
 
-        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-            """Yields five chunks, recording each one pulled."""
-            for index in range(5):
-                if index == 1:
-                    shutil.rmtree(path=scratch)
-                pulled.append(index)
-                yield b"x" * chunk_size
-
-    _serve(monkeypatch=monkeypatch, response=_RemovedMidStream())
+    _serve(monkeypatch=monkeypatch, response=make_response(chunks=removed_mid_stream))
 
     with pytest.raises(FileNotFoundError):
         _stream(filepath=scratch / "clip.mp4")

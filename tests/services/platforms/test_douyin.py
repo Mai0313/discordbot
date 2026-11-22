@@ -7,14 +7,13 @@ the real endpoint would take the whole deployment down with it.
 
 import json
 import shutil
-from typing import Any, Self, get_args
+from typing import Any, get_args
 from pathlib import Path
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 
 import pytest
 import requests
-from requests.cookies import cookiejar_from_dict
 
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.link_errors import LinkReadError, LinkRetryableError
@@ -30,6 +29,8 @@ from discordbot.services.platforms.douyin import (
     is_douyin_url,
     is_douyin_post_url,
 )
+
+from tests.helpers.http import RequestHandler, make_response, install_session
 
 # These downloaders are only ever asked to parse, never to write, so the folder is inert.
 _SCRATCH_DIR = tempfile.gettempdir()
@@ -108,68 +109,11 @@ def _ok_page(item: dict[str, Any], page_key: str = "note") -> str:
 _SHELL_PAGE = _router_html(page_key="note", video_info={}).replace("videoInfoRes", "itemId")
 
 
-class _FakeResponse:
-    """Minimal stand-in for a requests Response."""
-
-    def __init__(
-        self,
-        text: str = "",
-        status_code: int = 200,
-        headers: dict[str, str] | None = None,
-        body: bytes = b"",
-        cookies: dict[str, str] | None = None,
-    ) -> None:
-        """Stores the canned response payload."""
-        self.text = text
-        self.status_code = status_code
-        self.headers = headers or {}
-        self.cookies = cookiejar_from_dict(cookie_dict=cookies)
-        self._body = body
-
-    def raise_for_status(self) -> None:
-        """Mimics requests' status check, carrying the response the way requests does."""
-        if self.status_code >= 400:
-            raise requests.HTTPError(f"status {self.status_code}", response=self)
-
-    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-        """Yields the canned body."""
-        yield self._body
-
-    def __enter__(self) -> Self:
-        """Matches the context manager API of `requests.Response`."""
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        """Closes the response on context exit."""
-        self.close()
-
-    def close(self) -> None:
-        """Matches the Response API used by the redirect probe."""
-
-
 def _install_session(
-    monkeypatch: pytest.MonkeyPatch, handler: Callable[[str, dict[str, object]], _FakeResponse]
+    monkeypatch: pytest.MonkeyPatch, handler: RequestHandler
 ) -> list[dict[str, Any]]:
-    """Replaces requests.Session with a stub driven by `handler`; returns the captured calls.
-
-    A captured call is the request kwargs bag, so `Any` is what lets an assertion reach into a
-    nested value such as `calls[0]["headers"]["User-Agent"]`.
-    """
-    calls: list[dict[str, Any]] = []
-
-    class _FakeSession:
-        def __enter__(self) -> Self:
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def get(self, url: str, **kwargs: object) -> _FakeResponse:
-            calls.append({"url": url, **kwargs})
-            return handler(url, kwargs)
-
-    monkeypatch.setattr(douyin_module.requests, "Session", _FakeSession)
-    return calls
+    """Replaces `douyin_module.requests.Session` with a stub driven by `handler`."""
+    return install_session(monkeypatch=monkeypatch, target=douyin_module.requests, handler=handler)
 
 
 @pytest.fixture(autouse=True)
@@ -240,9 +184,9 @@ def test_short_link_resolves_via_location_without_fetching_the_target(
     """
     target = f"https://www.iesdouyin.com/share/video/{_VIDEO_ID}/?region=TW"
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         assert kwargs["allow_redirects"] is False
-        return _FakeResponse(status_code=302, headers={"Location": target})
+        return make_response(status_code=302, headers={"Location": target})
 
     calls = _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
@@ -260,7 +204,7 @@ def test_scheme_less_short_link_is_still_fetchable(monkeypatch: pytest.MonkeyPat
     target = f"https://www.iesdouyin.com/share/video/{_VIDEO_ID}/"
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(status_code=302, headers={"Location": target}),
+        handler=lambda url, kwargs: make_response(status_code=302, headers={"Location": target}),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -272,7 +216,7 @@ def test_short_link_redirecting_off_douyin_is_rejected(monkeypatch: pytest.Monke
     """A short link pointing at another ByteDance site must not be followed."""
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(
+        handler=lambda url, kwargs: make_response(
             status_code=302, headers={"Location": "https://www.ixigua.com/7123"}
         ),
     )
@@ -290,7 +234,7 @@ def test_loader_data_key_is_scanned_not_hardcoded(
     """The loaderData key follows the URL path, so both `note_` and `video_` must parse."""
     _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(
+        handler=lambda url, kwargs: make_response(
             text=_ok_page(item=_VIDEO_ITEM, page_key=page_key)
         ),
     )
@@ -306,7 +250,7 @@ def test_photo_post_is_not_misread_as_a_video(monkeypatch: pytest.MonkeyPatch) -
     """A gallery carries a non-empty play_addr, so the branch must key on aweme_type."""
     _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=_ok_page(item=_PHOTO_ITEM)),
+        handler=lambda url, kwargs: make_response(text=_ok_page(item=_PHOTO_ITEM)),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -344,7 +288,7 @@ def test_filtered_post_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> N
             ],
         },
     )
-    _install_session(monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(text=page))
+    _install_session(monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(text=page))
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
     with pytest.raises(DouyinUnavailableError, match="内容不存在"):
@@ -363,7 +307,7 @@ def test_bot_wall_is_retryable_and_never_reported_as_missing(
     """
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=f"<html><script src='{marker}'></script>"),
+        handler=lambda url, kwargs: make_response(text=f"<html><script src='{marker}'></script>"),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -379,7 +323,7 @@ def test_unreadable_page_without_a_challenge_marker_is_a_plain_error(
 ) -> None:
     """A structure change is neither a block nor a missing post."""
     _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(text="<html></html>")
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(text="<html></html>")
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -398,7 +342,7 @@ def test_a_moved_payload_shape_is_unreadable_never_unavailable(
     wording that sends somebody off to re-check a link that is perfectly fine.
     """
     page = _router_html(page_key="note", video_info={"item_list": {"0": _VIDEO_ITEM}})
-    _install_session(monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(text=page))
+    _install_session(monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(text=page))
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
     with pytest.raises(DouyinError) as excinfo:
@@ -410,7 +354,7 @@ def test_share_page_is_fetched_from_the_note_path(monkeypatch: pytest.MonkeyPatc
     """Normalisation must target share/note, which serves both post types."""
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=_ok_page(item=_VIDEO_ITEM)),
+        handler=lambda url, kwargs: make_response(text=_ok_page(item=_VIDEO_ITEM)),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
     downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
@@ -424,13 +368,13 @@ def test_a_cookieless_shell_is_refetched_with_the_cookie_it_hands_out(
 ) -> None:
     """The cookie a shell sets is what unlocks the post, and a shell sets one only sometimes."""
     shells = iter([
-        _FakeResponse(text=_SHELL_PAGE),
-        _FakeResponse(text=_SHELL_PAGE, cookies={"ttwid": "guest"}),
+        make_response(text=_SHELL_PAGE),
+        make_response(text=_SHELL_PAGE, cookies={"ttwid": "guest"}),
     ])
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if kwargs.get("cookies") == {"ttwid": "guest"}:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM), cookies={"ttwid": "guest"})
+            return make_response(text=_ok_page(item=_VIDEO_ITEM), cookies={"ttwid": "guest"})
         return next(shells)
 
     calls = _install_session(monkeypatch=monkeypatch, handler=handler)
@@ -454,7 +398,7 @@ def test_a_shell_that_never_hands_out_a_cookie_is_retryable_after_three_requests
     Douyin's WAF bans by request volume, hence the bound.
     """
     calls = _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(text=_SHELL_PAGE)
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(text=_SHELL_PAGE)
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -474,7 +418,7 @@ def test_a_shell_is_not_refetched_when_the_cookie_sent_is_not_replaced(
     douyin_module._share_ttwid = "guest"
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=_SHELL_PAGE, cookies=reissued),
+        handler=lambda url, kwargs: make_response(text=_SHELL_PAGE, cookies=reissued),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -488,7 +432,7 @@ def test_repeated_lookup_reuses_the_cached_payload(monkeypatch: pytest.MonkeyPat
     """A link posted twice costs one fetch, which is what keeps the WAF quiet."""
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=_ok_page(item=_VIDEO_ITEM)),
+        handler=lambda url, kwargs: make_response(text=_ok_page(item=_VIDEO_ITEM)),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
     url = f"https://www.douyin.com/video/{_VIDEO_ID}"
@@ -507,14 +451,14 @@ def test_a_short_link_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     short_url = "https://v.douyin.com/abc123"
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         # Matched as a prefix, not a substring: a bare `in` would also accept
         # `https://evil.test/?x=v.douyin.com`, and this stub decides which endpoint was hit.
         if url.startswith(short_url):
-            return _FakeResponse(
+            return make_response(
                 headers={"Location": f"https://www.iesdouyin.com/share/video/{_VIDEO_ID}/"}
             )
-        return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+        return make_response(text=_ok_page(item=_VIDEO_ITEM))
 
     calls = _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
@@ -528,10 +472,10 @@ def test_a_short_link_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_download_video_writes_the_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A video post produces exactly one file named after the post id."""
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _FakeResponse(body=b"video-bytes")
+            return make_response(text=_ok_page(item=_VIDEO_ITEM))
+        return make_response(body=b"video-bytes")
 
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
@@ -549,10 +493,10 @@ def test_download_gallery_honours_the_cap_and_reports_the_remainder(
 ) -> None:
     """A capped gallery still reports the images it left behind, never silently."""
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
-        return _FakeResponse(body=b"image-bytes")
+            return make_response(text=_ok_page(item=_PHOTO_ITEM))
+        return make_response(body=b"image-bytes")
 
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
@@ -571,13 +515,13 @@ def test_download_retries_a_stalled_transfer(
     """The media CDN stalls intermittently, so a failed attempt is retried from scratch."""
     attempts = {"count": 0}
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+            return make_response(text=_ok_page(item=_VIDEO_ITEM))
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise douyin_module.RequestException("read timed out")
-        return _FakeResponse(body=b"video-bytes")
+        return make_response(body=b"video-bytes")
 
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
@@ -593,10 +537,10 @@ def test_an_oversize_file_is_refused_and_never_retried(
 ) -> None:
     """An oversize file would be oversize again next time, so retrying only re-fetches it."""
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _FakeResponse(body=b"x" * 100, headers={"Content-Length": "100"})
+            return make_response(text=_ok_page(item=_VIDEO_ITEM))
+        return make_response(body=b"x" * 100, headers={"Content-Length": "100"})
 
     calls = _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
@@ -623,10 +567,10 @@ def test_download_reuses_a_caller_supplied_post(
         parses["count"] += 1
         return original_parse(self, url=url)
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _FakeResponse(body=b"video-bytes")
+            return make_response(text=_ok_page(item=_VIDEO_ITEM))
+        return make_response(body=b"video-bytes")
 
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
@@ -682,10 +626,10 @@ def test_a_download_never_recreates_a_removed_output_folder(
     Driven through `download`, so a re-create anywhere on the way to the file is caught.
     """
 
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def handler(url: str, kwargs: dict[str, object]) -> requests.Response:
         if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
-        return _FakeResponse(body=b"image-bytes")
+            return make_response(text=_ok_page(item=_PHOTO_ITEM))
+        return make_response(body=b"image-bytes")
 
     _install_session(monkeypatch=monkeypatch, handler=handler)
     scratch = tmp_path / "gone"
@@ -703,18 +647,16 @@ def test_a_removed_output_folder_is_not_retried(
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    class _RemovedMidStream(_FakeResponse):
-        """Removes the scratch dir after the first chunk, the way a caller giving up would."""
-
-        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-            """Yields chunks, removing the scratch dir before the second."""
-            for index in range(5):
-                if index == 1:
-                    shutil.rmtree(path=scratch)
-                yield b"x" * chunk_size
+    def removed_mid_stream(chunk_size: int) -> Iterator[bytes]:
+        """Yields chunks, removing the scratch dir before the second."""
+        for index in range(5):
+            if index == 1:
+                shutil.rmtree(path=scratch)
+            yield b"x" * chunk_size
 
     calls = _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _RemovedMidStream()
+        monkeypatch=monkeypatch,
+        handler=lambda url, kwargs: make_response(chunks=removed_mid_stream),
     )
     downloader = DouyinDownloader(output_folder=scratch.as_posix())
 
@@ -727,7 +669,7 @@ def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """The share-payload cache must not grow one entry per link the bot has ever seen."""
     _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=_ok_page(item=_VIDEO_ITEM)),
+        handler=lambda url, kwargs: make_response(text=_ok_page(item=_VIDEO_ITEM)),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -747,7 +689,7 @@ def test_payload_cache_lru_evicts_oldest_and_refreshes_on_hit_and_overwrite(
     monkeypatch.setattr(target=douyin_module.time, name="monotonic", value=lambda: clock["now"])
     calls = _install_session(
         monkeypatch=monkeypatch,
-        handler=lambda url, kwargs: _FakeResponse(text=_ok_page(item=_VIDEO_ITEM)),
+        handler=lambda url, kwargs: make_response(text=_ok_page(item=_VIDEO_ITEM)),
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
     base_id = 7000000000000000000
@@ -821,7 +763,7 @@ def test_a_stalled_read_is_retryable_but_not_the_bot_wall(
     blaming a wall sends someone off to wait out something that was never there.
     """
 
-    def stall(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+    def stall(url: str, kwargs: dict[str, object]) -> requests.Response:
         """Fails the read the way the network did."""
         del url, kwargs
         raise failure
@@ -860,7 +802,7 @@ def test_only_a_429_reads_as_douyin_refusing(
     `Location`, which is not the same as no post id either.
     """
     _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(status_code=status)
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
@@ -881,7 +823,7 @@ def test_a_refused_media_download_is_retried_only_when_http_says_so(
     The page that just served the post says it exists, so a refused file says nothing about it.
     """
     calls = _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(status_code=status)
     )
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
@@ -932,7 +874,7 @@ def test_exhausted_429_media_download_raises_douyin_blocked_error(
 ) -> None:
     """Exhausted HTTP 429 retries on media downloads report a block rather than a transfer stall."""
     calls = _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=429)
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: make_response(status_code=429)
     )
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
