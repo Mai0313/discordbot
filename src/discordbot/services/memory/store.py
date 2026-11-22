@@ -24,13 +24,14 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 import contextlib
+from contextlib import AbstractAsyncContextManager
 from collections.abc import Callable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor
-from discordbot.utils.asyncio_locks import LoopLocalRegistry
+from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
     today_utc,
@@ -68,8 +69,8 @@ DM_COMPARTMENT = "dm"
 _COMPARTMENT_RE = re.compile(r"^(?:global|dm|g/\d{1,20})$")
 _GUILD_DIR_NAME = "g"
 
-# Per-scope file-write locks, rebuilt per event loop.
-_scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
+# Per-scope file-write locks, refcounted and rebuilt per event loop.
+_scope_locks: KeyedLockManager[str] = KeyedLockManager()
 # Per-scope monotonic timestamps of manual clears.
 _cleared_at: dict[str, float] = {}
 # Process-global write counter and rendered-document cache for the active store root.
@@ -211,21 +212,24 @@ def iter_scopes() -> list[str]:
     scopes (`bot_memories/<server_id>`). Descends only into `bot_memories/`, skipping dot
     directories and non-id names.
     """
-    scopes: list[str] = []
     if not _MEMORY_DIR.is_dir():
-        return scopes
+        return []
+    candidates: list[tuple[Path, str]] = []
     for top in sorted(_MEMORY_DIR.iterdir()):
         if not top.is_dir() or top.name.startswith("."):
             continue
-        if top.name != BOT_MEMORY_DIR_NAME:
-            if _is_scope_key(key=top.name) and _scope_has_memory(scope=top.name):
-                scopes.append(top.name)
-            continue
-        for nested in sorted(top.iterdir()):
-            scope = f"{BOT_MEMORY_DIR_NAME}/{nested.name}"
-            if nested.is_dir() and _is_scope_key(key=scope) and _scope_has_memory(scope=scope):
-                scopes.append(scope)
-    return scopes
+        if top.name == BOT_MEMORY_DIR_NAME:
+            candidates.extend(
+                (nested, f"{BOT_MEMORY_DIR_NAME}/{nested.name}")
+                for nested in sorted(top.iterdir())
+            )
+        else:
+            candidates.append((top, top.name))
+    return [
+        scope
+        for path, scope in candidates
+        if path.is_dir() and _is_scope_key(key=scope) and _scope_has_memory(scope=scope)
+    ]
 
 
 def _raw_path(scope: str) -> Path:
@@ -268,13 +272,13 @@ def _fact_paths(directory: Path) -> list[Path]:
         return []
 
 
-def scope_lock(scope: str) -> asyncio.Lock:
-    """Returns the per-scope lock that serializes memory file writes.
+def scope_lock(scope: str) -> AbstractAsyncContextManager[None]:
+    """Returns the async context manager holding `scope`'s file-write lock.
 
     Args:
         scope (str): Memory scope key.
     """
-    return _scope_locks.setdefault(key=scope, default=asyncio.Lock())
+    return _scope_locks.hold(key=scope)
 
 
 def mark_cleared(scope: str) -> None:

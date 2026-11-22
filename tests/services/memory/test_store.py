@@ -3,12 +3,14 @@
 import re
 import time
 from types import SimpleNamespace
+import asyncio
 from pathlib import Path
 from datetime import timedelta
 from collections.abc import Callable
 
 import pytest
 
+from discordbot.services.memory import store as store_module
 from discordbot.cogs.gen_reply.recall import RecallContext, compartments_for_reading
 from discordbot.services.memory.facts import render_fact_file, section_headings
 from discordbot.services.memory.store import (
@@ -177,12 +179,38 @@ def test_mark_cleared_flags_in_flight_updates(monkeypatch: pytest.MonkeyPatch) -
     assert cleared_since(scope=USER_SCOPE, started_at=100.5) is False
 
 
-async def test_user_lock_is_stable_per_user() -> None:
-    lock_a = scope_lock(scope=USER_SCOPE)
-    lock_b = scope_lock(scope=USER_SCOPE)
-    lock_other = scope_lock(scope=user_scope(user_id=USER_ID + 1))
-    assert lock_a is lock_b
-    assert lock_a is not lock_other
+async def test_scope_lock_serializes_same_scope_and_evicts_when_idle() -> None:
+    """Same-scope holders serialize, distinct scopes run concurrently, and idle locks evict."""
+    other_scope = user_scope(user_id=USER_ID + 1)
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_entered = asyncio.Event()
+    other_entered = asyncio.Event()
+
+    async def hold_first() -> None:
+        async with scope_lock(scope=USER_SCOPE):
+            first_entered.set()
+            await release_first.wait()
+
+    async def hold_second() -> None:
+        async with scope_lock(scope=USER_SCOPE):
+            second_entered.set()
+
+    async def hold_other() -> None:
+        async with scope_lock(scope=other_scope):
+            other_entered.set()
+
+    first_task = asyncio.create_task(hold_first())
+    await first_entered.wait()
+    second_task = asyncio.create_task(hold_second())
+    other_task = asyncio.create_task(hold_other())
+    await other_entered.wait()
+    assert not second_entered.is_set()
+
+    release_first.set()
+    await asyncio.gather(first_task, second_task, other_task)
+    assert second_entered.is_set()
+    assert store_module._scope_locks._locks == {}
 
 
 def test_read_detail_tail_missing_file_is_empty() -> None:

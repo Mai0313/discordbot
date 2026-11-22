@@ -281,21 +281,27 @@ def _merged_report(
     return both
 
 
+def _take_newest(notes: tuple[str, ...], seen: set[str]) -> tuple[str, ...]:
+    """Keeps newest unseen notes from `notes` up to `MEMORY_MERGED_NOTES_MAX`, in original order."""
+    room = MEMORY_MERGED_NOTES_MAX - len(seen)
+    if room <= 0:
+        return ()
+    picked = [note for note in dict.fromkeys(reversed(notes)) if note not in seen][:room]
+    seen.update(picked)
+    return tuple(reversed(picked))
+
+
 def _capped(rounds: tuple[NoteRound, ...]) -> tuple[NoteRound, ...]:
     """Deduplicates rounds (newest kept), caps at `MEMORY_MERGED_NOTES_MAX`, and folds them."""
-    seen: tuple[set[str], set[str]] = (set(), set())
-    newest_first: list[NoteRound] = []
-    for round_ in reversed(rounds):
-        kept: list[tuple[str, ...]] = []
-        for notes, taken in zip(round_, seen, strict=True):
-            picked: list[str] = []
-            for note in reversed(notes):
-                if note in taken or len(taken) >= MEMORY_MERGED_NOTES_MAX:
-                    continue
-                taken.add(note)
-                picked.append(note)
-            kept.append(tuple(reversed(picked)))
-        newest_first.append((kept[0], kept[1]))
+    seen_remember: set[str] = set()
+    seen_forget: set[str] = set()
+    newest_first = [
+        (
+            _take_newest(notes=remember, seen=seen_remember),
+            _take_newest(notes=forget, seen=seen_forget),
+        )
+        for remember, forget in reversed(rounds)
+    ]
     merged: list[NoteRound] = []
     for remember, forget in reversed(newest_first):
         if merged and not forget:
