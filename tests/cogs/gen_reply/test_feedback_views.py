@@ -336,7 +336,11 @@ async def test_on_ready_registers_persistent_feedback_view_once(
 ) -> None:
     """Persistent feedback view is registered once on first ready, surviving reconnects."""
     cog = _cog()
-    monkeypatch.setattr(cog, "_resume_memory", lambda: asyncio.sleep(0))
+
+    async def noop_resume(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.resume_after_restart", noop_resume)
 
     try:
         await cog.on_ready()

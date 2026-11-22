@@ -117,7 +117,7 @@ def test_rendered_document_groups_by_section_and_dates_recent(
         scope=scope,
         fact=_fact(fact_id="c" * 16, section="recent", durability="recent", text="正在搬家"),
     )
-    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user")
+    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
     headings = dict(section_headings(flavor="user"))
     assert document.index(f"## {headings['profile']}") < document.index(
         f"## {headings['preference']}"
@@ -135,9 +135,7 @@ def test_the_document_is_capped_and_says_so() -> None:
     scope = user_scope(user_id=111)
     for index in range(20):
         write_fact(scope=scope, fact=_fact(fact_id=f"{index:016x}", text="長" * 200))
-    document = read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user", max_chars=600
-    )
+    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], max_chars=600)
     assert len(document) < 1_000
     assert TRUNCATION_NOTICE in document
 
@@ -174,9 +172,7 @@ def test_an_alias_row_cannot_be_given_someone_elses_id(text: str) -> None:
             subject_id=777,
         ),
     )
-    document = read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="server"
-    )
+    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
     assert "999999999999999999" not in document
     assert allowlist_ids_from_server_memory(memory=document) == {777: "小明(社群暱稱:明哥)"}
 

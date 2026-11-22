@@ -45,12 +45,10 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
 from discordbot.cogs.gen_reply.answer import RegenOptions, max_regens_for
-from discordbot.services.memory.facts import render_owner_identity
-from discordbot.services.memory.store import read_owner, iter_scopes
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
-from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
+from discordbot.services.memory.pipeline import resume_after_restart
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
 from discordbot.services.memory.git_history import memory_git
@@ -62,7 +60,6 @@ from discordbot.cogs.gen_reply.feedback_store import (
     parse_reply_message_ids,
 )
 from discordbot.cogs.gen_reply.feedback_views import ReplyFeedbackView
-from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
 
 
@@ -190,7 +187,15 @@ class ReplyGeneratorCogs(commands.Cog):
         if not self.price_table_task.is_running():
             self.price_table_task.start()
         self._resume_started = True
-        spawn_tracked(coro=self._resume_memory(), tasks=self._tasks, name="memory-resume")
+        spawn_tracked(
+            coro=resume_after_restart(
+                writer=lambda: self.toolkit.memory_writer,
+                tasks=self._tasks,
+                updated_before=self._started_at,
+            ),
+            tasks=self._tasks,
+            name="memory-resume",
+        )
 
     def cog_unload(self) -> None:
         """Stops the periodic price-table refresh loop when the cog unloads."""
@@ -213,40 +218,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-
-    async def _resume_memory(self) -> None:
-        """Re-enqueues persisted review jobs and consolidates over-threshold scopes."""
-        jobs = await safe_list_resumable(updated_before=self._started_at)
-        for job in jobs:
-            if job.transcript is None:
-                continue
-            resume_memory_update(
-                scope=job.scope,
-                subject=job.subject,
-                transcript=job.transcript,
-                writer=self.toolkit.memory_writer,
-                identity=job.identity,
-                token=job.token,
-                status=job.status,
-            )
-        if jobs:
-            logfire.info("resumed persisted memory jobs", count=len(jobs))
-        swept = 0
-        for scope in iter_scopes():
-            if not needs_consolidation(scope=scope):
-                continue
-            spawn_tracked(
-                coro=consolidate_if_needed(
-                    scope=scope,
-                    writer=self.toolkit.memory_writer,
-                    identity=render_owner_identity(owner=read_owner(scope=scope)),
-                ),
-                tasks=self._tasks,
-                name=f"memory-consolidation-{scope}",
-            )
-            swept += 1
-        if swept:
-            logfire.info("scheduled memory consolidation sweep", count=swept)
 
     async def _deliver_failure_notice(self, surface: TurnSurface, error_embed: Embed) -> None:
         """Delivers `error_embed` onto the in-progress answer message or as a fresh surface reply."""

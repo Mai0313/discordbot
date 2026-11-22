@@ -12,9 +12,9 @@ forget-released entries), and `tone.md` (per-user tone note).
 
 Store IO is synchronous except `trim_detail` and `rewrite_evidence`, which offload megabyte
 `detail.md` parsing to a worker thread and re-check `cleared_since` right before writing.
-`read_memory_document` caches rendered documents by `(scope,
-compartments, flavor, max_chars)` stamped with a per-scope write generation and UTC day (for date
-TTL filtering). Out-of-process edits while the bot runs are unsupported.
+`read_memory_document` caches rendered documents by `(scope, compartments, max_chars)` stamped with
+a per-scope write generation and UTC day (for date TTL filtering). Out-of-process edits while the
+bot runs are unsupported.
 """
 
 import os
@@ -75,9 +75,7 @@ _scope_locks: KeyedLockManager[str] = KeyedLockManager()
 _cleared_at: dict[str, float] = {}
 # Process-global write counter and rendered-document cache for the active store root.
 _write_generation: dict[str, int] = {}
-_render_cache: dict[
-    tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[tuple[int, datetime], str]
-] = {}
+_render_cache: dict[tuple[str, tuple[str, ...], int], tuple[tuple[int, datetime], str]] = {}
 
 
 def user_scope(user_id: int) -> str:
@@ -177,7 +175,7 @@ def list_compartments(scope: str) -> list[str]:
         guild_ids = sorted(
             int(child.name)
             for child in guild_root.iterdir()
-            if child.is_dir() and child.name.isdigit()
+            if child.is_dir() and child.name.isdecimal()
         )
         found.extend(guild_compartment(guild_id=guild_id) for guild_id in guild_ids)
     if (scope_dir / DM_COMPARTMENT).is_dir():
@@ -337,10 +335,7 @@ def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
 
 
 def read_memory_document(
-    scope: str,
-    compartments: list[str],
-    flavor: MemoryFlavor,
-    max_chars: int = MEMORY_INJECTION_MAX_CHARS,
+    scope: str, compartments: list[str], max_chars: int = MEMORY_INJECTION_MAX_CHARS
 ) -> str:
     """Returns the injectable document for `scope` merged across `compartments`.
 
@@ -352,10 +347,9 @@ def read_memory_document(
     Args:
         scope (str): Memory scope key.
         compartments (list[str]): Compartments readable in the current context.
-        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
         max_chars (int): Character budget before truncation.
     """
-    key = (scope, tuple(compartments), flavor, max_chars)
+    key = (scope, tuple(compartments), max_chars)
     cached = _render_cache.get(key)
     stamp = (_write_generation.get(scope, 0), today_utc())
     if cached is not None and cached[0] == stamp:
@@ -367,7 +361,9 @@ def read_memory_document(
         # Filter expired facts on read; sweep_stale_facts owns disk deletion.
         if not is_past_recent_ttl(fact=fact, today=stamp[1])
     ]
-    document = render_memory_document(facts=facts, flavor=flavor, max_chars=max_chars)
+    document = render_memory_document(
+        facts=facts, flavor=flavor_of(scope=scope), max_chars=max_chars
+    )
     if len(_render_cache) >= RENDER_CACHE_MAX_ENTRIES:
         # Full reset rather than LRU: entries are cheap to rebuild and the cap bounds stale keys.
         _render_cache.clear()

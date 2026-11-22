@@ -77,7 +77,6 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment() -> None:
     outcome = apply_deltas(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(
             make_delta(
                 action="delete",
@@ -113,7 +112,6 @@ def test_a_delete_survives_a_section_this_flavor_does_not_allow() -> None:
     outcome = apply_deltas(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(action="delete", fact_id="a" * 16, section="member_alias"),),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
@@ -140,7 +138,6 @@ def test_a_delete_releases_only_the_keys_no_remaining_fact_carries() -> None:
     outcome = apply_deltas(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(action="delete", fact_id="a" * 16),),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
@@ -237,7 +234,6 @@ def test_a_create_delta_writes_a_fact() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(from_keys=("preference.a",)),),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -257,7 +253,6 @@ def test_a_create_whose_keys_already_back_a_fact_updates_it() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(summary="換個說法", text="新版本", from_keys=("preference.a",)),),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -277,7 +272,6 @@ def test_an_update_keeps_the_original_creation_date(monkeypatch: pytest.MonkeyPa
     apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(action="update", fact_id="0123456789abcdef", text="改寫"),),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -293,7 +287,6 @@ def test_an_update_naming_a_missing_id_becomes_a_create() -> None:
     apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(action="update", fact_id="f" * 16),),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -309,7 +302,6 @@ def _apply_to_global(deltas: tuple[MemoryFactDelta, ...]) -> DeltaOutcome:
     return apply_deltas(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=deltas,
         owner=_OWNER,
         allow_mass_delete=False,
@@ -444,7 +436,6 @@ def test_bad_deltas_are_dropped_without_failing_the_batch() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(
             # A server-only section on a user scope.
             make_delta(section="culture"),
@@ -469,7 +460,6 @@ def test_an_unusable_subject_id_costs_the_field_and_not_the_run() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(
             make_delta(section="fact", summary="猜出來的 id", subject_id="阿華"),
             # `isdigit` accepts a superscript and `int()` refuses it, which is the same raise.
@@ -497,7 +487,6 @@ def test_a_median_merge_is_not_mistaken_for_a_wipe() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(
             make_delta(summary="合併後的事實"),
             *(make_delta(action="delete", fact_id=fact_id) for fact_id in ids[:4]),
@@ -520,7 +509,6 @@ def test_a_wipe_is_refused_and_changes_nothing() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=tuple(make_delta(action="delete", fact_id=fact_id) for fact_id in ids),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -540,7 +528,6 @@ def test_a_merge_folding_most_facts_into_one_is_applied() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(
             make_delta(action="update", fact_id=ids[0], text="合併後"),
             *(make_delta(action="delete", fact_id=fact_id) for fact_id in ids[1:9]),
@@ -561,7 +548,6 @@ def test_a_rebuild_may_replace_the_whole_set() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=tuple(make_delta(action="delete", fact_id=fact_id) for fact_id in ids),
         owner=_OWNER,
         allow_mass_delete=True,
@@ -633,7 +619,6 @@ def test_a_batch_reports_the_ids_it_wrote() -> None:
     outcome = apply_deltas(
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(summary="新的事實"),),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -724,7 +709,6 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped() -> None:
     outcome = apply_deltas(
         scope=SERVER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="server",
         deltas=(
             _alias_delta(),
             _alias_delta(
@@ -764,7 +748,6 @@ def test_an_alias_row_is_built_from_its_fields_not_the_models_prose() -> None:
     apply_deltas(
         scope=SERVER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="server",
         deltas=(
             _alias_delta(
                 display_name="阿明",
@@ -793,7 +776,6 @@ def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias() -> None:
     outcome = apply_deltas(
         scope=SERVER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="server",
         deltas=(
             _alias_delta(summary="只有 id 的暱稱", display_name="", subject_id="4242"),
             # The shape a model that ignores the new fields produces: prose in `text`,
@@ -820,7 +802,6 @@ def test_an_alias_row_stays_one_clean_line() -> None:
     apply_deltas(
         scope=SERVER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="server",
         deltas=(
             _alias_delta(
                 display_name="阿明\n（新名字）",
@@ -912,7 +893,6 @@ def test_dropped_delta_warnings_include_scope_and_compartment(
     apply_deltas(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
         deltas=(make_delta(action="create"),),
         owner=_OWNER,
         allow_mass_delete=True,
@@ -921,7 +901,6 @@ def test_dropped_delta_warnings_include_scope_and_compartment(
     apply_deltas(
         scope=SERVER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
-        flavor="server",
         deltas=(
             make_delta(section="preference"),
             make_delta(section="fact", summary="", text=""),

@@ -473,7 +473,6 @@ def test_reading_a_guild_never_opens_another_guild() -> None:
         compartments=compartments_for_reading(
             owner_id=111, context=RecallContext(guild_id=111, dm_partner_id=None)
         ),
-        flavor="user",
     )
     assert "全域事實" in document
     assert "本群事實" in document
@@ -485,19 +484,14 @@ def test_reads_are_cached_until_a_write_lands() -> None:
     """A repeat read of an unchanged scope must not re-open every fact file."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(text="第一版"))
-    first = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user")
+    first = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
     # Bypassing the store leaves the generation counter untouched, so a cached read must
     # still return the old document — which is exactly what proves the cache is live.
     path = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT) / "0123456789abcdef.md"
     path.write_text(path.read_text().replace("第一版", "第二版"), encoding="utf-8")
-    assert (
-        read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user")
-        == first
-    )
+    assert read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT]) == first
     write_fact(scope=scope, fact=_fact(fact_id="b" * 16, text="第三版"))
-    assert "第二版" in read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
-    )
+    assert "第二版" in read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
 
 
 def test_a_fact_past_its_date_ttl_is_left_out_of_the_read_but_kept_on_disk(
@@ -516,7 +510,7 @@ def test_a_fact_past_its_date_ttl_is_left_out_of_the_read_but_kept_on_disk(
     )
     expired_day = STAMPED_AT + timedelta(days=RECENT_CONTEXT_TTL_DAYS + 1)
     monkeypatch.setattr("discordbot.services.memory.store.today_utc", lambda: expired_day)
-    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user")
+    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
     assert "正在搬家" not in document
     assert "喜歡簡短" in document, "a stable fact ages by displacement, never by the date"
     assert "母語中文" in document
@@ -529,15 +523,11 @@ def test_a_cached_read_expires_a_fact_when_the_day_turns(monkeypatch: pytest.Mon
     write_fact(scope=scope, fact=_fact(section="recent", durability="recent", text="正在搬家"))
     last_day = STAMPED_AT + timedelta(days=RECENT_CONTEXT_TTL_DAYS)
     monkeypatch.setattr("discordbot.services.memory.store.today_utc", lambda: last_day)
-    assert "正在搬家" in read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
-    )
+    assert "正在搬家" in read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
     monkeypatch.setattr(
         "discordbot.services.memory.store.today_utc", lambda: last_day + timedelta(days=1)
     )
-    assert "正在搬家" not in read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
-    )
+    assert "正在搬家" not in read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
 
 
 _BOTH_FLAVORS = (user_scope(user_id=111), server_scope(server_id=500))
@@ -729,16 +719,14 @@ def test_a_pruned_fact_leaves_the_cached_document() -> None:
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
     write_fact(scope=scope, fact=_fact(fact_id="a" * 16, text="另一件事"))
-    assert "喜歡簡短回覆" in read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
-    )
+    assert "喜歡簡短回覆" in read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
 
     assert (
         prune_compartment(scope=scope, compartment=GLOBAL_COMPARTMENT, keep={"a" * 16}).unaccounted
         == ()
     )
     assert "喜歡簡短回覆" not in read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
+        scope=scope, compartments=[GLOBAL_COMPARTMENT]
     )
 
 
@@ -782,9 +770,7 @@ def test_server_scope_isolated_from_user_scope_on_disk(memory_isolated_dir: Path
     write_fact(
         scope=SERVER_SCOPE, fact=_server_fact(fact_id="b" * 16, section="profile", text="社群")
     )
-    user_document = read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
-    )
+    user_document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT])
     assert "個人" in user_document
     assert "社群" not in user_document
     # The same section key renders under the flavor's own heading.
@@ -798,3 +784,13 @@ def test_server_scope_isolated_from_user_scope_on_disk(memory_isolated_dir: Path
         / GLOBAL_COMPARTMENT
         / f"{'b' * 16}.md"
     ).exists()
+
+
+def test_list_compartments_skips_non_decimal_unicode_digit_guild_dirs(
+    memory_isolated_dir: Path,
+) -> None:
+    """Unicode superscripts like `'²'` pass `.isdigit()` but crash `int()`; `.isdecimal()` skips them."""
+    scope = user_scope(user_id=111)
+    (memory_isolated_dir / scope / "g" / "²").mkdir(parents=True)
+    (memory_isolated_dir / scope / "g" / "222").mkdir(parents=True)
+    assert list_compartments(scope=scope) == [guild_compartment(guild_id=222)]

@@ -251,17 +251,16 @@ class MemoryCogs(commands.Cog):
 
     def _memory_sections(self, scope: str) -> list[str]:
         """Returns display sections for `scope` (bare for server, labelled per compartment)."""
-        flavor = flavor_of(scope=scope)
         compartments = list_compartments(scope=scope)
-        if flavor == "server":
+        if flavor_of(scope=scope) == "server":
             document = read_memory_document(
-                scope=scope, compartments=compartments, flavor=flavor, max_chars=_SHOW_MAX_CHARS
+                scope=scope, compartments=compartments, max_chars=_SHOW_MAX_CHARS
             )
             return [document] if document else []
         sections: list[str] = []
         for compartment in compartments:
             document = read_memory_document(
-                scope=scope, compartments=[compartment], flavor=flavor, max_chars=_SHOW_MAX_CHARS
+                scope=scope, compartments=[compartment], max_chars=_SHOW_MAX_CHARS
             )
             if document:
                 label = compartment_label(compartment=compartment, bot=self.bot)

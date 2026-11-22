@@ -10,7 +10,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import (
     MemoryOwner,
-    MemoryFlavor,
     MemorySection,
     MemorySharing,
     MemoryCategory,
@@ -172,11 +171,9 @@ def _answers(
     return answer
 
 
-def _memory_text(scope: str = USER_SCOPE, flavor: MemoryFlavor = "user") -> str:
+def _memory_text(scope: str = USER_SCOPE) -> str:
     """Renders every compartment a scope holds, the way the owner's own DM would read it."""
-    return read_memory_document(
-        scope=scope, compartments=list_compartments(scope=scope), flavor=flavor
-    )
+    return read_memory_document(scope=scope, compartments=list_compartments(scope=scope))
 
 
 def _consolidate_at(monkeypatch: pytest.MonkeyPatch, entries: int) -> None:

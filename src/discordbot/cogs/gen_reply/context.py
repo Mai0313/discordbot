@@ -559,9 +559,7 @@ class ReplyContextBuilder(BaseModel):
         if self.message.guild is None:
             return ""
         return read_memory_document(
-            scope=server_scope(server_id=self.message.guild.id),
-            compartments=[GLOBAL_COMPARTMENT],
-            flavor="server",
+            scope=server_scope(server_id=self.message.guild.id), compartments=[GLOBAL_COMPARTMENT]
         )
 
     def _resolve_recall_candidates(

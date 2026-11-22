@@ -9,17 +9,23 @@ Every disk write sits immediately after a `cleared_since` check with no `await` 
 
 import asyncio
 from datetime import datetime
+from collections.abc import Callable
 
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import MemoryWriteSummary
+from discordbot.utils.timezone import database_now
 
 # Imported as a module so a test that swaps one database call on it reaches the calls here.
 from discordbot.services.memory import database as memory_db
+from discordbot.utils.asyncio_locks import LoopLocalRegistry, spawn_tracked
+from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import (
     flavor_of,
+    read_owner,
     scope_lock,
+    iter_scopes,
     trim_detail,
     mark_cleared,
     cleared_since,
@@ -50,7 +56,14 @@ from discordbot.services.memory.raw_entries import (
     render_forget_requests,
     render_memory_observations,
 )
-from discordbot.services.memory.consolidation import consolidate_after_turn
+from discordbot.services.memory.consolidation import (
+    needs_consolidation,
+    consolidate_if_needed,
+    consolidate_after_turn,
+)
+
+# Loop-local latch so multiple cogs (and gateway reconnects) share one restart resume per loop.
+_restart_resumed: LoopLocalRegistry[str, bool] = LoopLocalRegistry()
 
 
 async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:
@@ -176,7 +189,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     )
 
 
-def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
+def _resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
     scope: str,
     subject: str,
     transcript: str,
@@ -185,18 +198,7 @@ def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
     token: int,
     status: memory_db.MemoryJobStatus,
 ) -> None:
-    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token.
-
-    Args:
-        scope (str): Memory scope key.
-        subject (str): Phase-1 directive naming the review target.
-        transcript (str): Stored turn payload (transcript plus memory notes).
-        writer (MemoryWriterAI): Memory writing service running the review and consolidation.
-        identity (str): Single-line owner identity stamped onto written facts.
-        token (int): Stored logical version token.
-        status (memory_db.MemoryJobStatus): Stored row status (`'pending'` or `'failed'`, where
-            `'failed'` marks the turn's single retry).
-    """
+    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token."""
     enqueue_memory_update(
         turn=MemoryTurn(
             scope=scope,
@@ -366,14 +368,78 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
     return bool(forget_notes)
 
 
-async def safe_list_resumable(updated_before: datetime) -> list[memory_db.MemoryJob]:
-    """Returns persisted `pending` and `failed` jobs for the restart sweep, or `[]` on DB error.
-
-    Args:
-        updated_before (datetime): Process start timestamp; see `database.py::list_resumable`.
-    """
+async def _safe_list_resumable(updated_before: datetime) -> list[memory_db.MemoryJob]:
+    """Returns persisted `pending` and `failed` jobs for the restart sweep, or `[]` on DB error."""
     try:
         return await memory_db.list_resumable(updated_before=updated_before)
     except Exception as exc:
         logfire.warn("memory_job resume read failed", error_type=type(exc).__name__, _exc_info=exc)
         return []
+
+
+def _discover_pending_consolidations() -> list[tuple[str, str]]:
+    """Scans the store off the event loop for over-threshold scopes and their owner identities."""
+    pending: list[tuple[str, str]] = []
+    for scope in iter_scopes():
+        if not needs_consolidation(scope=scope):
+            continue
+        pending.append((scope, render_owner_identity(owner=read_owner(scope=scope))))
+    return pending
+
+
+async def resume_after_restart(
+    writer: MemoryWriterAI | Callable[[], MemoryWriterAI],
+    tasks: set[asyncio.Task[None]],
+    updated_before: datetime | None = None,
+) -> None:
+    """Re-enqueues persisted review jobs and sweeps over-threshold scopes once per event loop.
+
+    Idempotent across reconnects and across multiple cogs invoking it on startup. Offloads the
+    startup filesystem scan (`iter_scopes`, `needs_consolidation`, `read_owner`) to a worker
+    thread, and resolves `writer` lazily only when there is work to dispatch so a keyless boot
+    with nothing pending never constructs an OpenAI client.
+
+    Args:
+        writer (MemoryWriterAI | Callable[[], MemoryWriterAI]): Memory writing service or
+            zero-argument factory returning it.
+        tasks (set[asyncio.Task[None]]): Caller-owned set holding spawned consolidation tasks.
+        updated_before (datetime | None): Process-start timestamp excluding turns staged by this
+            process; defaults to `database_now()`.
+    """
+    latch_key = "resumed"
+    if _restart_resumed.get(key=latch_key):
+        return
+    _restart_resumed.set(key=latch_key, value=True)
+    cutoff = updated_before if updated_before is not None else database_now()
+    resolved_writer: MemoryWriterAI | None = None
+
+    def get_writer() -> MemoryWriterAI:
+        nonlocal resolved_writer
+        if resolved_writer is None:
+            resolved_writer = writer if isinstance(writer, MemoryWriterAI) else writer()
+        return resolved_writer
+
+    jobs = await _safe_list_resumable(updated_before=cutoff)
+    for job in jobs:
+        if job.transcript is None:
+            continue
+        _resume_memory_update(
+            scope=job.scope,
+            subject=job.subject,
+            transcript=job.transcript,
+            writer=get_writer(),
+            identity=job.identity,
+            token=job.token,
+            status=job.status,
+        )
+    if jobs:
+        logfire.info("resumed persisted memory jobs", count=len(jobs))
+    pending_scopes = await asyncio.to_thread(_discover_pending_consolidations)
+    for scope, identity in pending_scopes:
+        spawn_tracked(
+            coro=consolidate_if_needed(scope=scope, writer=get_writer(), identity=identity),
+            tasks=tasks,
+            name=f"memory-consolidation-{scope}",
+        )
+    if pending_scopes:
+        logfire.info("scheduled memory consolidation sweep", count=len(pending_scopes))

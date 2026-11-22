@@ -269,7 +269,6 @@ def recall_user_memories(
         memory = read_memory_document(
             scope=user_scope(user_id=user_id),
             compartments=compartments_for_reading(owner_id=user_id, context=context),
-            flavor="user",
         )
         results.append(
             UserMemory(
