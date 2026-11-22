@@ -1,4 +1,4 @@
-"""Local OpenAI Agents smoke test for the Discord reply prompt."""
+"""Local smoke test for the Discord reply prompt via OpenAI Agents and Gemini Interactions."""
 
 from typing import TYPE_CHECKING, cast
 from pathlib import Path

@@ -4,11 +4,12 @@ Triggered either by a `<deep-research>` marker from `gen_reply` or by `/deep_res
 thread, runs `RuntimeModelCatalog.antigravity_model` in a tracked background task, and posts the
 cited report there while pinging the requester.
 
-Calls Google directly (`gemini_api_key`, no proxy) via the Interactions API (`agent.py`) and
-persists sessions in `reply.db` for restart resume (`store=True`).
+Runs the research itself direct to Google (`gemini_api_key`, no proxy) via the Interactions API
+(`agent.py`), rides the LiteLLM proxy (`responses_client`) for best-effort thread-title
+generation, and persists sessions in `reply.db` for restart resume (`store=True`).
 """
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 from functools import cached_property
 import contextlib
 
@@ -25,7 +26,6 @@ from nextcord import (
     Forbidden,
     Interaction,
     SlashOption,
-    TextChannel,
     HTTPException,
     AllowedMentions,
 )
@@ -43,7 +43,6 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.typings.research import has_research_permissions
 from discordbot.typings.timeouts import THREAD_TITLE_TIMEOUT_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.research.agent import (
@@ -57,11 +56,14 @@ from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
+from discordbot.utils.research_access import research_access_denial
 from discordbot.cogs.research.delivery import deliver_report, owner_allowed_mentions
 from discordbot.cogs.research.streaming import RESEARCHING_PREFIX, ResearchProgressStreamer
 
 if TYPE_CHECKING:
     import asyncio
+
+    from nextcord import Guild, TextChannel
 
 # Shared agent label for the opening status line and live progress header.
 RESEARCH_LABEL = "Antigravity"
@@ -251,27 +253,28 @@ class ResearchCogs(commands.Cog):
         if not self.config.deep_research_available:
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
-        if interaction.user is None or not isinstance(interaction.channel, TextChannel):
+        # Check channel eligibility and bot permissions before spending a title call or anchor.
+        denial = (
+            "unsupported"
+            if interaction.user is None
+            else research_access_denial(channel=interaction.channel, guild=interaction.guild)
+        )
+        if interaction.user is None or denial is not None:
             # User-installed invocations outside bot guilds carry guild_id with guild=None.
             content = (
                 "我沒有被加進這個伺服器,深度研究只能在我所在的伺服器裡開"
-                if interaction.guild is None and interaction.guild_id is not None
-                else _launch_reply(outcome="unsupported", thread_id=None)
+                if denial == "unsupported"
+                and interaction.guild is None
+                and interaction.guild_id is not None
+                else _launch_reply(outcome=denial or "unsupported", thread_id=None)
             )
             await interaction.response.send_message(content=content, ephemeral=True)
             return
-        # Check bot member permissions before spending a title call or posting an anchor.
-        if not has_research_permissions(
-            channel=interaction.channel, member=interaction.channel.guild.me
-        ):
-            await interaction.response.send_message(
-                content=_launch_reply(outcome="forbidden", thread_id=None), ephemeral=True
-            )
-            return
+        channel = cast("TextChannel", interaction.channel)
         await interaction.response.defer(ephemeral=True)
         # Check here before posting a public anchor so an existing run never flashes a ghost ping.
         slot_outcome, existing_thread_id = await self._check_owner_slot(
-            owner_id=interaction.user.id, channel_id=interaction.channel.id
+            owner_id=interaction.user.id, channel_id=channel.id
         )
         if slot_outcome is not None:
             await interaction.edit_original_message(
@@ -280,14 +283,14 @@ class ResearchCogs(commands.Cog):
             return
         # Restrict mentions to the requester so user-supplied topic text cannot mass-ping.
         try:
-            anchor = await interaction.channel.send(
+            anchor = await channel.send(
                 content=f"{interaction.user.mention} 要研究:{topic[:200]}",
                 allowed_mentions=owner_allowed_mentions(owner_id=interaction.user.id),
             )
         except Forbidden:
             logfire.warn(
                 "deep research cannot post its anchor in this channel",
-                channel_id=interaction.channel.id,
+                channel_id=channel.id,
                 owner_id=interaction.user.id,
             )
             await interaction.edit_original_message(
@@ -298,7 +301,7 @@ class ResearchCogs(commands.Cog):
         except Exception as exc:
             logfire.error(
                 "failed to post the deep research anchor",
-                channel_id=interaction.channel.id,
+                channel_id=channel.id,
                 owner_id=interaction.user.id,
                 error_type=type(exc).__name__,
                 _exc_info=exc,
@@ -343,8 +346,10 @@ class ResearchCogs(commands.Cog):
         self, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims `owner_id`'s slot, opens the thread, spawns the run, and returns `(outcome, thread_id)`."""
-        if anchor.guild is None or not isinstance(anchor.channel, TextChannel):
-            return "unsupported", None
+        denial = research_access_denial(channel=anchor.channel, guild=anchor.guild)
+        if denial is not None:
+            return denial, None
+        guild = cast("Guild", anchor.guild)
         async with self._owner_locks.hold(key=owner_id):
             slot_outcome, existing = await self._check_owner_slot(
                 owner_id=owner_id, channel_id=anchor.channel.id, message_id=anchor.id
@@ -380,7 +385,7 @@ class ResearchCogs(commands.Cog):
                     thread_id=thread.id,
                     owner_id=owner_id,
                     channel_id=anchor.channel.id,
-                    guild_id=anchor.guild.id,
+                    guild_id=guild.id,
                     source_message_id=anchor.id,
                     agent=agent,
                     brief=brief,

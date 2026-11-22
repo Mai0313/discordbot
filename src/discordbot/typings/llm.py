@@ -7,7 +7,9 @@ from pydantic_settings import BaseSettings
 class LLMConfig(BaseSettings):
     """Configuration settings for LLM integration, reading from environment variables."""
 
-    # Credentials default to empty for credential-less tests; missing keys fail at first call.
+    # Credentials default to empty for credential-less tests; missing `OPENAI_API_KEY` fails on
+    # first client construction, while missing `GEMINI_API_KEY` disables or falls back off
+    # direct-to-Google paths.
     base_url: str = Field(
         default="",
         description="The base url for the OpenAI API or a compatible endpoint.",
@@ -34,8 +36,8 @@ class LLMConfig(BaseSettings):
     anthropic_api_key: str = Field(
         default="",
         description=(
-            "The Anthropic API key for direct Anthropic Files API uploads, the side-channel "
-            "for Claude answer models."
+            "Reserved Anthropic API key for the scaffolded direct Anthropic Files API uploader "
+            "(not enabled at runtime)."
         ),
         examples=["sk-ant-..."],
         validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
@@ -43,8 +45,8 @@ class LLMConfig(BaseSettings):
     xai_api_key: str = Field(
         default="",
         description=(
-            "The xAI API key for direct xAI Files API uploads, the side-channel for Grok "
-            "answer models, whose uploads the proxy cannot route."
+            "Reserved xAI API key for the scaffolded direct xAI Files API uploader (not enabled "
+            "at runtime)."
         ),
         examples=["xai-..."],
         validation_alias=AliasChoices("XAI_API_KEY"),
@@ -120,8 +122,9 @@ class LLMConfig(BaseSettings):
         default=True,
         description=(
             "Whether finalized replies attach persistent thumbs-up/thumbs-down feedback buttons "
-            "and persist turn snapshots in `reply.db`; when false replies omit the buttons and "
-            "no turn snapshot is recorded."
+            "(plus a `🔄` regenerate button on normal gateway QA replies) and persist turn "
+            "snapshots in `reply.db`; when false replies omit the buttons, skip turn snapshots, "
+            "and refuse `🔄` regeneration clicks."
         ),
         validation_alias=AliasChoices("FEEDBACK_ENABLED"),
     )
@@ -129,10 +132,12 @@ class LLMConfig(BaseSettings):
         default=False,
         description=(
             "Whether QA turns randomly pick `slow_model` from "
-            "`RuntimeModelCatalog.slow_model_blind_test_candidates` and mask the model name as "
-            "`blind-test-model` in the reply footer and system prompt while still recording the "
-            "real answered model in `reply.db` and logs; when false QA uses `slow_model` and "
-            "shows its real name."
+            "`RuntimeModelCatalog.slow_model_blind_test_candidates` (allowing `🔄` regeneration "
+            "across remaining untried candidates) and mask the model name as `blind-test-model` "
+            "in the system prompt and reply footer (also hiding the effort label in the footer), "
+            "while still recording the real answered model and effort in `reply.db` and logs; "
+            "when false QA uses `slow_model`, allows one regeneration, and shows its real name "
+            "and effort."
         ),
         validation_alias=AliasChoices("SLOW_MODEL_BLIND_TEST_ENABLED"),
     )

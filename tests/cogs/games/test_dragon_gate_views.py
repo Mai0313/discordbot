@@ -8,7 +8,7 @@ import pytest
 
 from discordbot.typings.games import GameParticipant
 from discordbot.utils.number_text import compact_amount
-from discordbot.utils.discord_embeds import embed_text_length
+from discordbot.utils.discord_embeds import utf16_length, embed_text_length
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -569,8 +569,9 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
 
     assert embed is not None
     assert isinstance(embed.description, str)
-    assert len(embed.description) <= 4096, (
-        f"the history embed renders {len(embed.description)} characters at its worst, past "
+    description_length = utf16_length(value=embed.description)
+    assert description_length <= 4096, (
+        f"the history embed renders {description_length} UTF-16 units at its worst, past "
         f"Discord's 4096 per description; lower DRAGON_GATE_VISIBLE_HISTORY_LINES"
     )
     settled_message = embed_text_length(embed=final_embed) + embed_text_length(embed=embed)

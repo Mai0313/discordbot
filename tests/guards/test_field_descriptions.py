@@ -66,7 +66,10 @@ def _is_model(name: str, by_name: dict[str, ast.ClassDef], seen: set[str]) -> bo
     if name in seen or name not in by_name:
         return False
     seen.add(name)
-    return any(_is_model(base, by_name, seen) for base in _base_names(by_name[name]))
+    return any(
+        _is_model(name=base, by_name=by_name, seen=seen)
+        for base in _base_names(node=by_name[name])
+    )
 
 
 def _described_fields(node: ast.ClassDef) -> set[str]:
@@ -120,7 +123,9 @@ def test_no_field_is_described_twice() -> None:
     scanned: list[str] = []
     offenders: list[str] = []
     for path, node in classes:
-        if not any(_is_model(base, by_name, set()) for base in _base_names(node)):
+        if not any(
+            _is_model(name=base, by_name=by_name, seen=set()) for base in _base_names(node=node)
+        ):
             continue
         scanned.append(f"{path.name}::{node.name}")
         duplicated = _documented_attributes(node) & _described_fields(node)

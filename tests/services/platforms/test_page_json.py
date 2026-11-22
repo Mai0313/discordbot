@@ -50,7 +50,14 @@ def test_fetch_page_reports_where_the_request_landed(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.parametrize(
     argnames=("served", "expected"),
-    argvalues=[("8,855", 8855), ({"count": 8855}, 8855), (8855, 8855), (True, 0), (None, 0)],
+    argvalues=[
+        ("8,855", 8855),
+        ({"count": 8855}, 8855),
+        (8855, 8855),
+        (True, 0),
+        (None, 0),
+        ("²", 0),
+    ],
 )
 def test_a_count_reads_the_same_in_any_shape_the_page_serves(
     served: JsonValue, expected: int

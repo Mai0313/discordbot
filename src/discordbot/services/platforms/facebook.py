@@ -127,7 +127,7 @@ class FacebookURL(BaseModel):
         query = parse_qs(qs=parsed.query)
         for name in _POST_ID_PARAMS:
             values = query.get(name)
-            if values and values[0].isdigit():
+            if values and values[0].isdecimal():
                 return values[0]
         return ""
 
@@ -147,7 +147,7 @@ class FacebookURL(BaseModel):
     def comment_id(self) -> str:
         """Returns the comment id the URL singles out, or an empty string when it names no comment."""
         values = parse_qs(qs=self._parsed.query).get(_COMMENT_ID_PARAM)
-        return values[0] if values and values[0].isdigit() else ""
+        return values[0] if values and values[0].isdecimal() else ""
 
     @computed_field
     @cached_property
@@ -197,7 +197,7 @@ def _text_of(value: JsonValue) -> str:
 def _comment_ids_of(node: dict[str, Any]) -> tuple[str, str]:
     """Returns `(post_id, comment_id)` from `legacy_fbid` and base64 node id, or empty strings."""
     legacy = node.get("legacy_fbid")
-    comment_id = str(legacy) if isinstance(legacy, (int, str)) and str(legacy).isdigit() else ""
+    comment_id = str(legacy) if isinstance(legacy, (int, str)) and str(legacy).isdecimal() else ""
     node_id = node.get("id")
     if not isinstance(node_id, str):
         return "", comment_id

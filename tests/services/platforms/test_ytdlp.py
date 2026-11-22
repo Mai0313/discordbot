@@ -784,6 +784,30 @@ def test_max_bytes_falls_back_to_bitrate_when_head_fails_or_omits_length(
     assert captured_calls == [{"url": "https://example.com/v", "download": False}]
 
 
+def test_head_content_length_ignores_non_decimal_unicode_digits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unicode superscripts pass `.isdigit()` but not `int()`, so HEAD falls back to bitrate."""
+    info = {
+        "id": "vid",
+        "ext": "mp4",
+        "url": "https://cdn.test/v.mp4",
+        "protocol": "https",
+        "duration": 20.0,
+        "tbr": 1000.0,
+    }
+    _install_share_session(monkeypatch=monkeypatch, head_lengths={"https://cdn.test/v.mp4": "²"})
+    _, captured_calls = _install_youtube_dl_stub(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info=info
+    )
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    with pytest.raises(DownloadTooLargeError):
+        downloader.download(url="https://example.com/v", max_bytes=100_000)
+
+    assert captured_calls == [{"url": "https://example.com/v", "download": False}]
+
+
 def test_max_bytes_rejects_playlist_when_combined_entries_exceed_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

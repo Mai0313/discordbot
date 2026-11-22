@@ -123,6 +123,11 @@ def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() ->
     refusal = APIError(message="blocked", request=request, body={**frame, "code": "400"})
     assert is_retryable_llm_error(exc=refusal) is False
 
+    # Unicode superscripts pass `.isdigit()` but not `int()`, so they read as no status.
+    superscript = APIError(message="odd", request=request, body={**frame, "code": "²"})
+    assert llm_status_code(exc=superscript) is None
+    assert is_retryable_llm_error(exc=superscript) is False
+
     # A status the SDK typed wins over the body, and an unreadable failure is not retried:
     # a status that cannot be read is as likely to be a refusal as an outage.
     response = httpx2.Response(status_code=400, request=request, json={})

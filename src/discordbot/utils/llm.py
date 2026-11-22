@@ -1,8 +1,8 @@
 """Shared best-effort Responses API helpers for one-shot LLM calls.
 
-Each helper degrades timeouts and errors to None; callers map None to their own fallback and
-construct their own `AsyncOpenAI` clients. Leave `timeout_seconds=None` unless the caller owns a
-tighter deadline than the client's own timeout (`typings/timeouts.py`).
+Each helper degrades errors to None; callers map None to their own fallback and construct their
+own `AsyncOpenAI` clients. On `create_text_or_none`, leave `timeout_seconds=None` unless the
+caller owns a tighter deadline than the client's own timeout (`typings/timeouts.py`).
 """
 
 import asyncio
@@ -39,12 +39,11 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     user_text: str,
     end_user_id: str,
     text_format: type[StructuredT],
-    timeout_seconds: float | None = None,
 ) -> StructuredT | None:
     """Returns the parsed `StructuredT` from `responses.parse`, or None on failure.
 
-    A timeout, an empty output or off-schema payload (`ValidationError`), a refusal
-    (`output_parsed` is None), an incomplete response, or any other error all degrade to None.
+    An empty output or off-schema payload (`ValidationError`), a refusal (`output_parsed` is None),
+    an incomplete response, or any other error all degrade to None.
 
     Args:
         client (AsyncOpenAI): OpenAI client pointed at the LiteLLM proxy.
@@ -53,28 +52,17 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
         user_text (str): User message content.
         end_user_id (str): End-user identifier sent in `x-litellm-end-user-id`.
         text_format (type[StructuredT]): Pydantic model class to parse the output into.
-        timeout_seconds (float | None): Optional caller-side wall-clock deadline in seconds.
     """
     try:
-        async with asyncio.timeout(delay=timeout_seconds):
-            responses = await client.responses.parse(
-                model=model.name,
-                instructions=instructions,
-                input=[EasyInputMessageParam(role="user", content=user_text)],
-                text_format=text_format,
-                reasoning=model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": end_user_id},
-            )
-    except TimeoutError as exc:
-        logfire.warn(
-            "Structured LLM request timed out; skipping",
-            end_user_id=end_user_id,
+        responses = await client.responses.parse(
             model=model.name,
-            timeout_seconds=timeout_seconds,
-            _exc_info=exc,
+            instructions=instructions,
+            input=[EasyInputMessageParam(role="user", content=user_text)],
+            text_format=text_format,
+            reasoning=model.reasoning,
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": end_user_id},
         )
-        return None
     except ValidationError as exc:
         logfire.warn(
             "Structured LLM parse returned no text or an off-schema payload; skipping",
@@ -83,8 +71,8 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
             _exc_info=exc,
         )
         return None
-    # Broad on purpose: the LiteLLM proxy surfaces openai.APIError, httpx transport errors and
-    # proxy-side 5xx bodies as unrelated types, and every failure here degrades to None.
+    # Broad on purpose: best-effort structured call where every `APIError` subclass (status,
+    # transport, timeout) and any unexpected runtime error degrades to None.
     except Exception as exc:
         logfire.warn(
             "Structured LLM request failed; skipping",
@@ -142,7 +130,8 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
             _exc_info=exc,
         )
         return None
-    # Broad on purpose: proxy, transport and SDK errors share no base class.
+    # Broad on purpose: best-effort text call where every `APIError` subclass (status, transport,
+    # timeout) and any unexpected runtime error degrades to None.
     except Exception as exc:
         logfire.warn(
             "Text LLM request failed; using fallback",

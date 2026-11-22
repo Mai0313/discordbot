@@ -93,7 +93,7 @@ def llm_status_code(exc: BaseException) -> int | None:
         body_code = body.get("code")
         if isinstance(body_code, int):
             return body_code
-        if isinstance(body_code, str) and body_code.isdigit():
+        if isinstance(body_code, str) and body_code.isdecimal():
             return int(body_code)
     return None
 

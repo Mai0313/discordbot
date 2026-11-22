@@ -18,7 +18,9 @@ from typing import Final
 # Reply pipeline (`gen_reply`)
 # --------------------------------------------------------------------------------------
 
-# Max streaming answer attempts per reply; multiplies the `openai` client's own timeout.
+# Max streaming answer attempts per reply across both backends: multiplies `openai`'s 600s
+# default timeout on the proxy Responses path, and bounds direct `google-genai` Interactions
+# YouTube turns (which have no default client timeout, bounded on `/ask` by the delivery budget).
 ANSWER_STREAM_MAX_ATTEMPTS: Final[int] = 3
 
 # Overall grace for intent-selected linked-post context (read + media fetch/upload);

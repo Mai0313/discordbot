@@ -64,3 +64,35 @@ async def test_a_module_with_classes_also_lists_its_public_functions(
     assert await anyio.Path("out/pkg/functions.md").read_text(encoding="utf-8") == (
         "::: src.pkg.functions\n"
     )
+
+
+async def test_package_initializers_with_public_definitions_are_documented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-empty `__init__.py` modules with public classes or functions render under their package."""
+    empty_pkg = tmp_path / "src" / "empty_pkg"
+    empty_pkg.mkdir(parents=True)
+    (empty_pkg / "__init__.py").write_text(data='"""Docstring only."""\n', encoding="utf-8")
+
+    func_pkg = tmp_path / "src" / "func_pkg"
+    func_pkg.mkdir(parents=True)
+    (func_pkg / "__init__.py").write_text(
+        data="def setup_logging():\n    pass\n", encoding="utf-8"
+    )
+
+    mixed_pkg = tmp_path / "src" / "mixed_pkg"
+    mixed_pkg.mkdir(parents=True)
+    (mixed_pkg / "__init__.py").write_text(
+        data="class Source:\n    pass\n\n\ndef defuse():\n    pass\n", encoding="utf-8"
+    )
+
+    monkeypatch.chdir(path=tmp_path)
+    await DocsGenerator(source=Path("src"), output=Path("out")).gen_docs()
+
+    assert not await anyio.Path("out/empty_pkg/__init__.md").exists()
+    assert await anyio.Path("out/func_pkg/__init__.md").read_text(encoding="utf-8") == (
+        "::: src.func_pkg\n"
+    )
+    assert await anyio.Path("out/mixed_pkg/__init__.md").read_text(encoding="utf-8") == (
+        "::: src.mixed_pkg.Source\n::: src.mixed_pkg.defuse\n"
+    )

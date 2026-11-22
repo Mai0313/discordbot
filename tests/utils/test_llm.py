@@ -1,11 +1,12 @@
 """Tests for the shared best-effort Responses helpers in utils/llm."""
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
+from pydantic import Field, BaseModel
 from openai.types.responses import Response
 
-from discordbot.utils.llm import create_text_or_none, output_text_or_empty
+from discordbot.utils.llm import create_text_or_none, output_text_or_empty, parse_responses_or_none
 from discordbot.typings.models import ModelSettings
 
 if TYPE_CHECKING:
@@ -74,3 +75,58 @@ async def test_create_text_or_none_returns_the_trimmed_reply_text() -> None:
     )
 
     assert text == "a title"
+
+
+class _ParsedSample(BaseModel):
+    """Minimal structured payload for testing `parse_responses_or_none`."""
+
+    value: int = Field(..., description="Parsed integer sample.")
+
+
+async def test_parse_responses_or_none_returns_parsed_payload() -> None:
+    """A completed structured response hands back its parsed Pydantic model."""
+
+    async def parse(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status="completed", output_parsed=_ParsedSample(value=7))
+
+    client = cast("AsyncOpenAI", SimpleNamespace(responses=SimpleNamespace(parse=parse)))
+    result = await parse_responses_or_none(
+        client=client,
+        model=ModelSettings(name="gemini-test"),
+        instructions="Parse.",
+        user_text="7",
+        end_user_id="test",
+        text_format=_ParsedSample,
+    )
+
+    assert result == _ParsedSample(value=7)
+
+
+async def test_parse_responses_or_none_degrades_errors_and_incomplete_responses() -> None:
+    """Validation errors, unexpected failures, and incomplete responses all return None."""
+
+    async def bad_schema(**_kwargs: object) -> NoReturn:
+        _ParsedSample.model_validate(obj={"value": "not-an-int"})
+        raise AssertionError("unreachable")
+
+    async def boom(**_kwargs: object) -> NoReturn:
+        raise RuntimeError("proxy unavailable")
+
+    async def incomplete(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            status="incomplete",
+            incomplete_details="max_output_tokens",
+            output_parsed=_ParsedSample(value=1),
+        )
+
+    for fake_parse in (bad_schema, boom, incomplete):
+        client = cast("AsyncOpenAI", SimpleNamespace(responses=SimpleNamespace(parse=fake_parse)))
+        result = await parse_responses_or_none(
+            client=client,
+            model=ModelSettings(name="gemini-test"),
+            instructions="Parse.",
+            user_text="x",
+            end_user_id="test",
+            text_format=_ParsedSample,
+        )
+        assert result is None
