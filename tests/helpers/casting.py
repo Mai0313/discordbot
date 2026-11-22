@@ -99,23 +99,25 @@ def as_interaction_event_stream(fake: object) -> "AsyncIterator[InteractionSSEEv
     return cast("AsyncIterator[InteractionSSEEvent]", fake)
 
 
-def make_not_found(message: str = "missing") -> NotFound:
+def make_not_found(message: str = "missing", code: int | None = None) -> NotFound:
     """Builds the ``NotFound`` nextcord raises for a deleted Discord entity.
 
     The constructor only reads ``status``/``reason`` off the response, so a
     minimal stub stands in for the aiohttp response.
     """
     response = cast("ClientResponse", SimpleNamespace(status=404, reason="Not Found"))
-    return NotFound(response=response, message=message)
+    payload: str | dict[str, Any] = message if code is None else {"code": code, "message": message}
+    return NotFound(response=response, message=payload)
 
 
-def make_forbidden(message: str = "denied") -> Forbidden:
+def make_forbidden(message: str = "denied", code: int | None = None) -> Forbidden:
     """Builds the ``Forbidden`` nextcord raises when the bot lacks a channel permission.
 
     Same shape as `make_not_found`: only ``status`` / ``reason`` are read off the response.
     """
     response = cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden"))
-    return Forbidden(response=response, message=message)
+    payload: str | dict[str, Any] = message if code is None else {"code": code, "message": message}
+    return Forbidden(response=response, message=payload)
 
 
 def make_invalid_form_body() -> HTTPException:
@@ -142,14 +144,15 @@ def make_invalid_webhook_token() -> HTTPException:
     )
 
 
-def make_server_error(message: str = "upstream") -> HTTPException:
+def make_server_error(message: str = "upstream", code: int | None = None) -> HTTPException:
     """Builds the plain ``HTTPException`` nextcord raises when Discord itself is failing.
 
     Same shape again. Exists so a test can tell a refusal the bot can never argue with apart
     from a transport failure that is worth a traceback.
     """
     response = cast("ClientResponse", SimpleNamespace(status=503, reason="Service Unavailable"))
-    return HTTPException(response=response, message=message)
+    payload: str | dict[str, Any] = message if code is None else {"code": code, "message": message}
+    return HTTPException(response=response, message=payload)
 
 
 def make_media_hosting_config(
