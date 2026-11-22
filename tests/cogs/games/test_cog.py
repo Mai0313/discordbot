@@ -314,3 +314,39 @@ async def test_prepare_participant_insufficient_balance_applies_embed_spacer() -
     assert sent["ephemeral"] is True
     assert sent["embed"].image.url == embed_spacer_url()
     assert sent["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+
+
+async def test_refresh_participants_batches_balance_lookups_into_one_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lobby start re-checks every participant's balance with one `get_balances` call."""
+    await seed_balance(user_id=1, name="alice", amount=500)
+    await seed_balance(user_id=2, name="bob", amount=50)
+    await seed_balance(user_id=3, name="carol", amount=300)
+    cog = _cog()
+    batch_calls: list[list[int]] = []
+    single_calls: list[int] = []
+    real_get_balances = GamesCogs._refresh_participants.__globals__["get_balances"]
+
+    async def spy_get_balances(user_ids: Any) -> dict[int, int]:  # noqa: ANN401 -- test spy
+        batch_calls.append(list(user_ids))
+        return await real_get_balances(user_ids=user_ids)
+
+    async def spy_get_balance(user_id: int) -> int:
+        single_calls.append(user_id)
+        return 0
+
+    monkeypatch.setattr("discordbot.cogs.games.cog.get_balances", spy_get_balances)
+    monkeypatch.setattr("discordbot.cogs.games.cog.get_balance", spy_get_balance)
+
+    participants = [
+        seat(user_id=1, display_name="Alice", bet=100, balance_at_start=500),
+        seat(user_id=2, display_name="Bob", bet=100, balance_at_start=100),
+        seat(user_id=3, display_name="Carol", bet=100, balance_at_start=300),
+    ]
+    result = await cog._refresh_participants(participants=participants, mode="exact")
+
+    assert batch_calls == [[1, 2, 3]]
+    assert single_calls == []
+    assert [participant.user_id for participant in result.participants] == [1, 3]
+    assert result.dropped_names == ["Bob"]
