@@ -11,8 +11,11 @@ from sqlalchemy import Text, Table, Column, Integer, MetaData, text
 from nextcord.ext import commands
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from discordbot.utils.logged_ui import LoggedView
+from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.asyncio_locks import LoopLocalRegistry, spawn_tracked
 from discordbot.utils.sqlite_config import SqliteBootstrap, sqlite_url
+from discordbot.utils.discord_errors import report_discord_failure
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
 _delete_tasks: LoopLocalRegistry[str, set[asyncio.Task[None]]] = LoopLocalRegistry()
@@ -282,6 +285,101 @@ async def edit_public_message(
         else:
             return
     await message.edit(**payload)
+
+
+async def edit_or_report(  # noqa: PLR0913 -- wraps edit_public_message with timeout and per-outcome failure logs
+    message: Message,
+    interaction: Interaction[commands.Bot] | None,
+    payload: dict[str, Any],
+    not_found_message: str,
+    forbidden_message: str,
+    other_message: str,
+    timeout_seconds: float = GAME_FINAL_EDIT_TIMEOUT_SECONDS,
+    **failure_fields: object,
+) -> bool:
+    """Edits `message` via `edit_public_message` under `timeout_seconds`, returning success.
+
+    Never raises: `NotFound`, `Forbidden`, timeout, and other errors are logged through
+    `report_discord_failure` with `failure_fields` so callers can still schedule cleanup.
+
+    Args:
+        message (Message): Public message to edit.
+        interaction (Interaction[commands.Bot] | None): Press acknowledged on `message`, or None
+            to edit directly via the channel.
+        payload (dict[str, Any]): Keyword arguments forwarded to `edit_public_message`.
+        not_found_message (str): Log message when `NotFound` is raised.
+        forbidden_message (str): Log message when `Forbidden` is raised.
+        other_message (str): Log message for timeouts and all other failures.
+        timeout_seconds (float): Wall-clock bound in seconds on the edit call.
+        **failure_fields (object): Structured logfire fields attached to failure records.
+    """
+    try:
+        await asyncio.wait_for(
+            edit_public_message(message=message, interaction=interaction, payload=payload),
+            timeout=timeout_seconds,
+        )
+    # Broad on purpose: callers have already settled or stopped the view, so a failed edit must
+    # log and return False instead of skipping settlement or cleanup scheduling.
+    except Exception as exc:
+        report_discord_failure(
+            error=exc,
+            not_found_message=not_found_message,
+            forbidden_message=forbidden_message,
+            other_message=other_message,
+            not_found_level="info",
+            not_found_exc_info=False,
+            other_level="warn",
+            **failure_fields,
+        )
+        return False
+    return True
+
+
+class PressBoundView(LoggedView):
+    """A view bound to a public message whose timeouts and cleanup ride its newest press.
+
+    `nextcord` restarts a view's timeout on every press (refused ones included), so keeping the
+    newest acknowledged press lets timeout edits and delayed deletion succeed even after the
+    opening command's token expires or channel permissions change.
+    """
+
+    message: Message | None = None
+    last_press: Interaction[commands.Bot] | None = None
+
+    def keep_press(self, interaction: Interaction[commands.Bot]) -> None:
+        """Records `interaction` as the press driving timeout edits and delayed deletion.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Most recent acknowledged press on the view.
+        """
+        self.message = interaction.message or self.message
+        self.last_press = interaction
+
+    def schedule_delete(
+        self,
+        user_name: str | None = None,
+        message: Message | None = None,
+        interaction: Interaction[commands.Bot] | None = None,
+    ) -> None:
+        """Schedules delayed deletion of the view's public message through its tracked press.
+
+        Args:
+            user_name (str | None): Account name recorded for cleanup logs; falls back to
+                `interaction.user.name` when `interaction` is provided.
+            message (Message | None): Explicit message override; falls back to `self.message`,
+                then `interaction.message`.
+            interaction (Interaction[commands.Bot] | None): Press override whose token and user
+                identity drive cleanup; falls back to `self.last_press` for the token.
+        """
+        press = interaction if interaction is not None else self.last_press
+        target_message = message or self.message or getattr(interaction, "message", None)
+        if target_message is None:
+            return
+        if user_name is None and interaction is not None and interaction.user is not None:
+            user_name = interaction.user.name
+        schedule_public_message_delete(
+            message=target_message, user_name=user_name, interaction=press
+        )
 
 
 async def _deleted_through_press(

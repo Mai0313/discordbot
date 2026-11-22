@@ -1,10 +1,9 @@
 """Button views for deciding public loan requests."""
 
-from typing import ClassVar
+from typing import ClassVar, cast
 
-import logfire
 import nextcord
-from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interaction
+from nextcord import Embed, ButtonStyle, Interaction
 from nextcord.ui import Button
 from nextcord.ext import commands
 
@@ -14,7 +13,6 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
     LoanProposalExpiredError,
 )
-from discordbot.utils.logged_ui import LoggedView
 from discordbot.cogs.economy.embeds import (
     REPAY_COLOR,
     CENTRAL_BANK_COLOR,
@@ -24,7 +22,7 @@ from discordbot.cogs.economy.embeds import (
     build_central_bank_approved_embed,
 )
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
+from discordbot.utils.message_cleanup import PressBoundView, edit_or_report
 from discordbot.services.economy.database import (
     accept_loan_proposal,
     cancel_loan_proposal,
@@ -50,13 +48,15 @@ def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
     return interaction.permissions.administrator
 
 
-class LoanDecisionViewBase(LoggedView):
-    """Shared terminal behavior for public loan-decision views.
+class LoanDecisionViewBase(PressBoundView):
+    """Shared buttons and terminal behavior for public loan-decision views.
 
-    Subclasses define panel wording/color, `_approved_embed`, and `_may_decide`. Write buttons
-    defer before DB calls, then edit the panel or send a private followup.
+    Subclasses define `CUSTOM_ID_PREFIX`, panel wording/color, `_approved_embed`, and
+    `_may_decide`. Write buttons defer before DB calls, then edit the panel or send a private
+    followup.
     """
 
+    CUSTOM_ID_PREFIX: ClassVar[str]
     PANEL_COLOR: ClassVar[int]
     TIMEOUT_TITLE: ClassVar[str]
     CANCEL_TITLE: ClassVar[str]
@@ -69,7 +69,7 @@ class LoanDecisionViewBase(LoggedView):
     APPROVER_IS_GUILD_ADMIN: ClassVar[bool]
 
     def __init__(self, proposal_id: int, creator_id: int) -> None:
-        """Initializes a decision view for one proposal.
+        """Initializes a decision view for one proposal and namespaces its button custom IDs.
 
         Args:
             proposal_id (int): Database ID of the pending loan proposal.
@@ -78,16 +78,14 @@ class LoanDecisionViewBase(LoggedView):
         super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
         self.proposal_id = proposal_id
         self.creator_id = creator_id
-        self.message: Message | None = None
-        # Last acknowledged press on the panel; timeout edits and deletes use its token.
-        self.last_press: Interaction[commands.Bot] | None = None
-
-    def _keep_press(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records `interaction` as the press driving timeout edits and deletion."""
-        # nextcord resets the view timeout on every press (refused ones included), so only the
-        # newest press token is guaranteed to outlive the timeout and scheduled deletion.
-        self.message = interaction.message or self.message
-        self.last_press = interaction
+        for action, button in (
+            ("approve", self.approve),
+            ("reject", self.reject),
+            ("cancel", self.cancel),
+        ):
+            cast(
+                'Button["LoanDecisionViewBase"]', button
+            ).custom_id = f"{self.CUSTOM_ID_PREFIX}:{action}"
 
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user may approve or reject this request.
@@ -102,24 +100,21 @@ class LoanDecisionViewBase(LoggedView):
         """Builds the panel an approved request is edited into."""
         raise NotImplementedError
 
+    def _approve_guild_id(self, interaction: Interaction[commands.Bot]) -> int | None:
+        """Returns the guild ID passed to `accept_loan_proposal`, if guild-scoped."""
+        del interaction
+        return None
+
+    def _allow_self_approval(self) -> bool:
+        """Returns whether the borrower may approve their own request."""
+        return False
+
     def _timeout_embed(self) -> Embed:
         """Builds the panel an expired request is edited into."""
         return build_simple_embed(
             title=self.TIMEOUT_TITLE,
             description="### 申請已逾時，自動拒絕",
             color=self.PANEL_COLOR,
-        )
-
-    def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
-        """Schedules the public request message for cleanup after a terminal state."""
-        message = self.message or getattr(interaction, "message", None)
-        if message is None:
-            return
-        user_name = None
-        if interaction is not None and interaction.user is not None:
-            user_name = interaction.user.name
-        schedule_public_message_delete(
-            message=message, user_name=user_name, interaction=self.last_press
         )
 
     async def on_timeout(self) -> None:
@@ -129,43 +124,22 @@ class LoanDecisionViewBase(LoggedView):
             return
         self.stop()
         embed = self._timeout_embed()
-        try:
-            await edit_public_message(
-                message=self.message,
-                interaction=self.last_press,
-                payload={
-                    "embed": embed,
-                    "view": None,
-                    **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
-                },
-            )
-        except NotFound:
-            logfire.info(
-                "Loan request message gone before its timeout edit",
-                proposal_id=self.proposal_id,
-                channel_id=self.message.channel.id,
-                message_id=self.message.id,
-            )
-        except Forbidden:
-            # Only an edit without a live press token hits channel REST, which can return 403.
-            logfire.warn(
-                "Discord refused the loan request's timeout edit",
-                proposal_id=self.proposal_id,
-                channel_id=self.message.channel.id,
-                message_id=self.message.id,
-            )
-        # Broad on purpose: the proposal is already rejected and the cleanup below must still
-        # be scheduled.
-        except Exception as exc:
-            logfire.warn(
-                "Loan request timeout edit failed",
-                proposal_id=self.proposal_id,
-                channel_id=self.message.channel.id,
-                message_id=self.message.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-        self._schedule_cleanup()
+        await edit_or_report(
+            message=self.message,
+            interaction=self.last_press,
+            payload={
+                "embed": embed,
+                "view": None,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+            },
+            not_found_message="Loan request message gone before its timeout edit",
+            forbidden_message="Discord refused the loan request's timeout edit",
+            other_message="Loan request timeout edit failed",
+            proposal_id=self.proposal_id,
+            channel_id=self.message.channel.id,
+            message_id=self.message.id,
+        )
+        self.schedule_delete()
 
     async def _notify_unexpected_error(
         self, interaction: Interaction[commands.Bot], content: str
@@ -177,12 +151,82 @@ class LoanDecisionViewBase(LoggedView):
             log_message="Failed to send loan decision error notice",
         )
 
+    async def _finish_panel(
+        self, interaction: Interaction[commands.Bot], embed: Embed, error_notice: str
+    ) -> None:
+        """Stops the view, replaces the panel with `embed`, and always schedules cleanup."""
+        self.stop()
+        try:
+            await edit_response_embed(interaction=interaction, embed=embed)
+        except Exception:
+            # Broad on purpose: the panel outcome is settled; tell the clicker before LoggedView logs.
+            await self._notify_unexpected_error(interaction=interaction, content=error_notice)
+            raise
+        finally:
+            self.schedule_delete(interaction=interaction)
+
+    async def _handle_proposal_write_error(
+        self, interaction: Interaction[commands.Bot], error: Exception, error_notice: str
+    ) -> bool:
+        """Closes the panel on `LoanProposalExpiredError` (returning True), else notifies."""
+        if isinstance(error, LoanProposalExpiredError):
+            await self._finish_panel(
+                interaction=interaction,
+                embed=self._timeout_embed(),
+                error_notice="申請已逾時，但更新面板失敗",
+            )
+            return True
+        await self._notify_unexpected_error(interaction=interaction, content=error_notice)
+        return False
+
+    @nextcord.ui.button(
+        label="批准", emoji="✅", style=ButtonStyle.success, custom_id="loan:approve", row=0
+    )
+    async def approve(
+        self, _button: Button["LoanDecisionViewBase"], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Approves the request when clicked by an authorized user.
+
+        Args:
+            _button (Button["LoanDecisionViewBase"]): Clicked approve button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
+        await self._handle_approve(interaction=interaction)
+
+    @nextcord.ui.button(
+        label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="loan:reject", row=0
+    )
+    async def reject(
+        self, _button: Button["LoanDecisionViewBase"], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Rejects the request when clicked by an authorized user.
+
+        Args:
+            _button (Button["LoanDecisionViewBase"]): Clicked reject button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
+        await self._handle_reject(interaction=interaction)
+
+    @nextcord.ui.button(
+        label="取消", emoji="🚫", style=ButtonStyle.secondary, custom_id="loan:cancel", row=0
+    )
+    async def cancel(
+        self, _button: Button["LoanDecisionViewBase"], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Cancels the request when clicked by its creator.
+
+        Args:
+            _button (Button["LoanDecisionViewBase"]): Clicked cancel button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
+        await self._handle_cancel(interaction=interaction)
+
     async def _handle_cancel(self, interaction: Interaction[commands.Bot]) -> None:
         """Cancels the request for its creator, and answers anyone else privately."""
         if interaction.user is None:
             return
         await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         if interaction.user.id != self.creator_id:
             embed = build_error_embed(title="權限不足", description=self.CANCEL_DENIED_NOTICE)
             await send_private_followup(interaction=interaction, embed=embed)
@@ -192,24 +236,12 @@ class LoanDecisionViewBase(LoggedView):
             proposal = await cancel_loan_proposal(
                 proposal_id=self.proposal_id, actor_id=interaction.user.id
             )
-        except LoanProposalExpiredError:
-            self.stop()
-            try:
-                await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
-            except Exception:
-                # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
-                await self._notify_unexpected_error(
-                    interaction=interaction, content="申請已逾時，但更新面板失敗"
-                )
-                raise
-            finally:
-                self._schedule_cleanup(interaction=interaction)
-            return
-        except Exception:
-            # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
-            await self._notify_unexpected_error(
-                interaction=interaction, content="取消失敗，請稍後再試"
-            )
+        # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+        except Exception as exc:
+            if await self._handle_proposal_write_error(
+                interaction=interaction, error=exc, error_notice="取消失敗，請稍後再試"
+            ):
+                return
             raise
         if proposal is None:
             embed = build_error_embed(
@@ -223,29 +255,16 @@ class LoanDecisionViewBase(LoggedView):
             description=f"{self.CLOSED_HEADING}\n發起者 {interaction.user.mention}",
             color=self.PANEL_COLOR,
         )
-        self.stop()
-        try:
-            await edit_response_embed(interaction=interaction, embed=embed)
-        except Exception:
-            # Broad on purpose: the cancel already committed; tell the clicker before LoggedView logs.
-            await self._notify_unexpected_error(
-                interaction=interaction, content="申請已取消，但更新面板失敗"
-            )
-            raise
-        finally:
-            self._schedule_cleanup(interaction=interaction)
+        await self._finish_panel(
+            interaction=interaction, embed=embed, error_notice="申請已取消，但更新面板失敗"
+        )
 
-    async def _handle_approve(
-        self,
-        interaction: Interaction[commands.Bot],
-        guild_id: int | None = None,
-        allow_central_bank_self_approval: bool = False,
-    ) -> None:
+    async def _handle_approve(self, interaction: Interaction[commands.Bot]) -> None:
         """Approves the request if `_may_decide` passes, otherwise answers privately."""
         if interaction.user is None:
             return
         await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         if not await self._may_decide(interaction=interaction):
             return
 
@@ -259,27 +278,15 @@ class LoanDecisionViewBase(LoggedView):
                 actor_name=interaction.user.name,
                 actor_avatar_url=actor_avatar_url,
                 approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
-                guild_id=guild_id,
-                allow_central_bank_self_approval=allow_central_bank_self_approval,
+                guild_id=self._approve_guild_id(interaction=interaction),
+                allow_central_bank_self_approval=self._allow_self_approval(),
             )
-        except LoanProposalExpiredError:
-            self.stop()
-            try:
-                await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
-            except Exception:
-                # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
-                await self._notify_unexpected_error(
-                    interaction=interaction, content="申請已逾時，但更新面板失敗"
-                )
-                raise
-            finally:
-                self._schedule_cleanup(interaction=interaction)
-            return
-        except Exception:
-            # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
-            await self._notify_unexpected_error(
-                interaction=interaction, content="批准失敗，請稍後再試"
-            )
+        # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+        except Exception as exc:
+            if await self._handle_proposal_write_error(
+                interaction=interaction, error=exc, error_notice="批准失敗，請稍後再試"
+            ):
+                return
             raise
         if result is None:
             embed = build_error_embed(title="批准失敗", description=self.APPROVE_FAILED_NOTICE)
@@ -291,24 +298,16 @@ class LoanDecisionViewBase(LoggedView):
             approver_mention=interaction.user.mention,
             approver_avatar_url=actor_avatar_url,
         )
-        self.stop()
-        try:
-            await edit_response_embed(interaction=interaction, embed=embed)
-        except Exception:
-            # Broad on purpose: the approval already committed; tell the clicker before LoggedView logs.
-            await self._notify_unexpected_error(
-                interaction=interaction, content="申請已批准，但更新面板失敗"
-            )
-            raise
-        finally:
-            self._schedule_cleanup(interaction=interaction)
+        await self._finish_panel(
+            interaction=interaction, embed=embed, error_notice="申請已批准，但更新面板失敗"
+        )
 
     async def _handle_reject(self, interaction: Interaction[commands.Bot]) -> None:
         """Rejects the request for whoever may decide it, and answers anyone else privately."""
         if interaction.user is None:
             return
         await interaction.response.defer()
-        self._keep_press(interaction=interaction)
+        self.keep_press(interaction=interaction)
         if not await self._may_decide(interaction=interaction):
             return
 
@@ -318,24 +317,12 @@ class LoanDecisionViewBase(LoggedView):
                 actor_id=interaction.user.id,
                 approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
             )
-        except LoanProposalExpiredError:
-            self.stop()
-            try:
-                await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
-            except Exception:
-                # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
-                await self._notify_unexpected_error(
-                    interaction=interaction, content="申請已逾時，但更新面板失敗"
-                )
-                raise
-            finally:
-                self._schedule_cleanup(interaction=interaction)
-            return
-        except Exception:
-            # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
-            await self._notify_unexpected_error(
-                interaction=interaction, content="拒絕失敗，請稍後再試"
-            )
+        # Broad on purpose: the deferred click needs a reply before LoggedView logs it.
+        except Exception as exc:
+            if await self._handle_proposal_write_error(
+                interaction=interaction, error=exc, error_notice="拒絕失敗，請稍後再試"
+            ):
+                return
             raise
         if proposal is None:
             embed = build_error_embed(title="拒絕失敗", description=self.REJECT_FAILED_NOTICE)
@@ -347,22 +334,15 @@ class LoanDecisionViewBase(LoggedView):
             description=f"{self.CLOSED_HEADING}\n處理人 {interaction.user.mention}",
             color=self.PANEL_COLOR,
         )
-        self.stop()
-        try:
-            await edit_response_embed(interaction=interaction, embed=embed)
-        except Exception:
-            # Broad on purpose: the rejection already committed; tell the clicker before LoggedView logs.
-            await self._notify_unexpected_error(
-                interaction=interaction, content="申請已拒絕，但更新面板失敗"
-            )
-            raise
-        finally:
-            self._schedule_cleanup(interaction=interaction)
+        await self._finish_panel(
+            interaction=interaction, embed=embed, error_notice="申請已拒絕，但更新面板失敗"
+        )
 
 
 class CentralBankLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public central-bank loan request."""
 
+    CUSTOM_ID_PREFIX = "central_bank"
     PANEL_COLOR = CENTRAL_BANK_COLOR
     TIMEOUT_TITLE = "🏛️ 央行申請已逾時"
     CANCEL_TITLE = "🏛️ 央行申請已取消"
@@ -388,6 +368,14 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.allow_self_approval = allow_self_approval
 
+    def _approve_guild_id(self, interaction: Interaction[commands.Bot]) -> int | None:
+        """Returns the guild ID whose central-bank pool funds this request."""
+        return interaction.guild_id
+
+    def _allow_self_approval(self) -> bool:
+        """Returns whether the borrower may approve their own central-bank request."""
+        return self.allow_self_approval
+
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user is a server administrator here.
 
@@ -407,70 +395,11 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         """Builds the central-bank approval panel; it shows no approver avatar."""
         return build_central_bank_approved_embed(result=result, approver_mention=approver_mention)
 
-    @nextcord.ui.button(
-        label="批准",
-        emoji="✅",
-        style=ButtonStyle.success,
-        custom_id="central_bank:approve",
-        row=0,
-    )
-    async def approve(
-        self,
-        _button: Button["CentralBankLoanDecisionView"],
-        interaction: Interaction[commands.Bot],
-    ) -> None:
-        """Approves the central-bank request when clicked by a server administrator.
-
-        Args:
-            _button (Button["CentralBankLoanDecisionView"]): Clicked approve button.
-            interaction (Interaction[commands.Bot]): Component interaction from the click.
-        """
-        await self._handle_approve(
-            interaction=interaction,
-            guild_id=interaction.guild_id,
-            allow_central_bank_self_approval=self.allow_self_approval,
-        )
-
-    @nextcord.ui.button(
-        label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="central_bank:reject", row=0
-    )
-    async def reject(
-        self,
-        _button: Button["CentralBankLoanDecisionView"],
-        interaction: Interaction[commands.Bot],
-    ) -> None:
-        """Rejects the central-bank request when clicked by a server administrator.
-
-        Args:
-            _button (Button["CentralBankLoanDecisionView"]): Clicked reject button.
-            interaction (Interaction[commands.Bot]): Component interaction from the click.
-        """
-        await self._handle_reject(interaction=interaction)
-
-    @nextcord.ui.button(
-        label="取消",
-        emoji="🚫",
-        style=ButtonStyle.secondary,
-        custom_id="central_bank:cancel",
-        row=0,
-    )
-    async def cancel(
-        self,
-        _button: Button["CentralBankLoanDecisionView"],
-        interaction: Interaction[commands.Bot],
-    ) -> None:
-        """Cancels the central-bank request when clicked by its creator.
-
-        Args:
-            _button (Button["CentralBankLoanDecisionView"]): Clicked cancel button.
-            interaction (Interaction[commands.Bot]): Component interaction from the click.
-        """
-        await self._handle_cancel(interaction=interaction)
-
 
 class CreditLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public personal credit request."""
 
+    CUSTOM_ID_PREFIX = "credit"
     PANEL_COLOR = REPAY_COLOR
     TIMEOUT_TITLE = "信貸申請已逾時"
     CANCEL_TITLE = "信貸申請已取消"
@@ -514,45 +443,3 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         return build_credit_approved_embed(
             result=result, approver_mention=approver_mention, lender_avatar_url=approver_avatar_url
         )
-
-    @nextcord.ui.button(
-        label="批准", emoji="✅", style=ButtonStyle.success, custom_id="credit:approve", row=0
-    )
-    async def approve(
-        self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Approves the personal credit request when clicked by the lender.
-
-        Args:
-            _button (Button["CreditLoanDecisionView"]): Clicked approve button.
-            interaction (Interaction[commands.Bot]): Component interaction from the click.
-        """
-        await self._handle_approve(interaction=interaction)
-
-    @nextcord.ui.button(
-        label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="credit:reject", row=0
-    )
-    async def reject(
-        self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Rejects the personal credit request when clicked by the lender.
-
-        Args:
-            _button (Button["CreditLoanDecisionView"]): Clicked reject button.
-            interaction (Interaction[commands.Bot]): Component interaction from the click.
-        """
-        await self._handle_reject(interaction=interaction)
-
-    @nextcord.ui.button(
-        label="取消", emoji="🚫", style=ButtonStyle.secondary, custom_id="credit:cancel", row=0
-    )
-    async def cancel(
-        self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Cancels the personal credit request when clicked by its creator.
-
-        Args:
-            _button (Button["CreditLoanDecisionView"]): Clicked cancel button.
-            interaction (Interaction[commands.Bot]): Component interaction from the click.
-        """
-        await self._handle_cancel(interaction=interaction)

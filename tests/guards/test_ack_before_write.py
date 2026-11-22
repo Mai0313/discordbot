@@ -44,11 +44,15 @@ _LEDGER_READS = frozenset({
 })
 
 
-# Writers in these modules with no interaction to acknowledge: a view's expiry timer and gateway
-# listeners (`on_message`, `on_ready`). Exempt by name rather than skipping the file so commands
-# and buttons beside them stay swept.
+# Writers in these modules with no interaction to acknowledge: a view's expiry timer, gateway
+# listeners (`on_message`, `on_ready`), and post-defer panel-closing helpers whose callers
+# (`_handle_{approve,reject,cancel}`) are themselves swept via `_finish_panel` and
+# `_LEDGER_MUTATIONS`. Exempt by name rather than skipping the file so commands and buttons
+# beside them stay swept.
 _ACK_SWEEP_EXEMPT = frozenset({
     ("views.py", "on_timeout"),
+    ("views.py", "_finish_panel"),
+    ("views.py", "_handle_proposal_write_error"),
     ("cog.py", "on_message"),
     ("cog.py", "on_ready"),
 })
@@ -96,8 +100,13 @@ def _edits_the_original_without_deferring(node: ast.AsyncFunctionDef, ack: ast.C
     """
     edits = any(
         isinstance(inner, ast.Call)
-        and isinstance(inner.func, ast.Name)
-        and inner.func.id == "edit_response_embed"
+        and (
+            (isinstance(inner.func, ast.Name) and inner.func.id == "edit_response_embed")
+            or (
+                isinstance(inner.func, ast.Attribute)
+                and inner.func.attr in {"_finish_panel", "_handle_proposal_write_error"}
+            )
+        )
         for inner in ast.walk(node)
     )
     if not edits or (ack is not None and ast.unparse(ack.func).endswith("response.defer")):

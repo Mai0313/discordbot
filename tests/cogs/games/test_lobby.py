@@ -91,7 +91,15 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     assert len(owner_interaction.followup.sent) == 1
     assert owner_interaction.followup.sent[0]["ephemeral"] is True
     assert [(name, fields) for name, _, fields in reports] == [
-        (level, {"channel_id": 200, "message_id": 1, "code": failure.code})
+        (
+            level,
+            {
+                "channel_id": 200,
+                "message_id": 1,
+                "code": failure.code,
+                "error_type": type(failure).__name__,
+            },
+        )
     ]
     assert not lobby.is_finished()
     await lobby.on_timeout()
@@ -120,7 +128,10 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     await lobby.on_timeout()
 
-    assert [(name, "_exc_info" in fields) for name, _, fields in reports] == [(level, traceback)]
+    assert [
+        (name, fields["code"], fields["error_type"], "_exc_info" in fields)
+        for name, _, fields in reports
+    ] == [(level, failure.code, type(failure).__name__, traceback)]
     assert scheduled.messages == [message]
 
 
@@ -152,7 +163,7 @@ async def test_a_lobby_someone_joined_times_out_through_the_join_in_a_shut_out_c
     # The join's own refresh, then the timeout's edit while the token lives.
     assert len(join.edits) == (1 if expired else 2)
     if not expired:
-        joined, closed = (edit["embed"].description for edit in join.edits)
+        joined, closed = (edit["embeds"][0].description for edit in join.edits)
         assert closed, "the timeout's edit says the lobby closed"
         assert closed != joined
     assert scheduled.interactions == [join]
@@ -186,7 +197,7 @@ async def test_a_lobby_kept_open_by_refused_presses_closes_through_the_newest_on
     await lobby.on_timeout()
 
     assert len(press.edits) == 1, "the refused press edited nothing; the timeout's edit did"
-    assert press.edits[0]["embed"].description, "the timeout's edit says the lobby closed"
+    assert press.edits[0]["embeds"][0].description, "the timeout's edit says the lobby closed"
     assert (scheduled.messages, scheduled.interactions) == ([message], [press])
     assert [sent["ephemeral"] for sent in press.followup.sent] == (
         [True] if presser == "owner" else []
@@ -225,7 +236,7 @@ async def test_a_lobby_press_that_fails_after_its_acknowledgement_still_closes_t
     await lobby.on_timeout()
 
     assert len(press.edits) == 1, "the failed press edited nothing; the timeout's edit did"
-    assert press.edits[0]["embed"].description, "the timeout's edit says the lobby closed"
+    assert press.edits[0]["embeds"][0].description, "the timeout's edit says the lobby closed"
     assert (scheduled.messages, scheduled.interactions) == ([message], [press])
 
 
@@ -284,7 +295,7 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
     assert view.participants == [owner, bob]
-    join_embed = message.edits[-1]["embed"]
+    join_embed = message.edits[-1]["embeds"][0]
     assert isinstance(join_embed, Embed)
     assert isinstance(join_embed.description, str)
 
@@ -343,7 +354,7 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     assert view.participants == [owner]
     assert view._started is False
     assert isinstance(message.edits[-1]["view"], DragonGateLobbyView)
-    embed = message.edits[-1]["embed"]
+    embed = message.edits[-1]["embeds"][0]
     assert isinstance(embed, Embed)
     assert "Bob" in str(embed.description), "the lobby says who it dropped"
     await assert_wallet_consistent(user_id=1, expected_balance=owner.balance_at_start)

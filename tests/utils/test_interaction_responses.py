@@ -6,6 +6,7 @@ import pytest
 import nextcord
 
 from discordbot.utils import interaction_responses as interactions
+from discordbot.utils.message_cleanup import PressBoundView
 
 from tests.helpers.casting import as_interaction, make_not_found
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
@@ -80,3 +81,40 @@ async def test_a_refused_ephemeral_notice_is_logged_with_who_it_was_for(
         (message, fields["user_id"], fields["channel_id"], fields["error_type"])
         for message, fields in warns
     ] == [("notice failed", 5, 6, "NotFound")]
+
+
+@pytest.mark.parametrize(
+    argnames=("explicit_user", "expected_user"),
+    argvalues=[(None, "alice"), ("owner", "owner")],
+    ids=["default_interaction_user", "explicit_user_name"],
+)
+async def test_send_tracked_view_followup_binds_message_before_tracking_write(
+    monkeypatch: pytest.MonkeyPatch, explicit_user: str | None, expected_user: str
+) -> None:
+    """`view.message` must already be bound when `track_public_message` awaits its DB write."""
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    interaction = FakeInteraction(user=FakeUser(name="alice"))
+    posted = FakeDiscordMessage()
+    view = PressBoundView()
+    observed: list[tuple[object, str | None]] = []
+
+    async def send_returning_posted(**_kwargs: object) -> FakeDiscordMessage:
+        return posted
+
+    async def spy_track(message: object, user_name: str | None = None) -> None:
+        del message
+        observed.append((view.message, user_name))
+
+    monkeypatch.setattr(target=interaction.followup, name="send", value=send_returning_posted)
+    monkeypatch.setattr(target=interactions, name="track_public_message", value=spy_track)
+
+    await interactions.send_tracked_view_followup(
+        interaction=as_interaction(fake=interaction),
+        embed=nextcord.Embed(title="panel"),
+        view=view,
+        user_name=explicit_user,
+    )
+
+    assert view.message is posted
+    assert observed == [(posted, expected_user)]
+    assert scheduled.messages == []

@@ -1,27 +1,22 @@
 """Shared send/edit helpers for interaction responses.
 
 Each embed helper pairs one response shape (public followup, public followup after a private
-defer, loan-request followup, private followup, ephemeral response, edit) with the
+defer, tracked-view followup, private followup, ephemeral response, edit) with the
 `embed_spacer_payload` call that keeps embed widths aligned; the plain-text ephemeral notice
-needs none. Only the public followups schedule their own deletion up front; the loan-request one
-hands that to the view, which schedules it at a terminal state.
+needs none. Only the public followups schedule their own deletion up front; the tracked-view
+one hands that to the view, which schedules it at a terminal state.
 """
 
-from typing import Protocol, cast
-
 import logfire
-from nextcord import File, Embed, Message, Interaction, HTTPException
-from nextcord.ui import View
+from nextcord import File, Embed, Interaction, HTTPException
 from nextcord.ext import commands
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import track_public_message, schedule_public_message_delete
-
-
-class _MessageOwningView(Protocol):
-    """The subset of a loan-decision view needed to record its sent message."""
-
-    message: Message | None
+from discordbot.utils.message_cleanup import (
+    PressBoundView,
+    track_public_message,
+    schedule_public_message_delete,
+)
 
 
 async def send_expiring_followup(
@@ -69,18 +64,23 @@ async def send_expiring_followup_after_private_defer(
         )
 
 
-async def send_loan_request_followup(
-    interaction: Interaction[commands.Bot], embed: Embed, view: View
+async def send_tracked_view_followup(
+    interaction: Interaction[commands.Bot],
+    embed: Embed,
+    view: PressBoundView,
+    user_name: str | None = None,
 ) -> None:
-    """Sends a loan request message that owns its cleanup after a terminal state.
+    """Sends a public view followup, binds `view.message`, and tracks it for restart cleanup.
 
-    The message is also recorded at once, since its view dies with the process: a restart's
-    sweep is then the only thing left that can take it down.
+    `view.message` is bound before the tracking write so a timeout or press racing the DB write
+    already sees the message. Cleanup after a terminal state stays with `view`.
 
     Args:
         interaction (Interaction[commands.Bot]): Interaction to send the followup on.
-        embed (Embed): Loan request embed.
-        view (View): Loan decision view whose `message` attribute receives the sent message.
+        embed (Embed): Public embed attached to the view.
+        view (PressBoundView): View whose `message` attribute receives the sent message.
+        user_name (str | None): Account name recorded for cleanup logs; defaults to
+            `interaction.user.name` when omitted.
     """
     message = await interaction.followup.send(
         embed=embed,
@@ -88,9 +88,13 @@ async def send_loan_request_followup(
         wait=True,
         **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
     )
-    cast("_MessageOwningView", view).message = message
-    user_name = interaction.user.name if interaction.user is not None else None
-    await track_public_message(message=message, user_name=user_name)
+    view.message = message
+    resolved_user = (
+        user_name
+        if user_name is not None
+        else (interaction.user.name if interaction.user is not None else None)
+    )
+    await track_public_message(message=message, user_name=resolved_user)
 
 
 async def send_private_followup(interaction: Interaction[commands.Bot], embed: Embed) -> None:
