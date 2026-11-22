@@ -302,9 +302,10 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     await view.on_timeout()
 
-    assert [(name, "_exc_info" in fields) for name, _message, fields in reports] == [
-        (level, traceback)
-    ]
+    assert [
+        (name, fields["code"], fields["error_type"], "_exc_info" in fields)
+        for name, _message, fields in reports
+    ] == [(level, getattr(failure, "code", None), type(failure).__name__, traceback)]
     assert scheduled.messages == [message]
 
 
@@ -490,3 +491,22 @@ async def test_loan_decision_schedules_cleanup_and_notifies_when_post_commit_edi
     assert scheduled.messages == [panel]
     assert len(press.followup.sent) == 1
     assert press.followup.sent[0]["ephemeral"] is True
+
+
+async def test_loan_decision_views_namespace_their_shared_buttons() -> None:
+    """Lifted base buttons keep exact per-view `custom_id`s, order, and persistence."""
+    central = CentralBankLoanDecisionView(proposal_id=1, creator_id=1)
+    credit = CreditLoanDecisionView(proposal_id=2, lender_id=2, creator_id=1)
+
+    assert [getattr(child, "custom_id", None) for child in central.children] == [
+        "central_bank:approve",
+        "central_bank:reject",
+        "central_bank:cancel",
+    ]
+    assert [getattr(child, "custom_id", None) for child in credit.children] == [
+        "credit:approve",
+        "credit:reject",
+        "credit:cancel",
+    ]
+    assert all(child.is_persistent() for child in central.children)
+    assert all(child.is_persistent() for child in credit.children)
