@@ -12,11 +12,30 @@ from alembic.config import Config
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.utils import sqlite_config
+from discordbot.utils import sqlite_config, message_cleanup, expansion_placeholder
+from discordbot.cogs.games import database as games_database
+from discordbot.cogs.log_msg import cog as log_msg
+from discordbot.cogs.research import database as research_database
+from discordbot.cogs.gen_reply import ask_store, feedback_store
+from discordbot.services.memory import database as memory_database
+from discordbot.services.economy import database as economy_database
 from discordbot.utils.sqlite_config import SqliteBootstrap, ensure_database_upgraded
 from discordbot.utils.stored_integer import StoredInteger
 
 from tests.helpers.source_tree import REPO_ROOT
+
+# Captured at collection time, before function-scoped `conftest.py` isolation swaps `_engine`.
+_PRODUCTION_ENGINE_URLS: dict[str, str] = {
+    "cleanup": str(message_cleanup._engine.url),
+    "economy": str(economy_database._engine.url),
+    "games": str(games_database._engine.url),
+    "messages": str(log_msg._engine.url),
+    "ask": str(ask_store._engine.url),
+    "feedback": str(feedback_store._engine.url),
+    "research": str(research_database._engine.url),
+    "expansion": str(expansion_placeholder._engine.url),
+    "memory": str(memory_database._engine.url),
+}
 
 
 class _Base(DeclarativeBase):
@@ -77,3 +96,18 @@ def test_ensure_database_upgraded_creates_dir_and_runs_once_per_section(
     assert (tmp_path / "data" / "database" / "cleanup.db").is_file()
     assert (tmp_path / "data" / "database" / "economy.db").is_file()
     assert calls == ["cleanup", "economy"]
+
+
+def test_every_database_engine_points_at_its_expected_sqlite_file() -> None:
+    """Pins each store's production SQLite URL before moving URL construction to one helper."""
+    assert _PRODUCTION_ENGINE_URLS == {
+        "cleanup": "sqlite+aiosqlite:///data/database/cleanup.db",
+        "economy": "sqlite+aiosqlite:///data/database/economy.db",
+        "games": "sqlite+aiosqlite:///data/database/games.db",
+        "messages": "sqlite+aiosqlite:///data/database/messages.db",
+        "ask": "sqlite+aiosqlite:///data/database/reply.db",
+        "feedback": "sqlite+aiosqlite:///data/database/reply.db",
+        "research": "sqlite+aiosqlite:///data/database/reply.db",
+        "expansion": "sqlite+aiosqlite:///data/database/reply.db",
+        "memory": "sqlite+aiosqlite:///data/database/reply.db",
+    }
