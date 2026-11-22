@@ -51,6 +51,7 @@ from discordbot.cogs.research.agent import (
     resume_research_stream,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import build_media_delivery_planner
@@ -781,9 +782,10 @@ def _failure_text(status: str) -> str:
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds `ResearchCogs` to the bot.
+    """Upgrades `reply.db` and adds `ResearchCogs` to the bot.
 
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
+    ensure_database_upgraded(section="reply")
     bot.add_cog(ResearchCogs(bot), override=True)

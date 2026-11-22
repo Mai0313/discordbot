@@ -39,6 +39,7 @@ from discordbot.cogs.memory.views import (
     build_clear_confirm_embed,
 )
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT, clip_to_utf16_limit
 from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
 from discordbot.services.memory.store import (
@@ -724,9 +725,10 @@ async def _post_catchup_result(interaction: Interaction[commands.Bot], result: E
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the MemoryCogs to the bot.
+    """Upgrades `reply.db` and adds `MemoryCogs` to the bot.
 
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
+    ensure_database_upgraded(section="reply")
     bot.add_cog(MemoryCogs(bot), override=True)

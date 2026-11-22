@@ -38,6 +38,7 @@ from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
@@ -697,9 +698,10 @@ class ReplyGeneratorCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the ReplyGeneratorCogs to the bot.
+    """Upgrades `reply.db` and adds `ReplyGeneratorCogs` to the bot.
 
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
+    ensure_database_upgraded(section="reply")
     bot.add_cog(cog=ReplyGeneratorCogs(bot=bot), override=True)

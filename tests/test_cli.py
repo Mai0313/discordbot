@@ -36,6 +36,7 @@ from tests.helpers.casting import (
     as_discord_bot,
     make_invalid_webhook_token,
 )
+from tests.helpers.source_tree import REPO_ROOT
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.message_cleanup import record_scheduled_deletes
@@ -292,7 +293,7 @@ def test_cli_load_cogs_sync_refuses_a_directory_that_is_not_a_cog(
         _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
 
 
-def test_setup_functions_register_cogs() -> None:
+def test_setup_functions_register_cogs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """EVERY cog module the loader picks up has a sync `setup` that adds its own cog.
 
     The modules come from `_load_cogs_sync` itself rather than a hand-written list, so a new
@@ -301,6 +302,9 @@ def test_setup_functions_register_cogs() -> None:
     `async def setup` never reaches `add_cog` here, while at boot it aborts `DiscordBot()`
     with `ExtensionFailed`.
     """
+    (tmp_path / "alembic.ini").symlink_to(target=REPO_ROOT / "alembic.ini")
+    (tmp_path / "migrations").symlink_to(target=REPO_ROOT / "migrations")
+    monkeypatch.chdir(path=tmp_path)
     added: list[tuple[commands.Cog, bool | None]] = []
     loaded: list[str] = []
 
@@ -663,7 +667,7 @@ def test_discord_bot_init_does_not_duplicate_logfire_handlers(
 ) -> None:
     """Instantiating `DiscordBot` repeatedly attaches at most one `LogfireLoggingHandler` per logger."""
     monkeypatch.chdir(path=tmp_path)
-    monkeypatch.setattr(target=cli.command, name="upgrade", value=lambda **_kwargs: None)
+    monkeypatch.setattr(target=cli, name="ensure_database_upgraded", value=lambda **_kwargs: None)
     monkeypatch.setattr(target=DiscordBot, name="_load_cogs_sync", value=lambda self: None)
     for name in ("nextcord.state", "alembic"):
         logger = logging.getLogger(name=name)

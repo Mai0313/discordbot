@@ -89,6 +89,7 @@ from discordbot.utils.interaction_responses import (
     send_loan_request_followup,
     send_expiring_followup_after_private_defer,
 )
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
 
@@ -1287,9 +1288,10 @@ class EconomyCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds `EconomyCogs` to the bot.
+    """Upgrades `economy.db` and adds `EconomyCogs` to the bot.
 
     Args:
         bot (commands.Bot): Bot instance registering the cog.
     """
+    ensure_database_upgraded(section="economy")
     bot.add_cog(cog=EconomyCogs(bot=bot), override=True)

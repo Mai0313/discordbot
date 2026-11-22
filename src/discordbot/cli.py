@@ -9,13 +9,11 @@ import logging
 from pathlib import Path
 import platform
 
-from alembic import command
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
 from nextcord import Game, Intents, Message, Interaction, HTTPException
 from nextcord.ext import tasks, commands
-from alembic.config import Config
 from nextcord.errors import ApplicationError
 
 from discordbot import setup_logging
@@ -25,6 +23,7 @@ from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.media_delivery import AttachmentLimitInteraction
 from discordbot.utils.message_cleanup import (
     delete_tracked_public_messages,
@@ -59,13 +58,9 @@ class DiscordBot(commands.Bot):
             logger.setLevel(level=level)
             if not any(isinstance(handler, LogfireLoggingHandler) for handler in logger.handlers):
                 logger.addHandler(hdlr=LogfireLoggingHandler())
-        Path("./data/database").mkdir(parents=True, exist_ok=True)
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
-        # `messages.db` is left to the log_msg cog's setup: too large to migrate at startup.
-        for database in ("economy", "games", "reply"):
-            command.upgrade(
-                config=Config(file_="alembic.ini", ini_section=database), revision="head"
-            )
+        # Core public-message cleanup lives in its own DB; optional cogs upgrade their own in setup().
+        ensure_database_upgraded(section="cleanup")
         # Load cogs synchronously before gateway connect so application_commands is populated.
         # Every cog's setup() must be sync: no event loop is running yet for asyncio.create_task().
         self._load_cogs_sync()
