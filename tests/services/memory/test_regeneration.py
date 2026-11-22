@@ -970,7 +970,7 @@ async def test_regenerate_scope_memory_retires_a_server_raw_batch_with_no_tone_n
     report = await regeneration.regenerate_scope_memory(scope=scope, writer=writer, identity="srv")
 
     assert report.result == "regenerated"
-    assert "整理" in _memory_text(scope=scope, flavor="server")
+    assert "整理" in _memory_text(scope=scope)
     assert count_raw_entries(scope=scope) == 0
     assert not (memory_isolated_dir / scope / "tone.md").exists()
 

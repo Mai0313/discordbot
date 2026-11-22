@@ -27,6 +27,7 @@ from discordbot.services.memory.facts import (
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
+    flavor_of,
     read_facts,
     write_fact,
     delete_fact,
@@ -242,10 +243,9 @@ def net_deletion_ceiling(existing: int) -> int:
     return max(MAX_NET_FACT_DELETIONS_FLOOR, int(existing * MAX_NET_FACT_DELETIONS_RATIO))
 
 
-def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartment/flavor) plus the batch, its stamp, and the two write exemptions
+def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartment) plus the batch, its stamp, and the two write exemptions
     scope: str,
     compartment: str,
-    flavor: MemoryFlavor,
     deltas: tuple[MemoryFactDelta, ...],
     owner: MemoryOwner,
     allow_mass_delete: bool,
@@ -260,7 +260,6 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     Args:
         scope (str): Memory scope key.
         compartment (str): Compartment being modified.
-        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
         deltas (tuple[MemoryFactDelta, ...]): Candidate deltas emitted by consolidation.
         owner (MemoryOwner): Owner identity stamped onto created and updated facts.
         allow_mass_delete (bool): Whether to bypass the net-deletion ceiling.
@@ -270,7 +269,7 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
         Outcome counts, written fact ids, and any evidence keys released by deletions.
     """
     existing = {fact.fact_id: fact for fact in read_facts(scope=scope, compartment=compartment)}
-    allowed = sections_for_flavor(flavor=flavor)
+    allowed = sections_for_flavor(flavor=flavor_of(scope=scope))
     now = utc_now()
     dropped = 0
     to_delete: set[str] = set()

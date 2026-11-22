@@ -4,21 +4,26 @@ import time
 from types import SimpleNamespace
 import asyncio
 from pathlib import Path
+from datetime import datetime
+import threading
 
 import pytest
 from pydantic import BaseModel
 
-from discordbot.typings.memory import MemoryWriteSummary
+from discordbot.typings.memory import MemoryOwner, MemoryWriteSummary
 from discordbot.utils.timezone import database_now
 from discordbot.services.memory import database as memory_db
 from discordbot.services.memory import inflight, pipeline, consolidation
 from discordbot.services.memory.store import (
+    flavor_of,
     read_tone,
+    user_scope,
     write_fact,
     mark_cleared,
     server_scope,
     cleared_since,
     raw_file_bytes,
+    scope_owner_id,
     append_raw_entry,
     read_detail_tail,
     read_raw_entries,
@@ -33,8 +38,12 @@ from discordbot.services.memory.writer import (
     server_subject,
     render_turn_payload,
 )
-from discordbot.services.memory.prompts import PHASE1_EVALUATOR_PROMPT
+from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
 from discordbot.services.memory.raw_entries import render_memory_observations
+from discordbot.services.memory.server_prompts import (
+    SERVER_PHASE2_PROMPT,
+    SERVER_PHASE1_EVALUATOR_PROMPT,
+)
 
 from tests.helpers.memory import (
     get_job,
@@ -202,7 +211,7 @@ async def test_a_failed_review_still_writes_the_forgets_of_later_rounds() -> Non
     """
     writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("review is down")
-    pipeline.resume_memory_update(
+    pipeline._resume_memory_update(
         scope=USER_SCOPE,
         subject=user_subject(user_id=USER_ID, guild_id=42),
         transcript=render_turn_payload(
@@ -353,7 +362,7 @@ async def test_resume_memory_update_reruns_failed_job() -> None:
     await memory_db.mark_failed(scope=USER_SCOPE, token=42, error="boom")
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.resume_memory_update(
+    pipeline._resume_memory_update(
         scope=USER_SCOPE,
         subject=_SUBJECT,
         transcript=payload,
@@ -378,7 +387,7 @@ async def test_resume_of_a_row_predating_markers_writes_nothing() -> None:
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.resume_memory_update(
+    pipeline._resume_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         transcript="Alice (alice) [id: 123456789]: 哈囉",
@@ -530,10 +539,10 @@ async def test_clear_scope_memory_drops_the_deferred_replay() -> None:
     # Neither the in-flight turn nor the dropped replay may write anything back,
     # and the clear leaves only a scrubbed marker that restart cannot resume.
     # The unwrapped `get_job` is what makes that second claim mean something:
-    # `safe_list_resumable` degrades a read failure to `[]`, so on its own it can
+    # `_safe_list_resumable` degrades a read failure to `[]`, so on its own it can
     # pass without having looked.
     assert count_raw_entries(scope=USER_SCOPE) == 0
-    assert await pipeline.safe_list_resumable(updated_before=database_now()) == []
+    assert await pipeline._safe_list_resumable(updated_before=database_now()) == []
     await assert_cleared_row(scope=USER_SCOPE)
 
 
@@ -893,7 +902,7 @@ async def _restart(writer: MemoryWriterAI) -> None:
     """Resumes every persisted row the way the reply cog's restart sweep does, then drains."""
     for job in await memory_db.list_resumable(updated_before=database_now()):
         assert job.transcript is not None
-        pipeline.resume_memory_update(
+        pipeline._resume_memory_update(
             scope=job.scope,
             subject=job.subject,
             transcript=job.transcript,
@@ -952,7 +961,7 @@ async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages() 
     """
     writer, fake_client = _writer()
     fake_client.responses.answer = _answers(review=_draft("住在台中", normalized_key="fact.city"))
-    pipeline.resume_memory_update(
+    pipeline._resume_memory_update(
         scope=USER_SCOPE,
         subject=_SUBJECT,
         transcript=render_turn_payload(
@@ -980,7 +989,7 @@ async def test_a_retry_refused_again_files_no_forget_a_second_time() -> None:
     """
     writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("review refused")
-    pipeline.resume_memory_update(
+    pipeline._resume_memory_update(
         scope=USER_SCOPE,
         subject=_SUBJECT,
         transcript=render_turn_payload(
@@ -1014,7 +1023,7 @@ async def test_a_retry_merged_into_a_waiting_turn_still_files_that_turns_forget(
     fake_client.responses.answer = _answers(review=_draft("喜歡簡短"))
     _schedule(writer=writer)
     _schedule(writer=writer, remember_notes=(), forget_notes=("別再提那台舊筆電",))
-    pipeline.resume_memory_update(
+    pipeline._resume_memory_update(
         scope=USER_SCOPE,
         subject=_SUBJECT,
         transcript=payload,
@@ -1026,3 +1035,236 @@ async def test_a_retry_merged_into_a_waiting_turn_still_files_that_turns_forget(
     await drain_memory_turns(scopes=(USER_SCOPE,))
 
     assert _staged_forgets() == 1
+
+
+async def test_resume_after_restart_reenqueues_jobs_and_sweeps_other_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`resume_after_restart` re-enqueues persisted jobs and sweeps every over-threshold scope."""
+    writer, _ = _writer()
+    user_job_scope = user_scope(user_id=1)
+    server_job_scope = server_scope(server_id=2)
+    sweep_scope = user_scope(user_id=3)
+    jobs = [
+        memory_db.MemoryJob(
+            scope=user_job_scope,
+            flavor="user",
+            subject="target_user_id: 1",
+            transcript="u-transcript",
+            identity="id-u",
+            status="failed",
+            token=11,
+            last_error="boom",
+        ),
+        memory_db.MemoryJob(
+            scope=server_job_scope,
+            flavor="server",
+            subject="target_server_id: 2",
+            transcript="s-transcript",
+            identity="id-s",
+            status="pending",
+            token=22,
+            last_error=None,
+        ),
+    ]
+    resumed: list[dict[str, object]] = []
+    swept: list[str] = []
+
+    async def fake_list(updated_before: datetime) -> list[memory_db.MemoryJob]:
+        del updated_before
+        return jobs
+
+    def fake_resume(**kwargs: object) -> None:
+        resumed.append(kwargs)
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        del writer, identity
+        swept.append(scope)
+
+    monkeypatch.setattr(pipeline, "_safe_list_resumable", fake_list)
+    monkeypatch.setattr(pipeline, "_resume_memory_update", fake_resume)
+    monkeypatch.setattr(pipeline, "consolidate_if_needed", fake_consolidate)
+    monkeypatch.setattr(
+        pipeline, "iter_scopes", lambda: [user_job_scope, server_job_scope, sweep_scope]
+    )
+    monkeypatch.setattr(pipeline, "needs_consolidation", lambda scope: True)
+    monkeypatch.setattr(
+        pipeline,
+        "read_owner",
+        lambda scope: MemoryOwner(owner_id=scope_owner_id(scope=scope), owner_name=""),
+    )
+
+    tasks: set[asyncio.Task[None]] = set()
+    await pipeline.resume_after_restart(writer=writer, tasks=tasks, updated_before=database_now())
+    while tasks:
+        await asyncio.gather(*list(tasks))
+
+    assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
+    by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
+    assert by_scope[user_job_scope]["writer"] is writer
+    assert by_scope[user_job_scope]["token"] == 11
+    assert by_scope[server_job_scope]["writer"] is writer
+    assert by_scope[user_job_scope]["status"] == "failed"
+    assert by_scope[server_job_scope]["status"] == "pending"
+    assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
+
+
+async def test_resume_after_restart_sweeps_every_scope_past_a_backup_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A copy like `111.bak` under the store must not abort the sweep for the scopes after it."""
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
+    writer, _ = _writer()
+    scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
+    for key in [*scopes, "111.bak"]:
+        for entry in ("- a", "- b"):
+            append_raw_entry(scope=key, entry_text=entry)
+    swept: list[str] = []
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        del writer, identity
+        swept.append(scope)
+
+    monkeypatch.setattr(pipeline, "consolidate_if_needed", fake_consolidate)
+
+    tasks: set[asyncio.Task[None]] = set()
+    await pipeline.resume_after_restart(writer=writer, tasks=tasks, updated_before=database_now())
+    while tasks:
+        await asyncio.gather(*list(tasks))
+
+    assert sorted(swept) == sorted(scopes)
+
+
+async def test_resume_after_restart_sweeps_every_scope_past_an_undecodable_raw_file(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `raw.md` saved in the wrong encoding leaves out its own scope, not the ones after it."""
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
+    writer, _ = _writer()
+    scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
+    for scope in scopes:
+        for entry in ("- a", "- b"):
+            append_raw_entry(scope=scope, entry_text=entry)
+    (memory_isolated_dir / "222" / "raw.md").write_bytes("- a\n\n- 喜歡簡短回覆".encode("big5"))
+    swept: list[str] = []
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        del writer, identity
+        swept.append(scope)
+
+    monkeypatch.setattr(pipeline, "consolidate_if_needed", fake_consolidate)
+
+    tasks: set[asyncio.Task[None]] = set()
+    await pipeline.resume_after_restart(writer=writer, tasks=tasks, updated_before=database_now())
+    while tasks:
+        await asyncio.gather(*list(tasks))
+
+    assert sorted(swept) == [user_scope(user_id=111), server_scope(server_id=333)]
+
+
+@pytest.mark.parametrize(
+    ("scope", "subject", "prompts"),
+    [
+        (user_scope(user_id=1), "target_user_id: 1", {PHASE1_EVALUATOR_PROMPT, PHASE2_PROMPT}),
+        (
+            server_scope(server_id=2),
+            "target_server_id: 2",
+            {SERVER_PHASE1_EVALUATOR_PROMPT, SERVER_PHASE2_PROMPT},
+        ),
+    ],
+    ids=["user", "server"],
+)
+async def test_resume_after_restart_reaches_the_model_under_each_scopes_own_prompts(
+    monkeypatch: pytest.MonkeyPatch, scope: str, subject: str, prompts: set[str]
+) -> None:
+    """The resumed review and the consolidation sweep both run under the scope's flavor."""
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
+    append_raw_entry(scope=scope, entry_text="### stable_preference\n- summary_zh: 喜歡簡短回覆")
+    await memory_db.upsert_pending(
+        scope=scope,
+        flavor=flavor_of(scope=scope),
+        subject=subject,
+        transcript=render_turn_payload(
+            transcript="Alice (alice) [id: 1]: 哈囉", rounds=((("喜歡簡短回覆",), ()),)
+        ),
+        identity="",
+        token=memory_db.new_token(),
+    )
+    started_at = database_now()
+    writer, fake_client = _writer()
+
+    tasks: set[asyncio.Task[None]] = set()
+    await pipeline.resume_after_restart(writer=writer, tasks=tasks, updated_before=started_at)
+    while tasks:
+        await asyncio.gather(*list(tasks))
+    await drain_memory_turns(scopes=(scope,))
+    await wait_for_persisted_writes()
+
+    assert set(fake_client.responses.parse_instructions) == prompts
+
+
+async def test_resume_after_restart_leaves_a_turn_this_process_staged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turns staged after `updated_before` belong to this process and are not resumed."""
+    live_scope = user_scope(user_id=1)
+    left_scope = user_scope(user_id=2)
+    for scope in (live_scope, left_scope):
+        await memory_db.upsert_pending(
+            scope=scope,
+            flavor="user",
+            subject="target_user_id: 1",
+            transcript="earlier",
+            identity="",
+            token=memory_db.new_token(),
+        )
+    started_at = database_now()
+    await memory_db.upsert_pending(
+        scope=live_scope,
+        flavor="user",
+        subject="target_user_id: 1",
+        transcript="live",
+        identity="",
+        token=memory_db.new_token(),
+    )
+    resumed: list[object] = []
+
+    def fake_resume(**kwargs: object) -> None:
+        resumed.append(kwargs["scope"])
+
+    monkeypatch.setattr(pipeline, "_resume_memory_update", fake_resume)
+    writer, _ = _writer()
+
+    tasks: set[asyncio.Task[None]] = set()
+    await pipeline.resume_after_restart(writer=writer, tasks=tasks, updated_before=started_at)
+    while tasks:
+        await asyncio.gather(*list(tasks))
+
+    assert resumed == [left_scope]
+
+
+async def test_resume_after_restart_offloads_discovery_is_idempotent_and_lazy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery runs off the event loop, repeats no-op per loop, and empty sweeps skip `writer()`."""
+    loop_thread = threading.get_ident()
+    discovery_threads: list[int] = []
+    writer_calls = 0
+
+    def spy_iter_scopes() -> list[str]:
+        discovery_threads.append(threading.get_ident())
+        return []
+
+    def failing_writer() -> MemoryWriterAI:
+        nonlocal writer_calls
+        writer_calls += 1
+        raise AssertionError("writer factory must not be called when nothing is pending")
+
+    monkeypatch.setattr(pipeline, "iter_scopes", spy_iter_scopes)
+    tasks: set[asyncio.Task[None]] = set()
+    await pipeline.resume_after_restart(writer=failing_writer, tasks=tasks)
+    await pipeline.resume_after_restart(writer=failing_writer, tasks=tasks)
+
+    assert len(discovery_threads) == 1
+    assert discovery_threads[0] != loop_thread
+    assert writer_calls == 0

@@ -12,31 +12,14 @@ from nextcord import Attachment
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import cog as gen_reply_cog
-from discordbot.typings.memory import MemoryOwner
 from discordbot.typings.models import ModelSettings, RouteClassification, RuntimeModelCatalog
-from discordbot.services.memory import database as memory_db
-from discordbot.services.memory import consolidation
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
-from discordbot.services.memory.store import (
-    flavor_of,
-    user_scope,
-    server_scope,
-    scope_owner_id,
-    append_raw_entry,
-)
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.routing import RouteClassifier
-from discordbot.services.memory.writer import render_turn_payload
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
-from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
-from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE2_PROMPT,
-    SERVER_PHASE1_EVALUATOR_PROMPT,
-)
 
-from tests.helpers.memory import drain_memory_turns, wait_for_persisted_writes
 from tests.helpers.casting import as_bot, as_message, make_invalid_form_body
 from tests.helpers.reply_fakes import (
     FakeAuthor,
@@ -62,8 +45,6 @@ from tests.helpers.ask_interaction import (
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
-    from pathlib import Path
-    from datetime import datetime
     from collections.abc import Callable, Awaitable
 
     from nextcord.types.message import Attachment as AttachmentPayload
@@ -273,231 +254,16 @@ def test_the_cog_builds_no_toolkit_until_a_reply_needs_one(
     assert "toolkit" not in cog.__dict__
 
 
-async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """on_ready resume re-enqueues persisted jobs and sweeps every over-threshold scope."""
-    cog = _cog(bot_user_id=999)
-    writer_sentinel = object()
-    monkeypatch.setattr(
-        type(cog.toolkit), "memory_writer", property(lambda _self: writer_sentinel)
-    )
-
-    user_job_scope = user_scope(user_id=1)
-    server_job_scope = server_scope(server_id=2)
-    sweep_scope = user_scope(user_id=3)
-    jobs = [
-        memory_db.MemoryJob(
-            scope=user_job_scope,
-            flavor="user",
-            subject="target_user_id: 1",
-            transcript="u-transcript",
-            identity="id-u",
-            status="failed",
-            token=11,
-            last_error="boom",
-        ),
-        memory_db.MemoryJob(
-            scope=server_job_scope,
-            flavor="server",
-            subject="target_server_id: 2",
-            transcript="s-transcript",
-            identity="id-s",
-            status="pending",
-            token=22,
-            last_error=None,
-        ),
-    ]
-    resumed: list[dict[str, object]] = []
-    swept: list[str] = []
-
-    async def fake_list(updated_before: datetime) -> list[memory_db.MemoryJob]:
-        del updated_before
-        return jobs
-
-    def fake_resume(**kwargs: object) -> None:
-        resumed.append(kwargs)
-
-    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
-        swept.append(scope)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.safe_list_resumable", fake_list)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.resume_memory_update", fake_resume)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.consolidate_if_needed", fake_consolidate)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.iter_scopes",
-        lambda: [user_job_scope, server_job_scope, sweep_scope],
-    )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.needs_consolidation", lambda scope: True)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.read_owner",
-        lambda scope: MemoryOwner(owner_id=scope_owner_id(scope=scope), owner_name=""),
-    )
-
-    await cog._resume_memory()
-    # Wait for spawned sweep tasks to finish.
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
-
-    assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
-    by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
-    assert by_scope[user_job_scope]["writer"] is writer_sentinel
-    assert by_scope[user_job_scope]["token"] == 11
-    assert by_scope[server_job_scope]["writer"] is writer_sentinel
-    # The row's status decides whether the resumed review is its one retry.
-    assert by_scope[user_job_scope]["status"] == "failed"
-    assert by_scope[server_job_scope]["status"] == "pending"
-    # Every over-threshold scope is swept, including the resumed ones: the scope
-    # lock makes the resumed review and the consolidation sweep idempotent.
-    assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
-
-
-async def test_resume_memory_sweeps_every_scope_past_a_backup_copy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A copy like `111.bak` under the store must not abort the sweep for the scopes after it."""
-    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
-    cog = _cog(bot_user_id=999)
-    scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
-    for key in [*scopes, "111.bak"]:
-        for entry in ("- a", "- b"):
-            append_raw_entry(scope=key, entry_text=entry)
-    swept: list[str] = []
-
-    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
-        swept.append(scope)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.consolidate_if_needed", fake_consolidate)
-
-    await cog._resume_memory()
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
-
-    assert sorted(swept) == sorted(scopes)
-
-
-async def test_resume_memory_sweeps_every_scope_past_an_undecodable_raw_file(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A `raw.md` saved in the wrong encoding leaves out its own scope, not the ones after it."""
-    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
-    cog = _cog(bot_user_id=999)
-    scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
-    for scope in scopes:
-        for entry in ("- a", "- b"):
-            append_raw_entry(scope=scope, entry_text=entry)
-    (memory_isolated_dir / "222" / "raw.md").write_bytes("- a\n\n- 喜歡簡短回覆".encode("big5"))
-    swept: list[str] = []
-
-    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
-        swept.append(scope)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.consolidate_if_needed", fake_consolidate)
-
-    await cog._resume_memory()
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
-
-    assert sorted(swept) == [user_scope(user_id=111), server_scope(server_id=333)]
-
-
-@pytest.mark.parametrize(
-    ("scope", "subject", "prompts"),
-    [
-        (user_scope(user_id=1), "target_user_id: 1", {PHASE1_EVALUATOR_PROMPT, PHASE2_PROMPT}),
-        (
-            server_scope(server_id=2),
-            "target_server_id: 2",
-            {SERVER_PHASE1_EVALUATOR_PROMPT, SERVER_PHASE2_PROMPT},
-        ),
-    ],
-    ids=["user", "server"],
-)
-async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
-    monkeypatch: pytest.MonkeyPatch, scope: str, subject: str, prompts: set[str]
-) -> None:
-    """The resumed review and the consolidation sweep both run under the scope's flavor.
-
-    The recorder answers the review with no valid draft, and a failed review with no forget
-    never consolidates, so the one consolidation call is the sweep's.
-    """
-    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
-    append_raw_entry(scope=scope, entry_text="### stable_preference\n- summary_zh: 喜歡簡短回覆")
-    await memory_db.upsert_pending(
-        scope=scope,
-        flavor=flavor_of(scope=scope),
-        subject=subject,
-        transcript=render_turn_payload(
-            transcript="Alice (alice) [id: 1]: 哈囉", rounds=((("喜歡簡短回覆",), ()),)
-        ),
-        identity="",
-        token=memory_db.new_token(),
-    )
-    # Built after the row, so the row is an earlier process's.
-    cog = _cog(bot_user_id=999)
-
-    await cog._resume_memory()
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
-    await drain_memory_turns(scopes=(scope,))
-    await wait_for_persisted_writes()
-
-    assert set(_recorded(cog).responses.parse_instructions) == prompts
-
-
-async def test_resume_memory_leaves_a_turn_this_process_staged(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A reply runs before `on_ready` does, and the review it staged is still running.
-
-    The live scope's row was first written by an earlier process, so only `updated_at`, which
-    the upsert moves while keeping `created_at`, says its transcript is this process's own. The
-    scope an earlier process left is the control that the sweep ran at all.
-    """
-    live_scope = user_scope(user_id=1)
-    left_scope = user_scope(user_id=2)
-    for scope in (live_scope, left_scope):
-        await memory_db.upsert_pending(
-            scope=scope,
-            flavor="user",
-            subject="target_user_id: 1",
-            transcript="earlier",
-            identity="",
-            token=memory_db.new_token(),
-        )
-    cog = _cog(bot_user_id=999)
-    await memory_db.upsert_pending(
-        scope=live_scope,
-        flavor="user",
-        subject="target_user_id: 1",
-        transcript="live",
-        identity="",
-        token=memory_db.new_token(),
-    )
-    resumed: list[object] = []
-
-    def fake_resume(**kwargs: object) -> None:
-        resumed.append(kwargs["scope"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.resume_memory_update", fake_resume)
-
-    await cog._resume_memory()
-    while cog._tasks:
-        await asyncio.gather(*list(cog._tasks))
-
-    assert resumed == [left_scope]
-
-
 async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """on_ready guards the resume and price-table loop so reconnects start each only once."""
     cog = _cog(bot_user_id=999)
     calls = 0
 
-    async def fake_resume_memory() -> None:
+    async def fake_resume_after_restart(**_kwargs: object) -> None:
         nonlocal calls
         calls += 1
 
-    monkeypatch.setattr(cog, "_resume_memory", fake_resume_memory)
+    monkeypatch.setattr(gen_reply_cog, "resume_after_restart", fake_resume_after_restart)
     starts = 0
     real_start = cog.price_table_task.start
 

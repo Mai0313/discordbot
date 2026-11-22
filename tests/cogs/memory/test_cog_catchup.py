@@ -155,7 +155,7 @@ async def _catch_up(cog: MemoryCogs, interaction: _CatchupInteraction) -> None:
 def _cog(writer: MemoryWriterAI) -> MemoryCogs:
     """The memory cog with `writer` in place of the proxy-backed one."""
     cog = make_memory_cog()
-    cog.memory_writer = writer
+    cog._memory_writer = writer
     return cog
 
 

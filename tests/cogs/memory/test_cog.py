@@ -1,13 +1,19 @@
 """Tests for the `/memory` commands."""
 
 import time
+from types import SimpleNamespace
+import asyncio
+from pathlib import Path
+import contextlib
+import subprocess
 
 import pytest
 from nextcord import Embed
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs.memory.cog import MemoryCogs
-from discordbot.services.memory import regeneration
+from discordbot.typings.colors import DISCORD_GREEN
+from discordbot.cogs.memory.cog import MemoryCogs, _catchup_boundary
+from discordbot.services.memory import pipeline, regeneration, consolidation
 from discordbot.cogs.memory.views import (
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
@@ -16,17 +22,20 @@ from discordbot.cogs.memory.views import (
     build_memory_embed,
     memory_footer_text,
 )
+from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
+    user_scope,
     write_fact,
     write_tone,
     append_detail,
     append_raw_entry,
 )
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE2_COMPACTION_BLOCK
+from discordbot.services.memory.git_history import memory_git
 
 from tests.helpers.memory import FakeMemoryClient, make_memory_cog
-from tests.helpers.casting import as_interaction
+from tests.helpers.casting import as_bot, as_message, as_interaction
 from tests.helpers.user_memory import (
     USER_ID,
     USER_SCOPE,
@@ -145,10 +154,7 @@ async def test_memory_regenerate_command_schedules_in_background(
 ) -> None:
     cog = make_memory_cog()
     writer_sentinel = object()
-    # Seeded into the cached_property's slot rather than through `setattr`, which reads the
-    # old value first to restore it and would build a real `AsyncOpenAI` off credentials CI
-    # does not have.
-    monkeypatch.setitem(cog.__dict__, "memory_writer", writer_sentinel)
+    monkeypatch.setattr(type(cog), "memory_writer", property(lambda _self: writer_sentinel))
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     descriptions: list[str | None] = []
@@ -217,7 +223,7 @@ async def test_memory_regenerate_command_reports_no_evidence(
 ) -> None:
     cog = make_memory_cog()
     # A writer in place, so only the evidence check can stop the command.
-    monkeypatch.setitem(cog.__dict__, "memory_writer", object())
+    monkeypatch.setattr(type(cog), "memory_writer", property(lambda _self: object()))
     calls = _record_schedules(monkeypatch=monkeypatch)
     # No raw or detail evidence exists for this scope.
     interaction = _interaction()
@@ -236,7 +242,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
 ) -> None:
     cog = make_memory_cog()
     # Evidence and a writer in place, so only the cooldown can stop the command.
-    monkeypatch.setitem(cog.__dict__, "memory_writer", object())
+    monkeypatch.setattr(type(cog), "memory_writer", property(lambda _self: object()))
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     regeneration._last_regeneration[USER_SCOPE] = time.monotonic()
     calls = _record_schedules(monkeypatch=monkeypatch)
@@ -359,3 +365,128 @@ async def test_memory_server_show_refuses_a_server_the_bot_is_not_in() -> None:
     embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "楓之谷" not in (embed.description or "")
+
+
+def test_memory_writer_tracks_bot_user_id_dynamically(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Accessing `memory_writer` before login never pins `bot_user_id=None` permanently."""
+    cog = make_memory_cog()
+    monkeypatch.setitem(cog.__dict__, "client", FakeMemoryClient())
+
+    pre_login = cog.memory_writer
+    assert pre_login.bot_user_id is None
+
+    cog.bot.user = SimpleNamespace(id=999, name="bot")  # ty: ignore[invalid-assignment] -- stub bot user
+    post_login = cog.memory_writer
+    assert post_login.bot_user_id == 999
+    assert cog.memory_writer is post_login
+
+
+def test_catchup_boundary_rejects_non_decimal_unicode_digits() -> None:
+    """Superscript digits like `'²'` pass `.isdigit()` but crash `int()`; `.isdecimal()` falls back."""
+    embed = Embed(
+        title="📚 跟上進度", color=DISCORD_GREEN, url="https://discord.com/channels/1/2/²"
+    )
+    message = SimpleNamespace(id=12345, author=SimpleNamespace(id=999), embeds=[embed])
+    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999)))
+    assert _catchup_boundary(message=as_message(fake=message), bot=bot) == 12345
+
+
+def _init_git_repo(directory: Path) -> None:
+    """Initializes a scratch git repository inside `directory`."""
+    directory.mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603 -- fixed argv against tmp_path
+        ["git", "-C", str(directory), "init", "-q", "-b", "main"],  # noqa: S607 -- git from PATH
+        check=True,
+    )
+
+
+async def test_memory_cog_standalone_starts_git_and_resumes_without_gen_reply(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`MemoryCogs.on_ready` starts `memory_git` and sweeps memory without `ReplyGeneratorCogs`."""
+    _init_git_repo(directory=memory_isolated_dir)
+    monkeypatch.setattr(memory_git, "enabled", True)
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
+    scope = user_scope(user_id=42)
+    append_raw_entry(scope=scope, entry_text="- 喜歡簡短回覆")
+
+    swept: list[str] = []
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        del writer, identity
+        swept.append(scope)
+
+    monkeypatch.setattr(pipeline, "consolidate_if_needed", fake_consolidate)
+
+    cog = make_memory_cog(bot_user_id=999)
+    monkeypatch.setitem(cog.__dict__, "client", FakeMemoryClient())
+    try:
+        await cog.on_ready()
+        while cog._tasks:
+            await asyncio.gather(*list(cog._tasks))
+        assert memory_git.is_running
+        assert swept == [scope]
+    finally:
+        cog.cog_unload()
+        while cog._tasks:
+            await asyncio.gather(*list(cog._tasks))
+    assert not memory_git.is_running
+
+
+async def test_both_cogs_on_ready_do_not_double_sweep_and_share_git_lifecycle(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading both cogs runs the restart sweep once and keeps `memory_git` until both unload."""
+    _init_git_repo(directory=memory_isolated_dir)
+    monkeypatch.setattr(memory_git, "enabled", True)
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
+    scope = user_scope(user_id=55)
+    append_raw_entry(scope=scope, entry_text="- 喜歡簡短回覆")
+
+    swept: list[str] = []
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        del writer, identity
+        swept.append(scope)
+
+    monkeypatch.setattr(pipeline, "consolidate_if_needed", fake_consolidate)
+
+    loaded_cogs: dict[str, object] = {}
+    bot_stub = SimpleNamespace(
+        user=SimpleNamespace(id=999, name="bot"),
+        get_guild=lambda _guild_id: None,
+        get_cog=loaded_cogs.get,
+        add_view=lambda _view: None,
+    )
+    bot = as_bot(fake=bot_stub)
+    mem_cog = MemoryCogs(bot=bot)
+    gen_cog = ReplyGeneratorCogs(bot=bot)
+    monkeypatch.setitem(mem_cog.__dict__, "client", FakeMemoryClient())
+    monkeypatch.setitem(gen_cog.__dict__, "openai_client", FakeMemoryClient())
+    loaded_cogs["MemoryCogs"] = mem_cog
+    loaded_cogs["ReplyGeneratorCogs"] = gen_cog
+
+    try:
+        await asyncio.gather(gen_cog.on_ready(), mem_cog.on_ready())
+        worker = memory_git._worker
+        await asyncio.gather(gen_cog.on_ready(), mem_cog.on_ready())
+        while gen_cog._tasks or mem_cog._tasks:
+            await asyncio.gather(*list(gen_cog._tasks), *list(mem_cog._tasks))
+        assert memory_git.is_running
+        assert memory_git._worker is worker
+        assert swept == [scope]
+
+        # Unloading one cog keeps memory_git alive while the peer cog stays loaded.
+        loaded_cogs.pop("ReplyGeneratorCogs")
+        price_task = gen_cog.price_table_task.get_task()
+        gen_cog.cog_unload()
+        if price_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await price_task
+        assert memory_git.is_running
+    finally:
+        loaded_cogs.pop("MemoryCogs", None)
+        mem_cog.cog_unload()
+        while gen_cog._tasks or mem_cog._tasks:
+            await asyncio.gather(*list(gen_cog._tasks), *list(mem_cog._tasks))
+    assert not memory_git.is_running

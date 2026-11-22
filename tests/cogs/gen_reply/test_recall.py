@@ -89,7 +89,7 @@ def test_the_owners_dm_renders_each_global_fact_once(memory_isolated_dir: Path) 
         owner_id=111, context=RecallContext(guild_id=None, dm_partner_id=111)
     )
     assert compartments == list(dict.fromkeys(compartments))
-    document = read_memory_document(scope=scope, compartments=compartments, flavor="user")
+    document = read_memory_document(scope=scope, compartments=compartments)
     assert document.count("全域事實") == 1
     assert document.count("私訊事實") == 1
 

@@ -149,12 +149,94 @@ async def test_a_store_that_is_not_a_repository_disables_the_service(
     await service.stop()
 
 
-async def test_an_unstarted_service_drops_requests() -> None:
-    """Enqueueing before `start` must not bind a queue to whichever loop got there first."""
+async def test_enqueue_lazily_starts_when_loop_is_running(
+    memory_repository: Path, handled: asyncio.Queue[str]
+) -> None:
+    """Enqueueing inside a running event loop lazily starts the worker and commits."""
+    scope = user_scope(user_id=111)
+    (memory_repository / scope / "global").mkdir(parents=True)
+    (memory_repository / scope / "global" / "a.md").write_text("fact", encoding="utf-8")
+    service = MemoryGitService()
+    assert service._worker is None
+
+    service.enqueue(scope=scope, reason="update")
+    await _wait_for(handled=handled)
+    await service.stop()
+
+    newest, baseline = _subjects(repository=memory_repository)
+    assert baseline == "baseline"
+    assert scope in newest
+
+
+def test_enqueue_outside_an_event_loop_drops_requests(memory_repository: Path) -> None:
+    """Synchronous enqueueing with no running loop drops the request without binding a queue."""
+    del memory_repository
     service = MemoryGitService()
     service.enqueue(scope=user_scope(user_id=111), reason="update")
     assert service._queue is None
+    assert service._worker is None
+
+
+async def test_start_evaluates_config_at_start_not_import(
+    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`MEMORY_GIT_ENABLED=false` disables git history when `start()` runs."""
+    del memory_repository
+    monkeypatch.setenv(name="MEMORY_GIT_ENABLED", value="false")
+    service = MemoryGitService()
+    service.start()
+    assert not service.enabled
+    assert not service.is_running
     await service.stop()
+
+
+async def test_start_is_idempotent_on_the_same_loop(memory_repository: Path) -> None:
+    """Calling `start()` repeatedly on the same loop keeps the existing worker and queue."""
+    del memory_repository
+    service = MemoryGitService()
+    service.start()
+    first_worker = service._worker
+    first_queue = service._queue
+    service.start()
+    assert service._worker is first_worker
+    assert service._queue is first_queue
+    assert service.is_running
+    await service.stop()
+    assert not service.is_running
+
+
+def test_service_rebinds_cleanly_across_event_loops(
+    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A service started in an earlier loop cleanly rebinds queue and worker in a new loop."""
+    scope_a = user_scope(user_id=111)
+    scope_b = user_scope(user_id=222)
+    (memory_repository / scope_a / "global").mkdir(parents=True)
+    (memory_repository / scope_a / "global" / "a.md").write_text("a", encoding="utf-8")
+    (memory_repository / scope_b / "global").mkdir(parents=True)
+    (memory_repository / scope_b / "global" / "b.md").write_text("b", encoding="utf-8")
+    service = MemoryGitService()
+    real_commit = MemoryGitService._commit
+
+    async def run_one(scope: str) -> None:
+        done: asyncio.Queue[str] = asyncio.Queue()
+
+        async def commit_then_report(self: MemoryGitService, request: _GitRequest) -> None:
+            await real_commit(self, request=request)
+            done.put_nowait(request.scope)
+
+        monkeypatch.setattr(MemoryGitService, "_commit", commit_then_report)
+        service.start()
+        service.enqueue(scope=scope, reason="update")
+        await _wait_for(handled=done)
+
+    # Intentionally skip `stop()` on the first loop to exercise stale-loop rebinding too.
+    asyncio.run(run_one(scope=scope_a))
+    asyncio.run(run_one(scope=scope_b))
+
+    subjects = _subjects(repository=memory_repository)
+    assert any(scope_a in subject for subject in subjects)
+    assert any(scope_b in subject for subject in subjects)
 
 
 async def test_repeated_failures_disable_the_service(
@@ -264,3 +346,131 @@ async def test_hung_git_command_times_out_and_kills_child_process(
 
     assert killed is True
     assert waited is True
+
+
+async def test_stop_cancels_worker_and_kills_live_git_subprocess(
+    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop()` terminates an in-flight git subprocess cleanly while cancelling the worker."""
+    scope = user_scope(user_id=111)
+    (memory_repository / scope / "global").mkdir(parents=True)
+    (memory_repository / scope / "global" / "a.md").write_text("fact", encoding="utf-8")
+    started = asyncio.Event()
+    killed = False
+    waited = False
+
+    class _HangingProcess:
+        returncode: int | None = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            started.set()
+            await asyncio.sleep(10)
+            return b"", b""
+
+        def kill(self) -> None:
+            nonlocal killed
+            killed = True
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            nonlocal waited
+            waited = True
+            return -9
+
+    async def spawn_hanging(*args: object, **kwargs: object) -> _HangingProcess:
+        del args, kwargs
+        return _HangingProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_hanging)
+    service = MemoryGitService()
+    service.start()
+    service.enqueue(scope=scope, reason="update")
+    await started.wait()
+
+    await service.stop()
+
+    assert killed is True
+    assert waited is True
+    assert not service.is_running
+
+
+async def test_enqueue_during_stop_does_not_spawn_a_second_worker(
+    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requests arriving while `stop()` awaits a dying subprocess drop instead of starting a second worker."""
+    scope = user_scope(user_id=111)
+    (memory_repository / scope / "global").mkdir(parents=True)
+    (memory_repository / scope / "global" / "a.md").write_text("fact", encoding="utf-8")
+    started = asyncio.Event()
+    wait_entered = asyncio.Event()
+    release_wait = asyncio.Event()
+
+    class _SlowExitProcess:
+        returncode: int | None = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            started.set()
+            await asyncio.sleep(10)
+            return b"", b""
+
+        def kill(self) -> None:
+            return None
+
+        async def wait(self) -> int:
+            wait_entered.set()
+            await release_wait.wait()
+            self.returncode = -9
+            return -9
+
+    async def spawn_slow(*args: object, **kwargs: object) -> _SlowExitProcess:
+        del args, kwargs
+        return _SlowExitProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_slow)
+    service = MemoryGitService()
+    service.start()
+    service.enqueue(scope=scope, reason="update")
+    await started.wait()
+
+    stop_task = asyncio.create_task(service.stop())
+    await wait_entered.wait()
+    # While `stop()` is awaiting the killed subprocess, `enqueue()` must not start a second worker.
+    service.enqueue(scope=scope, reason="update")
+    assert service._worker is None
+    assert not service.is_running
+
+    release_wait.set()
+    await stop_task
+    assert not service._stopping
+
+
+async def test_stop_kills_tracked_active_process_fallback_without_worker(
+    memory_repository: Path,
+) -> None:
+    """`stop()` still kills and reaps a tracked `_active_process` even if `_worker` is already cleared."""
+    del memory_repository
+    killed = False
+    waited = False
+
+    class _StrandedProcess:
+        returncode: int | None = None
+
+        def kill(self) -> None:
+            nonlocal killed
+            killed = True
+
+        async def wait(self) -> int:
+            nonlocal waited
+            waited = True
+            self.returncode = -9
+            return -9
+
+    service = MemoryGitService()
+    service._loop = asyncio.get_running_loop()
+    service._active_process = _StrandedProcess()  # ty: ignore[invalid-assignment] -- stub subprocess
+
+    await service.stop()
+
+    assert killed is True
+    assert waited is True
+    assert service._active_process is None

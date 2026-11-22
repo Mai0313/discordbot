@@ -144,7 +144,7 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
     _recorded(cog).responses.stream_queue = [[_text_event(delta="Fresh answer"), completed]]
 
     click = _regen_interaction(reply_message_id=2002, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click))
 
     assert click.response.deferred is True
     assert click.response.deferred_ephemeral is True
@@ -205,7 +205,7 @@ async def test_regen_permission_rejects_bystander_and_allows_owner(
     )
 
     bystander = _regen_interaction(reply_message_id=2101, user_id=200, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=bystander))
+    await cog.regenerator.handle(interaction=as_interaction(fake=bystander))
     assert bystander.edits[-1]["content"] == "只有原發問者可以重新生成這則回覆"
     assert source.replies == []
     assert channel.deleted_ids == []
@@ -219,7 +219,7 @@ async def test_regen_permission_rejects_bystander_and_allows_owner(
     _recorded(cog).responses.stream_queue = [[_text_event(delta="owner regen"), completed]]
 
     owner_click = _regen_interaction(reply_message_id=2101, user_id=9999, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=owner_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=owner_click))
     assert owner_click.edits[-1]["content"] == "已重新生成回覆"
     assert channel.deleted_ids == [2101]
 
@@ -268,7 +268,7 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
     c2.response.model = "gemini-4-neon"
     _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 2"), c2]]
     click1 = _regen_interaction(reply_message_id=2201, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click1))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click1))
 
     assert last_pool == ("gemini-4-neon", "gemini-4-hydrogen")
     assert click1.edits[0]["content"] == "正在換另一個模型重新生成中⋯（本次後剩餘 1 次重抽）"
@@ -281,7 +281,7 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
     c3.response.model = "gemini-4-hydrogen"
     _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 3"), c3]]
     click2 = _regen_interaction(reply_message_id=r2.id, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click2))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click2))
 
     assert last_pool == ("gemini-4-hydrogen",)
     assert click2.edits[0]["content"] == "正在換另一個模型重新生成中⋯（最後一次重抽）"
@@ -291,7 +291,7 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
 
     # Attempting a third regen on R3 is rejected at the chain-depth cap.
     click3 = _regen_interaction(reply_message_id=r3.id, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click3))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click3))
     assert click3.edits[-1]["content"] == "已達重新生成次數上限"
 
 
@@ -341,9 +341,13 @@ async def test_regen_serializes_concurrent_clicks_on_same_reply(
 
     first = _regen_interaction(reply_message_id=2301, user_id=100, channel=channel)
     second = _regen_interaction(reply_message_id=2301, user_id=100, channel=channel)
-    task1 = asyncio.create_task(coro=cog._handle_regen(interaction=as_interaction(fake=first)))
+    task1 = asyncio.create_task(
+        coro=cog.regenerator.handle(interaction=as_interaction(fake=first))
+    )
     await entered.wait()
-    task2 = asyncio.create_task(coro=cog._handle_regen(interaction=as_interaction(fake=second)))
+    task2 = asyncio.create_task(
+        coro=cog.regenerator.handle(interaction=as_interaction(fake=second))
+    )
     await asyncio.sleep(delay=0)
     release.set()
     await asyncio.gather(task1, task2)
@@ -398,7 +402,7 @@ async def test_regen_failure_leaves_old_reply_and_feedback_untouched_and_cleans_
     )
 
     click = _regen_interaction(reply_message_id=2401, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click))
 
     assert "重新生成失敗" in click.edits[-1]["content"]
     assert channel.deleted_ids == []
@@ -449,7 +453,7 @@ async def test_regen_preserves_prior_explicit_downvote_reason() -> None:
     _recorded(cog).responses.stream_queue = [[_text_event(delta="fixed"), completed]]
 
     click = _regen_interaction(reply_message_id=2501, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click))
 
     assert click.edits[-1]["content"] == "已重新生成回覆"
     async with open_session() as session:
@@ -496,7 +500,7 @@ async def test_regen_deletion_ignores_not_found_and_logs_forbidden_without_trace
 
     warns: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.logfire.warn",
+        "discordbot.cogs.gen_reply.regen.logfire.warn",
         lambda msg, **kwargs: warns.append((msg, kwargs)),
     )
 
@@ -505,7 +509,7 @@ async def test_regen_deletion_ignores_not_found_and_logs_forbidden_without_trace
     _recorded(cog).responses.stream_queue = [[_text_event(delta="new"), completed]]
 
     click = _regen_interaction(reply_message_id=2603, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click))
 
     assert click.edits[-1]["content"] == "已重新生成回覆"
     # 2603 was NotFound (ignored), 2602 raised Forbidden (logged once, broke loop before 2601).
@@ -525,13 +529,13 @@ async def test_regen_rejects_disabled_unknown_unsupported_and_unreachable_source
     # Feedback disabled.
     cog.config.feedback_enabled = False
     disabled_click = _regen_interaction(reply_message_id=2701)
-    await cog._handle_regen(interaction=as_interaction(fake=disabled_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=disabled_click))
     assert disabled_click.edits[-1]["content"] == "目前已停用重新生成功能"
     cog.config.feedback_enabled = True
 
     # Unknown reply_message_id.
     unknown_click = _regen_interaction(reply_message_id=2799)
-    await cog._handle_regen(interaction=as_interaction(fake=unknown_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=unknown_click))
     assert unknown_click.edits[-1]["content"] == "這則回覆已超過可重新生成範圍"
 
     # Unsupported surface (`ask`) and route (`IMAGE`).
@@ -550,7 +554,7 @@ async def test_regen_rejects_disabled_unknown_unsupported_and_unreachable_source
         answer="a",
     )
     ask_click = _regen_interaction(reply_message_id=2702, user_id=100)
-    await cog._handle_regen(interaction=as_interaction(fake=ask_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=ask_click))
     assert ask_click.edits[-1]["content"] == "這則回覆不支援重新生成"
 
     await record_reply_turn(
@@ -568,7 +572,7 @@ async def test_regen_rejects_disabled_unknown_unsupported_and_unreachable_source
         answer="done",
     )
     img_click = _regen_interaction(reply_message_id=2703, user_id=100)
-    await cog._handle_regen(interaction=as_interaction(fake=img_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=img_click))
     assert img_click.edits[-1]["content"] == "這則回覆不支援重新生成"
 
     # Source fetch NotFound, Forbidden (warn with no traceback), and 5xx HTTPException.
@@ -589,19 +593,19 @@ async def test_regen_rejects_disabled_unknown_unsupported_and_unreachable_source
     nf_click = _regen_interaction(
         reply_message_id=2704, user_id=100, channel=_FakeRegenChannel(messages={})
     )
-    await cog._handle_regen(interaction=as_interaction(fake=nf_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=nf_click))
     assert nf_click.edits[-1]["content"] == "找不到原始發問訊息，無法重新生成"
 
     warns: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.logfire.warn", lambda _msg, **kwargs: warns.append(kwargs)
+        "discordbot.cogs.gen_reply.regen.logfire.warn", lambda _msg, **kwargs: warns.append(kwargs)
     )
     fb_click = _regen_interaction(
         reply_message_id=2704,
         user_id=100,
         channel=_FakeRegenChannel(fetch_error=make_forbidden(message="no read")),
     )
-    await cog._handle_regen(interaction=as_interaction(fake=fb_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=fb_click))
     assert fb_click.edits[-1]["content"] == "沒有權限讀取原始訊息，無法重新生成"
     assert warns[-1]["channel_id"] == 555
     assert warns[-1]["message_id"] == 8704
@@ -612,7 +616,7 @@ async def test_regen_rejects_disabled_unknown_unsupported_and_unreachable_source
         user_id=100,
         channel=_FakeRegenChannel(fetch_error=make_server_error(message="503")),
     )
-    await cog._handle_regen(interaction=as_interaction(fake=http_click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=http_click))
     assert http_click.edits[-1]["content"] == "讀取原始訊息時發生錯誤，請稍後再試"
 
 
@@ -667,7 +671,7 @@ async def test_regen_resolves_partial_messageable_interaction_channel_via_fetch_
     _recorded(cog).responses.stream_queue = [[_text_event(delta="New DM answer"), completed]]
 
     click = _regen_interaction(reply_message_id=2801, user_id=100, channel=partial)
-    await cog._handle_regen(interaction=as_interaction(fake=click))
+    await cog.regenerator.handle(interaction=as_interaction(fake=click))
 
     assert fetched_channel_ids == [full_channel.id]
     assert full_channel.fetched_ids == [source.id]
@@ -715,12 +719,12 @@ async def test_regen_validates_access_with_single_row_lookup_and_walks_chain_onc
         chain_walks.append(reply_message_id)
         return await load_regen_chain_state(reply_message_id=reply_message_id)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.load_reply_turn", spy_load_reply_turn)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.load_regen_chain_state", spy_load_chain)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.regen.load_reply_turn", spy_load_reply_turn)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.regen.load_regen_chain_state", spy_load_chain)
 
     # Rejected bystander stops after single-row lookup without walking the chain.
     bystander = _regen_interaction(reply_message_id=2901, user_id=999, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=bystander))
+    await cog.regenerator.handle(interaction=as_interaction(fake=bystander))
     assert bystander.edits[-1]["content"] == "只有原發問者可以重新生成這則回覆"
     assert row_lookups == [2901]
     assert chain_walks == []
@@ -731,7 +735,7 @@ async def test_regen_validates_access_with_single_row_lookup_and_walks_chain_onc
     completed.response.model = "gemini-4-neon"
     _recorded(cog).responses.stream_queue = [[_text_event(delta="Fresh"), completed]]
     asker = _regen_interaction(reply_message_id=2901, user_id=100, channel=channel)
-    await cog._handle_regen(interaction=as_interaction(fake=asker))
+    await cog.regenerator.handle(interaction=as_interaction(fake=asker))
     assert asker.edits[-1]["content"] == "已重新生成回覆"
     assert row_lookups == [2901]
     assert chain_walks == [2901]

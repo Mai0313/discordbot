@@ -24,6 +24,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.utils.timezone import database_now
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
@@ -38,7 +39,7 @@ from discordbot.cogs.memory.views import (
     memory_footer_text,
     build_clear_confirm_embed,
 )
-from discordbot.utils.asyncio_locks import LoopLocalRegistry
+from discordbot.utils.asyncio_locks import LoopLocalRegistry, spawn_tracked
 from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT, clip_to_utf16_limit
 from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
@@ -64,7 +65,9 @@ from discordbot.services.memory.catchup import (
     release_catchup_cooldown,
 )
 from discordbot.typings.context_budgets import HISTORY_MESSAGE_LIMIT
+from discordbot.services.memory.pipeline import resume_after_restart
 from discordbot.utils.channel_visibility import channel_is_public
+from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.regeneration import (
     regeneration_on_cooldown,
     regeneration_has_evidence,
@@ -104,16 +107,54 @@ class MemoryCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        self._memory_writer: MemoryWriterAI | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._ready_started = False
+        self._started_at = database_now()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
         """Returns the cached `AsyncOpenAI` client reused across memory requests."""
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    @cached_property
+    @property
     def memory_writer(self) -> MemoryWriterAI:
-        """Returns the cached `MemoryWriterAI` bound to this cog's client and memory model."""
-        return MemoryWriterAI(client=self.client, model=self.runtime_models.memory_model)
+        """Returns the `MemoryWriterAI` bound to this cog's client and current bot user id."""
+        bot_user = self.bot.user
+        bot_user_id = bot_user.id if bot_user is not None else None
+        if self._memory_writer is not None and (
+            self._memory_writer.bot_user_id == bot_user_id or bot_user_id is None
+        ):
+            return self._memory_writer
+        writer = MemoryWriterAI(
+            client=self.client, model=self.runtime_models.memory_model, bot_user_id=bot_user_id
+        )
+        if bot_user_id is not None:
+            self._memory_writer = writer
+        return writer
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Starts memory git history and runs the one-shot restart resume."""
+        if self._ready_started:
+            return
+        memory_git.start()
+        self._ready_started = True
+        spawn_tracked(
+            coro=resume_after_restart(
+                writer=lambda: self.memory_writer,
+                tasks=self._tasks,
+                updated_before=self._started_at,
+            ),
+            tasks=self._tasks,
+            name="memory-resume",
+        )
+
+    def cog_unload(self) -> None:
+        """Stops memory git history when unloading if no reply cog remains to share it."""
+        get_cog = getattr(self.bot, "get_cog", None)
+        if memory_git.is_running and (get_cog is None or get_cog("ReplyGeneratorCogs") is None):
+            spawn_tracked(coro=memory_git.stop(), tasks=self._tasks, name="memory-git-stop")
 
     @nextcord.slash_command(
         name="memory",
@@ -251,17 +292,16 @@ class MemoryCogs(commands.Cog):
 
     def _memory_sections(self, scope: str) -> list[str]:
         """Returns display sections for `scope` (bare for server, labelled per compartment)."""
-        flavor = flavor_of(scope=scope)
         compartments = list_compartments(scope=scope)
-        if flavor == "server":
+        if flavor_of(scope=scope) == "server":
             document = read_memory_document(
-                scope=scope, compartments=compartments, flavor=flavor, max_chars=_SHOW_MAX_CHARS
+                scope=scope, compartments=compartments, max_chars=_SHOW_MAX_CHARS
             )
             return [document] if document else []
         sections: list[str] = []
         for compartment in compartments:
             document = read_memory_document(
-                scope=scope, compartments=[compartment], flavor=flavor, max_chars=_SHOW_MAX_CHARS
+                scope=scope, compartments=[compartment], max_chars=_SHOW_MAX_CHARS
             )
             if document:
                 label = compartment_label(compartment=compartment, bot=self.bot)
@@ -653,7 +693,7 @@ def _catchup_boundary(message: Message, bot: commands.Bot) -> int | None:
         ):
             continue
         tail = (embed.url or "").rsplit("/", 1)[-1]
-        return int(tail) if tail.isdigit() else message.id
+        return int(tail) if tail.isdecimal() else message.id
     return None
 
 

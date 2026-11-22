@@ -41,6 +41,4 @@ def _alias_fact(
 
 def _server_document() -> str:
     """Renders the server scope the way both the reply path and the cog read it."""
-    return read_memory_document(
-        scope=SERVER_SCOPE, compartments=[GLOBAL_COMPARTMENT], flavor="server"
-    )
+    return read_memory_document(scope=SERVER_SCOPE, compartments=[GLOBAL_COMPARTMENT])

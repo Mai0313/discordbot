@@ -217,10 +217,17 @@ class FakeMemoryClient:
         self.responses = FakeMemoryResponses()
 
 
-def make_memory_cog() -> MemoryCogs:
+def make_memory_cog(bot_user_id: int | None = None) -> MemoryCogs:
     """Builds a MemoryCogs instance around a stub bot.
 
     `get_guild` answers None so a guild compartment's heading falls back to its id, the
     same way it would for a server the bot has since left.
     """
-    return MemoryCogs(bot=as_bot(fake=SimpleNamespace(get_guild=lambda _guild_id: None)))
+    bot_user = SimpleNamespace(id=bot_user_id, name="bot") if bot_user_id is not None else None
+    return MemoryCogs(
+        bot=as_bot(
+            fake=SimpleNamespace(
+                user=bot_user, get_guild=lambda _guild_id: None, get_cog=lambda _name: None
+            )
+        )
+    )

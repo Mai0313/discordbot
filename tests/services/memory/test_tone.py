@@ -384,7 +384,7 @@ async def test_consolidate_if_needed_server_scope_never_writes_tone(
         section="culture", text="整理", tone="## 語氣偏好\n* 不該存在"
     )
     await consolidation.consolidate_if_needed(scope=scope, writer=writer, identity="srv")
-    assert "整理" in _memory_text(scope=scope, flavor="server")
+    assert "整理" in _memory_text(scope=scope)
     # A server scope has exactly one compartment, so its evidence never fans out.
     assert list_compartments(scope=scope) == [GLOBAL_COMPARTMENT]
     # The tone note is a per-user tier; a server consolidation never writes one.

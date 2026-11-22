@@ -218,7 +218,7 @@ async def regenerate_scope_memory(
             _restore_compartments(run=run, replaced=state.replaced)
         if not succeeded or cleared_since(scope=scope, started_at=started_at):
             return RegenerationReport(result="failed", unreadable_removed=state.unreadable_removed)
-        report_injection_size(scope=scope, flavor=run.flavor)
+        report_injection_size(scope=scope)
         raw_entries = read_raw_entries(scope=scope)
         if raw_entries:
             # Retire consumed raw entries into detail.md so they are not re-ingested.
@@ -336,7 +336,6 @@ async def _rebuild_compartment(
     outcome = apply_deltas(
         scope=run.scope,
         compartment=compartment,
-        flavor=run.flavor,
         deltas=result.deltas,
         owner=run.owner,
         allow_mass_delete=False,
@@ -415,7 +414,6 @@ def _replace_compartment(
     outcome = apply_deltas(
         scope=run.scope,
         compartment=compartment,
-        flavor=run.flavor,
         deltas=result.deltas,
         owner=run.owner,
         allow_mass_delete=True,

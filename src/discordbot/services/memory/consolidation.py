@@ -245,7 +245,7 @@ async def _retire_completed_segments(
     # Sweep every compartment (not only touched ones) so idle guilds still age out expired facts.
     for compartment in list_compartments(scope=run.scope):
         sweep_stale_facts(scope=run.scope, compartment=compartment, today=today_utc())
-    report_injection_size(scope=run.scope, flavor=run.flavor)
+    report_injection_size(scope=run.scope)
     # Every failure path returns earlier, so retiring into detail.md never drops unread entries.
     append_detail(scope=run.scope, text=raw_entries)
     replace_raw(scope=run.scope, text=remaining)
@@ -453,7 +453,6 @@ async def _consolidate_compartment(
     outcome = apply_deltas(
         scope=run.scope,
         compartment=compartment,
-        flavor=run.flavor,
         deltas=result.deltas,
         owner=run.owner,
         # Forget passes are exempt from the net-deletion cap (see MAX_NET_FACT_DELETIONS_FLOOR).
@@ -595,14 +594,13 @@ def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
     return f"memory readable only inside Discord server {guild_id}"
 
 
-def report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
+def report_injection_size(scope: str) -> None:
     """Logs when a scope's injectable document approaches or exceeds the hard cap.
 
     Never deletes facts on disk.
 
     Args:
         scope (str): Memory scope to measure.
-        flavor (MemoryFlavor): Scope flavor used to render the document.
     """
     compartments = list_compartments(scope=scope)
     if not compartments:
@@ -610,10 +608,7 @@ def report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
     # Measure across all compartments (matching the owner's DM view, the widest read context).
     widest = len(
         read_memory_document(
-            scope=scope,
-            compartments=compartments,
-            flavor=flavor,
-            max_chars=MEMORY_INJECTION_MAX_CHARS * 4,
+            scope=scope, compartments=compartments, max_chars=MEMORY_INJECTION_MAX_CHARS * 4
         )
     )
     if widest > MEMORY_INJECTION_MAX_CHARS:
