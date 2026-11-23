@@ -108,12 +108,11 @@ def _has_regen_button(view: object) -> bool:
     )
 
 
-@pytest.mark.parametrize("preserved_effort", ["high", "xhigh"])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_reverse_order(
-    preserved_effort: str,
-) -> None:
-    """Regen reuses effort (including `xhigh`), forces QA even if classifier returns IMAGE, records implicit feedback, and deletes chunks reversed."""
+async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_reverse_order() -> (
+    None
+):
+    """Regen reuses effort, forces QA even if classifier returns IMAGE, records implicit feedback, and deletes chunks reversed."""
     cog = _cog()
     cog.config.inline_voice_enabled = False
     cog.config.inline_image_enabled = False
@@ -131,14 +130,14 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
         surface="gateway",
         route="QA",
         model="gemini-4-neon",
-        effort=preserved_effort,
+        effort="high",
         backend="responses",
         question="Explain WAL",
         answer="Old chunked answer",
         reply_message_ids=[2001, 2002],
     )
 
-    # Even if classifier picks IMAGE + low, regen forces QA + preserved effort.
+    # Even if classifier picks IMAGE + low, regen forces QA + preserved effort="high".
     _recorded(cog).responses.output_parsed = RouteClassification(decision="IMAGE", effort="low")
     completed = _completed_event(input_tokens=15, output_tokens=20)
     completed.response.model = "gemini-4-neon"
@@ -153,9 +152,7 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
     assert [edit["content"] for edit in click.edits] == ["正在重新生成回覆中⋯", "已重新生成回覆"]
     assert channel.fetched_ids == [source.id]
     assert channel.deleted_ids == [2002, 2001]
-    assert _recorded(cog).responses.create_reasonings == [
-        {"effort": preserved_effort, "summary": "auto"}
-    ]
+    assert _recorded(cog).responses.create_reasonings == [{"effort": "high", "summary": "auto"}]
 
     assert len(source.replies) == 1
     new_reply = source.replies[0]
@@ -168,7 +165,7 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
     assert old_turn is not None
     assert new_turn is not None
     assert new_turn.regen_of_reply_message_id == 2002
-    assert new_turn.effort == preserved_effort
+    assert new_turn.effort == "high"
     assert parse_reply_message_ids(raw=new_turn.reply_message_ids, fallback_id=new_reply.id) == [
         new_reply.id
     ]

@@ -297,7 +297,7 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inp
         model (str): Gemini model name to dispatch.
         system_instruction (str): Runtime developer instructions for the turn.
         steps (list[StepParam]): Translated conversation and YouTube input steps.
-        effort (ReasoningEffort): Reasoning effort grade (`"low"`, `"medium"`, `"high"` or `"xhigh"`).
+        effort (ReasoningEffort): Reasoning effort grade (`"low"`, `"medium"` or `"high"`).
         tool_use (AnswerToolUse): The streamer's record of the answer's tool use.
     """
     responses = await client.aio.interactions.create(

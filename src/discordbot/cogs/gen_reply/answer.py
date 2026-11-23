@@ -85,7 +85,7 @@ class RegenOptions(BaseModel):
         default_factory=frozenset,
         description="Models already tried earlier in this regen chain, excluded in blind-test mode.",
     )
-    forced_effort: Literal["low", "medium", "high", "xhigh"] | None = Field(
+    forced_effort: Literal["low", "medium", "high"] | None = Field(
         default=None, description="Reasoning effort preserved from the replaced turn, when valid."
     )
 
@@ -439,7 +439,7 @@ class AnswerTurn(BaseModel):
 
     def _select_qa_model(
         self,
-        effort: Literal["low", "medium", "high", "xhigh"],
+        effort: Literal["low", "medium", "high"],
         system_prompt: str,
         excluded_models: frozenset[str] = frozenset(),
     ) -> tuple[ModelSettings, str, str]:
@@ -480,7 +480,7 @@ class AnswerTurn(BaseModel):
         self,
         system_prompt: str,
         context: ReplyContext,
-        effort: Literal["low", "medium", "high", "xhigh"] = "medium",
+        effort: Literal["low", "medium", "high"] = "medium",
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
@@ -495,8 +495,7 @@ class AnswerTurn(BaseModel):
         Args:
             system_prompt (str): Base QA system prompt before marker instructions are applied.
             context (ReplyContext): Pre-built conversation, link, and memory context.
-            effort (Literal["low", "medium", "high", "xhigh"]): Reasoning effort selected by the
-                router.
+            effort (Literal["low", "medium", "high"]): Reasoning effort selected by the router.
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.
