@@ -62,6 +62,10 @@ class TurnRecord(BaseModel):
     regen_of_reply_message_id: int | None = Field(
         default=None, description="Parent reply message id replaced by this regen turn, or None."
     )
+    answer_seconds: float | None = Field(
+        default=None,
+        description="Recorded answer or media generation duration in seconds, or None.",
+    )
     created_at: str = Field(..., description="ISO timestamp written to `reply_turn`.")
 
 
@@ -182,7 +186,7 @@ def _load_turns(
     rows = conn.execute(
         "SELECT reply_message_id, source_message_id, guild_id, channel_id, author_id, "
         "author_name, author_display_name, surface, route, model, effort, backend, question, "
-        "answer, regen_of_reply_message_id, created_at "
+        "answer, regen_of_reply_message_id, answer_seconds, created_at "
         "FROM reply_turn "
         "WHERE (? IS NULL OR route = ?) "
         "AND (? IS NULL OR model = ?) "
@@ -384,18 +388,33 @@ def _render_overview(
     return grid
 
 
+def _latency_summary(durations: list[float]) -> tuple[str, str]:
+    """Returns formatted `(p50, avg)` latency strings, or `("-", "-")` when empty."""
+    if not durations:
+        return "-", "-"
+    ordered = sorted(durations)
+    mid = len(ordered) // 2
+    p50 = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    avg = sum(ordered) / len(ordered)
+    return f"{p50:.1f}s", f"{avg:.1f}s"
+
+
 def _render_model_summary(
     turns: list[TurnRecord],
     feedback: list[FeedbackRecord],
     regenerated_parent_ids: set[int] | frozenset[int] = frozenset(),
 ) -> Table:
-    """Returns one row per `(route, model)` summarizing turns, votes, approval, regens, and reasons."""
+    """Returns one row per `(route, model)` summarizing turns, votes, approval, regens, latency, and reasons."""
     turn_counts: Counter[tuple[str, str]] = Counter((turn.route, turn.model) for turn in turns)
     regen_counts: Counter[tuple[str, str]] = Counter(
         (turn.route, turn.model)
         for turn in turns
         if turn.reply_message_id in regenerated_parent_ids
     )
+    latencies: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for turn in turns:
+        if turn.answer_seconds is not None:
+            latencies[(turn.route, turn.model)].append(turn.answer_seconds)
     up_counts: Counter[tuple[str, str]] = Counter()
     down_counts: Counter[tuple[str, str]] = Counter()
     reason_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
@@ -422,6 +441,8 @@ def _render_model_summary(
     table.add_column("👎", justify="right", style="red", no_wrap=True)
     table.add_column("Appr", justify="right", no_wrap=True)
     table.add_column("Regen", justify="right", no_wrap=True)
+    table.add_column("P50", justify="right", no_wrap=True)
+    table.add_column("Avg", justify="right", no_wrap=True)
     table.add_column("Reasons")
 
     for key in keys:
@@ -432,6 +453,7 @@ def _render_model_summary(
         total_turns = turn_counts[key]
         regens = regen_counts[key]
         regen_label = f"{regens} ({regens / total_turns * 100:.1f}%)" if total_turns else "-"
+        p50_label, avg_label = _latency_summary(durations=latencies[key])
         table.add_row(
             Text(text=key[0]),
             Text(text=key[1]),
@@ -440,6 +462,8 @@ def _render_model_summary(
             str(down),
             approval,
             regen_label,
+            p50_label,
+            avg_label,
             Text(text=_format_model_reasons(reasons=reason_counts[key])),
         )
     return table
@@ -576,7 +600,7 @@ def _show_turn(  # noqa: PLR0913 -- scene rendering reads both DBs, cache, conte
     row = conn.execute(
         "SELECT reply_message_id, source_message_id, guild_id, channel_id, author_id, "
         "author_name, author_display_name, surface, route, model, effort, backend, question, "
-        "answer, regen_of_reply_message_id, created_at "
+        "answer, regen_of_reply_message_id, answer_seconds, created_at "
         "FROM reply_turn WHERE reply_message_id = ?",
         (reply_message_id,),
     ).fetchone()
@@ -620,6 +644,9 @@ def _show_turn(  # noqa: PLR0913 -- scene rendering reads both DBs, cache, conte
     meta.add_row(
         "model / effort / backend",
         Text(text=f"{turn.model} / {turn.effort or '-'} / {turn.backend}"),
+    )
+    meta.add_row(
+        "answer_seconds", f"{turn.answer_seconds:.1f}s" if turn.answer_seconds is not None else "-"
     )
     meta.add_row("asker", Text(text=asker_identity))
     meta.add_row("guild / channel", Text(text=location))

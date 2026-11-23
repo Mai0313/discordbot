@@ -24,6 +24,7 @@ from discordbot.typings.context_budgets import (
     MEDIA_REFINE_CONTEXT_MAX_CHARS,
 )
 from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
+from discordbot.cogs.gen_reply.feedback_store import ReplyTurnRow, open_session
 
 from tests.helpers.casting import (
     as_message,
@@ -882,3 +883,40 @@ async def test_media_refine_truncates_single_oversized_newest_message() -> None:
     assert "1. Keep head" in context_body
     assert context_body.endswith("…")
     assert len(context_body) == MEDIA_REFINE_CONTEXT_MAX_CHARS
+
+
+async def test_media_routes_record_elapsed_answer_seconds_in_reply_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IMAGE and VIDEO routes pass their delivery elapsed seconds into `reply_turn.answer_seconds`."""
+    cog = _cog()
+    cog.config.feedback_enabled = True
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.media_reply.upload_as_input_file",
+        lambda **_kwargs: asyncio.sleep(
+            0, result={"type": "input_file", "file_id": "https://x/files/v"}
+        ),
+    )
+    ticks = iter([10.0, 14.5, 20.0, 32.0])
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.media_reply.time",
+        SimpleNamespace(monotonic=lambda: next(ticks)),
+    )
+
+    fake_img = FakeMessage(content="畫貓", author=FakeAuthor(user_id=1))
+    await _media_routes(cog=cog, message=as_message(fake=fake_img)).handle_image(
+        user_prompt="draw a cat", context_task=_ready_context_task()
+    )
+
+    fake_vid = FakeMessage(content="做影片", author=FakeAuthor(user_id=2))
+    await _media_routes(cog=cog, message=as_message(fake=fake_vid)).handle_video(
+        user_prompt="make a video", context_task=_ready_context_task()
+    )
+
+    async with open_session() as session:
+        img_row = await session.get(entity=ReplyTurnRow, ident=fake_img.replies[0].id)
+        vid_row = await session.get(entity=ReplyTurnRow, ident=fake_vid.replies[0].id)
+    assert img_row is not None
+    assert img_row.answer_seconds == pytest.approx(expected=4.5)
+    assert vid_row is not None
+    assert vid_row.answer_seconds == pytest.approx(expected=12.0)

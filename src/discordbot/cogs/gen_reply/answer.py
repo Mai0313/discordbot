@@ -85,7 +85,7 @@ class RegenOptions(BaseModel):
         default_factory=frozenset,
         description="Models already tried earlier in this regen chain, excluded in blind-test mode.",
     )
-    forced_effort: Literal["low", "medium", "high"] | None = Field(
+    forced_effort: Literal["low", "medium", "high", "xhigh"] | None = Field(
         default=None, description="Reasoning effort preserved from the replaced turn, when valid."
     )
 
@@ -201,6 +201,7 @@ class AnswerTurn(BaseModel):
         backend: str,
         question: str,
         regen_of_reply_message_id: int | None = None,
+        answer_seconds: float | None = None,
     ) -> None:
         """Persists a best-effort `reply_turn` snapshot for feedback buttons when enabled."""
         if not self.config.feedback_enabled or streamer.last_reply is None:
@@ -228,6 +229,7 @@ class AnswerTurn(BaseModel):
                 answer=recorded_answer,
                 reply_message_ids=chunk_ids,
                 regen_of_reply_message_id=regen_of_reply_message_id,
+                answer_seconds=answer_seconds,
             )
         except Exception as exc:
             # Broad on purpose: best-effort feedback snapshot must never fail a delivered reply.
@@ -249,12 +251,18 @@ class AnswerTurn(BaseModel):
         question: str,
         model_override: str | None = None,
         regen_of_reply_message_id: int | None = None,
+        answer_seconds: float | None = None,
     ) -> Callable[[ResponseStreamer], Awaitable[None]] | None:
         """Returns the `on_final_message` hook when feedback is enabled, else None."""
         if not self.config.feedback_enabled:
             return None
 
         async def record(active: ResponseStreamer) -> None:
+            resolved_seconds = (
+                answer_seconds
+                if answer_seconds is not None
+                else (active.answer_seconds if route == "QA" else None)
+            )
             await self._record_feedback_turn(
                 streamer=active,
                 route=route,
@@ -263,11 +271,12 @@ class AnswerTurn(BaseModel):
                 backend=backend,
                 question=question,
                 regen_of_reply_message_id=regen_of_reply_message_id,
+                answer_seconds=resolved_seconds,
             )
 
         return record
 
-    async def stream_media_persona_reply(  # noqa: PLR0913 -- media route passes prompt, pixels, noun, model, question
+    async def stream_media_persona_reply(  # noqa: PLR0913 -- media route passes prompt, pixels, noun, model, question, duration
         self,
         reply: Message | None,
         context_task: asyncio.Task[ReplyContext],
@@ -276,6 +285,7 @@ class AnswerTurn(BaseModel):
         media_noun: str,
         media_model: str = "",
         question: str = "",
+        answer_seconds: float | None = None,
     ) -> None:
         """Streams a best-effort persona follow-up onto an already-delivered image or video.
 
@@ -292,6 +302,7 @@ class AnswerTurn(BaseModel):
             media_noun (str): Media label (`"image"` or `"video"`) for the prompt and span.
             media_model (str): Generator model name recorded on the feedback snapshot.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.
+            answer_seconds (float | None): Media generation and delivery duration in seconds.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
@@ -335,6 +346,7 @@ class AnswerTurn(BaseModel):
                     backend="interactions" if media_noun == "video" else "responses",
                     question=question,
                     model_override=media_model or None,
+                    answer_seconds=answer_seconds,
                 ),
             )
             with logfire.span(
@@ -427,7 +439,7 @@ class AnswerTurn(BaseModel):
 
     def _select_qa_model(
         self,
-        effort: Literal["low", "medium", "high"],
+        effort: Literal["low", "medium", "high", "xhigh"],
         system_prompt: str,
         excluded_models: frozenset[str] = frozenset(),
     ) -> tuple[ModelSettings, str, str]:
@@ -468,7 +480,7 @@ class AnswerTurn(BaseModel):
         self,
         system_prompt: str,
         context: ReplyContext,
-        effort: Literal["low", "medium", "high"] = "medium",
+        effort: Literal["low", "medium", "high", "xhigh"] = "medium",
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
@@ -483,7 +495,8 @@ class AnswerTurn(BaseModel):
         Args:
             system_prompt (str): Base QA system prompt before marker instructions are applied.
             context (ReplyContext): Pre-built conversation, link, and memory context.
-            effort (Literal["low", "medium", "high"]): Reasoning effort selected by the router.
+            effort (Literal["low", "medium", "high", "xhigh"]): Reasoning effort selected by the
+                router.
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.

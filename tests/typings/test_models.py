@@ -120,3 +120,17 @@ def test_the_route_schema_names_every_registered_link_source_inline(
     assert "$defs" not in schema
     assert "$ref" not in json.dumps(obj=field)
     assert set(field["items"]["enum"]) == {source.name for source in LINK_CONTEXT_SOURCES}
+
+
+@pytest.mark.parametrize("route_shape", [RouteClassification, RecallRouteClassification])
+def test_the_route_schema_exposes_all_four_efforts_inline(
+    route_shape: type[RouteClassification],
+) -> None:
+    """`RouteClassification.effort` stays inline with all four grades including `xhigh`."""
+    schema = route_shape.model_json_schema()
+    effort_field = schema["properties"]["effort"]
+    assert "$defs" not in schema
+    assert "$ref" not in json.dumps(obj=effort_field)
+    assert effort_field["enum"] == ["low", "medium", "high", "xhigh"]
+    for grade in ("low", "medium", "high", "xhigh"):
+        assert route_shape.model_validate(obj={"decision": "QA", "effort": grade}).effort == grade

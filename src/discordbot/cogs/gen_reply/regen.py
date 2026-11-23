@@ -256,9 +256,9 @@ class ReplyRegenerator(BaseModel):
 
         surface = TurnSurface.for_message(message=source_message)
         reactions = surface.status_chain(bot_user=self.bot.user)
-        forced_effort: Literal["low", "medium", "high"] | None = (
-            cast("Literal['low', 'medium', 'high']", state.effort)
-            if state.effort in ("low", "medium", "high")
+        forced_effort: Literal["low", "medium", "high", "xhigh"] | None = (
+            cast("Literal['low', 'medium', 'high', 'xhigh']", state.effort)
+            if state.effort in ("low", "medium", "high", "xhigh")
             else None
         )
         regen = RegenOptions(

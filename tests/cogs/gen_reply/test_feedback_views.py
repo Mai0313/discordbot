@@ -263,6 +263,8 @@ async def test_answer_turn_records_real_post_fallback_model_and_respects_kill_sw
     assert rows[0].author_display_name == message.author.display_name
     assert rows[0].question == "幫我解釋 WAL"
     assert rows[0].answer == "WAL 是預寫日誌"
+    assert rows[0].answer_seconds is not None
+    assert rows[0].answer_seconds >= 0.0
 
     # With kill-switch off, no buttons or policy note are attached and no row is inserted.
     cog.config.feedback_enabled = False
@@ -318,6 +320,7 @@ async def test_media_persona_reply_records_media_route_and_generator_model(
         media_noun="image",
         media_model="gemini-nano-banana-2.1",
         question="畫一隻貓",
+        answer_seconds=4.25,
     )
 
     assert isinstance(delivered.view, ReplyFeedbackView)
@@ -329,6 +332,7 @@ async def test_media_persona_reply_records_media_route_and_generator_model(
     assert row.model == "gemini-nano-banana-2.1"
     assert row.question == "畫一隻貓"
     assert row.answer == "畫好了!"
+    assert row.answer_seconds == pytest.approx(expected=4.25)
 
 
 async def test_on_ready_registers_persistent_feedback_view_once(
@@ -463,8 +467,18 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
     )
     assert _has_regen(view=msg1.replies[0].view) is False
 
-    # Blind test on (3 candidates -> max_regens=2): regen_count=1 still shows 🔄, regen_count=2 hides it.
+    # Blind test on (default 2 candidates -> max_regens=1): regen=None shows 🔄, regen_count=1 hides it.
     cog.config.slow_model_blind_test_enabled = True
+    msg_b0 = FakeMessage(content="<@999> qb0")
+    turn_b0 = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg_b0)),
+    )
+    await turn_b0.stream_answer(system_prompt="Be concise.", context=ReplyContext())
+    assert _has_regen(view=msg_b0.replies[0].view) is True
+
     msg_b1 = FakeMessage(content="<@999> qb1")
     turn_b1 = AnswerTurn(
         config=cog.config,
@@ -477,7 +491,27 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         context=ReplyContext(),
         regen=RegenOptions(regen_of_reply_message_id=101, regen_count=1),
     )
-    assert _has_regen(view=msg_b1.replies[0].view) is True
+    assert _has_regen(view=msg_b1.replies[0].view) is False
+
+    # With 3 candidates -> max_regens=2: regen_count=1 still shows 🔄, regen_count=2 hides it.
+    monkeypatch.setattr(
+        type(cog.toolkit.runtime_models),
+        "slow_model_blind_test_candidates",
+        property(lambda _self: ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-extra")),
+    )
+    msg_b1_three = FakeMessage(content="<@999> qb1_3")
+    turn_b1_three = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg_b1_three)),
+    )
+    await turn_b1_three.stream_answer(
+        system_prompt="Be concise.",
+        context=ReplyContext(),
+        regen=RegenOptions(regen_of_reply_message_id=102, regen_count=1),
+    )
+    assert _has_regen(view=msg_b1_three.replies[0].view) is True
 
     msg_b2 = FakeMessage(content="<@999> qb2")
     turn_b2 = AnswerTurn(
@@ -489,7 +523,7 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
     await turn_b2.stream_answer(
         system_prompt="Be concise.",
         context=ReplyContext(),
-        regen=RegenOptions(regen_of_reply_message_id=102, regen_count=2),
+        regen=RegenOptions(regen_of_reply_message_id=103, regen_count=2),
     )
     assert _has_regen(view=msg_b2.replies[0].view) is False
 
