@@ -12,7 +12,7 @@ from contextlib import AbstractAsyncContextManager
 from collections.abc import Sequence
 
 from pydantic import Field, BaseModel
-from sqlalchemy import Text, Index, Integer, DateTime, ForeignKey, select
+from sqlalchemy import Text, Float, Index, Integer, DateTime, ForeignKey, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +60,7 @@ class ReplyTurnRow(Base):
         nullable=True,
     )
     reply_message_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
 
     __table_args__ = (
@@ -207,6 +208,7 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
     author_display_name: str | None = None,
     reply_message_ids: Sequence[int] | None = None,
     regen_of_reply_message_id: int | None = None,
+    answer_seconds: float | None = None,
 ) -> None:
     """Persists one finalized reply snapshot, updating in place if the reply id already exists.
 
@@ -227,6 +229,7 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
         author_display_name (str | None): Write-time display name or guild nick of the author.
         reply_message_ids (Sequence[int] | None): Ordered Discord chunk message ids for this reply.
         regen_of_reply_message_id (int | None): Parent reply message id replaced by this regen turn.
+        answer_seconds (float | None): Total answer/media generation latency in seconds, if measured.
     """
     serialized_ids = json.dumps(obj=list(reply_message_ids)) if reply_message_ids else None
     async with open_session() as session, session.begin():
@@ -248,6 +251,7 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
                 answer=answer,
                 regen_of_reply_message_id=regen_of_reply_message_id,
                 reply_message_ids=serialized_ids,
+                answer_seconds=answer_seconds,
             )
         )
 

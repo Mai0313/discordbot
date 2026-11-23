@@ -230,11 +230,12 @@ class MediaReplyRoutes(BaseModel):
                     image_bytes_list=image_bytes_list or None,
                 )
             reply = await self._deliver(data=image_bytes, filename=INLINE_IMAGE_FILENAME)
+            elapsed_seconds = time.monotonic() - started
             logfire.info(
                 "gen_reply image delivered",
                 message_id=message.id,
                 model=toolkit.runtime_models.image_model.name,
-                elapsed_seconds=time.monotonic() - started,
+                elapsed_seconds=elapsed_seconds,
             )
 
         # Inline base64 keeps the image persona reply provider-agnostic.
@@ -248,6 +249,7 @@ class MediaReplyRoutes(BaseModel):
             media_noun="image",
             media_model=toolkit.runtime_models.image_model.name,
             question=user_prompt,
+            answer_seconds=elapsed_seconds,
         )
 
     async def handle_video(
@@ -313,11 +315,12 @@ class MediaReplyRoutes(BaseModel):
                         prompt=refined_prompt, reference_image_sources=images
                     )
             reply = await self._deliver(data=video_bytes, filename=INLINE_VIDEO_FILENAME)
+            elapsed_seconds = time.monotonic() - started
             logfire.info(
                 "gen_reply video delivered",
                 message_id=message.id,
                 model=toolkit.runtime_models.video_model.name,
-                total_elapsed_seconds=time.monotonic() - started,
+                total_elapsed_seconds=elapsed_seconds,
                 bytes=len(video_bytes),
             )
 
@@ -327,15 +330,17 @@ class MediaReplyRoutes(BaseModel):
             context_task=context_task,
             media_model=toolkit.runtime_models.video_model.name,
             question=user_prompt,
+            answer_seconds=elapsed_seconds,
         )
 
-    async def _reply_about_video(
+    async def _reply_about_video(  # noqa: PLR0913 -- video upload + persona reply inputs
         self,
         reply: Message | None,
         video_bytes: bytes,
         context_task: asyncio.Task[ReplyContext],
         media_model: str = "",
         question: str = "",
+        answer_seconds: float | None = None,
     ) -> None:
         """Uploads `video_bytes` for a persona reply, draining `context_task` on upload failure."""
         video_part = await upload_as_input_file(
@@ -357,4 +362,5 @@ class MediaReplyRoutes(BaseModel):
             media_noun="video",
             media_model=media_model,
             question=question,
+            answer_seconds=answer_seconds,
         )

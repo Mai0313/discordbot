@@ -266,6 +266,11 @@ class ResponseStreamer(BaseModel):
     _reasoning_logged: bool = PrivateAttr(default=False)
     _answer_seconds: float = PrivateAttr(default=0.0)
 
+    @property
+    def answer_seconds(self) -> float:
+        """Returns elapsed seconds from streamer creation through stream completion."""
+        return self._answer_seconds
+
     def _render_preview(self) -> str:
         """Returns the preview text: scrubbed content once started, else a reasoning tail."""
         if self.content_started:

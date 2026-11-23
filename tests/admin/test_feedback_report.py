@@ -191,8 +191,11 @@ def test_feedback_report_no_wrap_and_non_terminal_widening(
     """Key summary/detail columns disable wrapping and non-terminal consoles widen to at least 160."""
     table = _render_model_summary(turns=[], feedback=[])
     no_wrap_headers = {col.header: col.no_wrap for col in table.columns}
-    for header in ("Route", "Model", "Turns", "👍", "👎", "Appr", "Regen"):
+    for header in ("Route", "Model", "Turns", "👍", "👎", "Appr", "Regen", "P50", "Avg"):
         assert no_wrap_headers[header] is True
+    justify_by_header = {col.header: col.justify for col in table.columns}
+    assert justify_by_header["P50"] == "right"
+    assert justify_by_header["Avg"] == "right"
 
     db_path = _copy_reply_db(tmp_path=tmp_path, migrated_databases=migrated_databases)
     narrow = _capture(
@@ -536,3 +539,72 @@ def test_feedback_report_separates_regen_from_explicit_votes_and_renders_pairwis
     assert "regenerated_to" in show_middle
     assert "307" in show_middle
     assert "重新生成" in show_middle
+
+
+def test_feedback_report_renders_latency_summary_and_show_metadata(
+    tmp_path: Path, migrated_databases: dict[str, Path]
+) -> None:
+    """`By Model` computes P50/Avg ignoring NULLs (showing `-` when all NULL) and `--show` prints `answer_seconds`."""
+    db_path = tmp_path / "latency_reply.db"
+    db_path.write_bytes(migrated_databases["reply"].read_bytes())
+    conn = sqlite3.connect(database=db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO reply_turn (
+                reply_message_id, source_message_id, guild_id, channel_id, author_id,
+                author_name, author_display_name, surface, route, model, effort, backend,
+                question, answer, answer_seconds, created_at
+            ) VALUES
+                -- neon QA: 4 non-NULL [1.0, 2.0, 6.0, 11.0] + 1 NULL => P50=(2+6)/2=4.0s, Avg=5.0s
+                (401, 4001, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'medium', 'responses', 'Q1', 'A1', 11.0, '2026-11-22T10:00:00+08:00'),
+                (402, 4002, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'high', 'responses', 'Q2', 'A2', 1.0, '2026-11-22T10:01:00+08:00'),
+                (403, 4003, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'low', 'responses', 'Q3', 'A3', NULL, '2026-11-22T10:02:00+08:00'),
+                (404, 4004, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'xhigh', 'responses', 'Q4', 'A4', 6.0, '2026-11-22T10:03:00+08:00'),
+                (405, 4005, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'medium', 'responses', 'Q5', 'A5', 2.0, '2026-11-22T10:04:00+08:00'),
+                -- hydrogen QA: 3 non-NULL [3.0, 4.5, 10.5] => P50=4.5s, Avg=6.0s
+                (406, 4006, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-hydrogen',
+                 'medium', 'responses', 'Q6', 'A6', 10.5, '2026-11-22T10:05:00+08:00'),
+                (407, 4007, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-hydrogen',
+                 'medium', 'responses', 'Q7', 'A7', 3.0, '2026-11-22T10:06:00+08:00'),
+                (408, 4008, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-hydrogen',
+                 'medium', 'responses', 'Q8', 'A8', 4.5, '2026-11-22T10:07:00+08:00'),
+                -- IMAGE: all NULL => P50=-, Avg=-
+                (409, 4009, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'IMAGE',
+                 'gemini-nano-banana-2.1', '', 'responses', 'Q9', 'A9', NULL,
+                 '2026-11-22T10:08:00+08:00')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = _capture(argv=["--db", str(db_path), "--messages-db", str(tmp_path / "none.db")])
+    assert "P50" in summary
+    assert "Avg" in summary
+    neon_line = next(line for line in summary.splitlines() if "gemini-4-neon" in line)
+    assert "4.0s" in neon_line
+    assert "5.0s" in neon_line
+    hydrogen_line = next(line for line in summary.splitlines() if "gemini-4-hydrogen" in line)
+    assert "4.5s" in hydrogen_line
+    assert "6.0s" in hydrogen_line
+    image_line = next(line for line in summary.splitlines() if "gemini-nano-banana-2.1" in line)
+    assert " - " in image_line
+
+    show_measured = _capture(
+        argv=["--db", str(db_path), "--messages-db", str(tmp_path / "none.db"), "--show", "404"]
+    )
+    assert "answer_seconds" in show_measured
+    assert "6.0s" in show_measured
+
+    show_null = _capture(
+        argv=["--db", str(db_path), "--messages-db", str(tmp_path / "none.db"), "--show", "403"]
+    )
+    assert "answer_seconds" in show_null
+    null_line = next(line for line in show_null.splitlines() if "answer_seconds" in line)
+    assert "-" in null_line

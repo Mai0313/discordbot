@@ -151,16 +151,19 @@ async def test_record_reply_turn_is_idempotent_on_reply_message_id() -> None:
         surface="gateway",
         route="QA",
         model="gemini-4-hydrogen",
-        effort="high",
+        effort="xhigh",
         backend="interactions",
         question="Updated",
         answer="Updated answer",
+        answer_seconds=3.75,
     )
     async with open_session() as session:
         turn = await session.get(entity=ReplyTurnRow, ident=9003)
     assert turn is not None
     assert turn.model == "gemini-4-hydrogen"
+    assert turn.effort == "xhigh"
     assert turn.answer == "Updated answer"
+    assert turn.answer_seconds == pytest.approx(expected=3.75)
 
 
 async def test_deleting_reply_turn_cascades_to_feedback_rows() -> None:

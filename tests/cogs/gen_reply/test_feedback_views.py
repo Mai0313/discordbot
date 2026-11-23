@@ -263,6 +263,8 @@ async def test_answer_turn_records_real_post_fallback_model_and_respects_kill_sw
     assert rows[0].author_display_name == message.author.display_name
     assert rows[0].question == "幫我解釋 WAL"
     assert rows[0].answer == "WAL 是預寫日誌"
+    assert rows[0].answer_seconds is not None
+    assert rows[0].answer_seconds >= 0.0
 
     # With kill-switch off, no buttons or policy note are attached and no row is inserted.
     cog.config.feedback_enabled = False
@@ -318,6 +320,7 @@ async def test_media_persona_reply_records_media_route_and_generator_model(
         media_noun="image",
         media_model="gemini-nano-banana-2.1",
         question="畫一隻貓",
+        answer_seconds=4.25,
     )
 
     assert isinstance(delivered.view, ReplyFeedbackView)
@@ -329,6 +332,7 @@ async def test_media_persona_reply_records_media_route_and_generator_model(
     assert row.model == "gemini-nano-banana-2.1"
     assert row.question == "畫一隻貓"
     assert row.answer == "畫好了!"
+    assert row.answer_seconds == pytest.approx(expected=4.25)
 
 
 async def test_on_ready_registers_persistent_feedback_view_once(

@@ -201,6 +201,7 @@ class AnswerTurn(BaseModel):
         backend: str,
         question: str,
         regen_of_reply_message_id: int | None = None,
+        answer_seconds: float | None = None,
     ) -> None:
         """Persists a best-effort `reply_turn` snapshot for feedback buttons when enabled."""
         if not self.config.feedback_enabled or streamer.last_reply is None:
@@ -228,6 +229,7 @@ class AnswerTurn(BaseModel):
                 answer=recorded_answer,
                 reply_message_ids=chunk_ids,
                 regen_of_reply_message_id=regen_of_reply_message_id,
+                answer_seconds=answer_seconds,
             )
         except Exception as exc:
             # Broad on purpose: best-effort feedback snapshot must never fail a delivered reply.
@@ -249,12 +251,18 @@ class AnswerTurn(BaseModel):
         question: str,
         model_override: str | None = None,
         regen_of_reply_message_id: int | None = None,
+        answer_seconds: float | None = None,
     ) -> Callable[[ResponseStreamer], Awaitable[None]] | None:
         """Returns the `on_final_message` hook when feedback is enabled, else None."""
         if not self.config.feedback_enabled:
             return None
 
         async def record(active: ResponseStreamer) -> None:
+            resolved_seconds = (
+                answer_seconds
+                if answer_seconds is not None
+                else (active.answer_seconds if route == "QA" else None)
+            )
             await self._record_feedback_turn(
                 streamer=active,
                 route=route,
@@ -263,11 +271,12 @@ class AnswerTurn(BaseModel):
                 backend=backend,
                 question=question,
                 regen_of_reply_message_id=regen_of_reply_message_id,
+                answer_seconds=resolved_seconds,
             )
 
         return record
 
-    async def stream_media_persona_reply(  # noqa: PLR0913 -- media route passes prompt, pixels, noun, model, question
+    async def stream_media_persona_reply(  # noqa: PLR0913 -- media route passes prompt, pixels, noun, model, question, duration
         self,
         reply: Message | None,
         context_task: asyncio.Task[ReplyContext],
@@ -276,6 +285,7 @@ class AnswerTurn(BaseModel):
         media_noun: str,
         media_model: str = "",
         question: str = "",
+        answer_seconds: float | None = None,
     ) -> None:
         """Streams a best-effort persona follow-up onto an already-delivered image or video.
 
@@ -292,6 +302,7 @@ class AnswerTurn(BaseModel):
             media_noun (str): Media label (`"image"` or `"video"`) for the prompt and span.
             media_model (str): Generator model name recorded on the feedback snapshot.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.
+            answer_seconds (float | None): Media generation and delivery duration in seconds.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
@@ -335,6 +346,7 @@ class AnswerTurn(BaseModel):
                     backend="interactions" if media_noun == "video" else "responses",
                     question=question,
                     model_override=media_model or None,
+                    answer_seconds=answer_seconds,
                 ),
             )
             with logfire.span(
