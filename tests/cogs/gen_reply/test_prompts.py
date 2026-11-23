@@ -82,6 +82,14 @@ async def test_a_recall_turn_appends_its_section_to_either_route_prompt(
     ]
 
 
+def test_route_prompt_marks_bare_youtube_links_as_watch_video() -> None:
+    """A bare YouTube link (or short nudge) addressed to the bot asks the bot to watch it."""
+    prompt = route_prompt(inline_image_enabled=True)
+
+    assert "contains ONLY a YouTube link" in prompt
+    assert "set `watch_video` to `true`" in prompt
+
+
 @pytest.mark.parametrize("prompt_text", [IMAGE_PROMPT, VIDEO_PROMPT], ids=["image", "video"])
 def test_media_refine_prompts_scope_recent_conversation_to_references(prompt_text: str) -> None:
     """Both media refine prompts restrict Recent conversation to resolving references only."""
