@@ -1,8 +1,9 @@
 """Streams a Responses API reply onto a Discord message."""
 
 import re
+from http import HTTPStatus
 import time
-from typing import Literal, TypedDict
+from typing import Literal, NoReturn, TypedDict
 import asyncio
 import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
@@ -14,7 +15,7 @@ from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_aft
 from nextcord.ui import View
 from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
-from openai.types.responses import ResponseStreamEvent
+from openai.types.responses import Response, ResponseUsage, ResponseStreamEvent
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
@@ -92,6 +93,44 @@ class IncompleteAnswerError(Exception):
         self.reason = reason
         # Retrying max_output_tokens would hit the same budget again.
         self.retryable = reason != "max_output_tokens"
+
+
+class AnswerStreamError(Exception):
+    """A stream-level error emitted via `response.failed` or `error` SSE events."""
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        """Creates an answer stream error carrying the upstream message and mapped status.
+
+        Args:
+            message (str): Upstream error message from the failed response or error event.
+            code (str | None): OpenAI Responses error code or decimal HTTP status string.
+        """
+        super().__init__(message)
+        status_codes = {
+            "server_error": HTTPStatus.INTERNAL_SERVER_ERROR.value,
+            "rate_limit_exceeded": HTTPStatus.TOO_MANY_REQUESTS.value,
+            "request_timeout": HTTPStatus.REQUEST_TIMEOUT.value,
+            # Billing exhaustion is mapped away from 429 so retries never re-issue it.
+            "insufficient_quota": HTTPStatus.PAYMENT_REQUIRED.value,
+            "authentication_error": HTTPStatus.UNAUTHORIZED.value,
+            "permission_error": HTTPStatus.FORBIDDEN.value,
+            "not_found_error": HTTPStatus.NOT_FOUND.value,
+            "invalid_request_error": HTTPStatus.BAD_REQUEST.value,
+            "invalid_prompt": HTTPStatus.BAD_REQUEST.value,
+        }
+        if code is None:
+            status_code: int | None = None
+        elif code in status_codes:
+            status_code = status_codes[code]
+        elif code.isascii() and code.isdecimal():
+            status_code = int(code)
+        else:
+            status_code = None
+        self.code = code
+        self.status_code = status_code
+        self.is_retryable = status_code is not None and (
+            status_code >= 500 or status_code in {408, 409, 429}
+        )
 
 
 class ResponseStreamer(BaseModel):
@@ -487,6 +526,27 @@ class ResponseStreamer(BaseModel):
             return False
         return True
 
+    def _record_usage(self, usage: ResponseUsage | None) -> None:
+        """Accumulates billed token counts from a terminal response event."""
+        if usage is not None:
+            self.input_tokens += usage.input_tokens
+            self.output_tokens += usage.output_tokens
+
+    def _raise_failed_response(self, response: Response) -> NoReturn:
+        """Records model and usage from a failed response event and raises `AnswerStreamError`."""
+        if response.model:
+            self.model_name = response.model
+        # Billed like any other attempt, so count it toward the final footer.
+        self._record_usage(usage=response.usage)
+        error = response.error
+        code = error.code if error is not None else None
+        message = (
+            error.message
+            if error is not None and error.message
+            else "The model failed to generate a response."
+        )
+        raise AnswerStreamError(message=message, code=code)
+
     async def _consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> str | None:
         """Consumes `responses` into state, returning the incomplete reason or None."""
         incomplete: str | None = "no_terminal_event"
@@ -498,21 +558,24 @@ class ResponseStreamer(BaseModel):
             elif response.type == "response.completed":
                 incomplete = None
                 self.model_name = response.response.model
-                if response.response.usage:
-                    self.input_tokens += response.response.usage.input_tokens
-                    self.output_tokens += response.response.usage.output_tokens
+                self._record_usage(usage=response.response.usage)
                 # output is None on the Interactions path, whose adapter populates tool_use.
                 if response.response.output is not None:
                     self.tool_use.record_response(response=response.response)
             elif response.type == "response.incomplete":
                 self.model_name = response.response.model
                 # Billed like any other attempt, so count it toward the final footer.
-                if response.response.usage:
-                    self.input_tokens += response.response.usage.input_tokens
-                    self.output_tokens += response.response.usage.output_tokens
+                self._record_usage(usage=response.response.usage)
                 details = response.response.incomplete_details
                 incomplete = (
                     details.reason if details is not None and details.reason else "incomplete"
+                )
+            elif response.type == "response.failed":
+                self._raise_failed_response(response=response.response)
+            elif response.type == "error":
+                raise AnswerStreamError(
+                    message=response.message or "The model failed to generate a response.",
+                    code=response.code,
                 )
             elif response.type == "response.reasoning_summary_text.delta":
                 self._on_reasoning_delta(delta=response.delta)
@@ -770,6 +833,7 @@ class ResponseStreamer(BaseModel):
                 attempt.
 
         Raises:
+            AnswerStreamError: The stream emitted a `response.failed` or `error` event.
             IncompleteAnswerError: The stream ended without `response.completed`.
         """
         if self.carries_turn_notices:
@@ -818,6 +882,7 @@ async def stream_answer_with_retry(
 
     Raises:
         TimeoutError: The `/ask` delivery window expired, carrying `WINDOW_EXPIRED_NOTICE`.
+        AnswerStreamError: The last attempt emitted a `response.failed` or `error` event.
         IncompleteAnswerError: The last attempt ended without completing, or ran out of output
             budget.
         Exception: The last attempt's unwrapped provider failure after all attempts are spent.
@@ -826,6 +891,8 @@ async def stream_answer_with_retry(
     def _worth_another_attempt(failure: BaseException) -> bool:
         if isinstance(failure, IncompleteAnswerError):
             return failure.retryable
+        if isinstance(failure, AnswerStreamError):
+            return failure.is_retryable
         return is_retryable_llm_error(exc=failure)
 
     async def _before_retry(retry_state: RetryCallState) -> None:
