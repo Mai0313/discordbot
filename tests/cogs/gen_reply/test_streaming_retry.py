@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
 
@@ -13,10 +14,12 @@ from nextcord import Embed
 
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
+from discordbot.utils.llm_errors import llm_status_code, extract_friendly_error
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.cogs.gen_reply.streaming import (
     ResponseStreamer,
+    AnswerStreamError,
     IncompleteAnswerError,
     stream_answer_with_retry,
 )
@@ -44,7 +47,6 @@ from tests.helpers.link_sources import hosting_off_planner
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
-    from types import SimpleNamespace
     from collections.abc import AsyncIterator
 
     from openai.types.responses import ResponseStreamEvent
@@ -650,3 +652,297 @@ async def test_a_cut_off_answer_says_why_under_the_text_it_managed(
     assert reply.embed is not None
     assert reply.embed.footer.text == "IncompleteAnswerError"
     assert "content filter" in (reply.embed.description or "")
+
+
+def _proxy_sse_client(attempts: list[bytes]) -> AsyncOpenAI:
+    """Builds an `AsyncOpenAI` client whose `/v1/responses` calls replay `attempts` in order."""
+    return AsyncOpenAI(
+        api_key="test",
+        base_url="http://proxy.test/v1",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(
+            transport=httpx2.MockTransport(
+                handler=lambda request: httpx2.Response(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream"},
+                    content=attempts.pop(0),
+                )
+            )
+        ),
+    )
+
+
+async def test_response_failed_server_error_retries_and_surfaces_friendly_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A LiteLLM `response.failed` `server_error` retries, then surfaces the unwrapped message."""
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    high_demand = (
+        "This model is currently experiencing high demand. Spikes in demand are usually "
+        "temporary. Please try again later."
+    )
+    document = {"error": {"code": 503, "message": high_demand, "status": "UNAVAILABLE"}}
+    wrapped = (
+        "litellm.ServiceUnavailableError: Vertex_ai_betaException - "
+        f"{json.dumps(obj=document).encode()!r}"
+    )
+    failed_sse = _proxy_sse(
+        events=[
+            {
+                "type": "response.failed",
+                "sequence_number": 1,
+                "response": _proxy_response(
+                    status="failed",
+                    usage={"input_tokens": 11, "output_tokens": 0},
+                    error={"code": "server_error", "message": wrapped},
+                ),
+            }
+        ]
+    )
+    client = _proxy_sse_client(attempts=[failed_sse] * ANSWER_STREAM_MAX_ATTEMPTS)
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
+
+    with pytest.raises(AnswerStreamError) as raised:
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
+    assert streamer.attempts == ANSWER_STREAM_MAX_ATTEMPTS
+    assert raised.value.code == "server_error"
+    assert raised.value.status_code == 500
+    assert llm_status_code(exc=raised.value) == 500
+    assert raised.value.is_retryable is True
+    assert extract_friendly_error(exc=raised.value) == high_demand
+    assert streamer.model_name == TEST_LLM_MODEL
+    assert streamer.input_tokens == 11 * ANSWER_STREAM_MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_status"),
+    [
+        ("server_error", 500),
+        ("rate_limit_exceeded", 429),
+        ("request_timeout", 408),
+        ("503", 503),
+        ("429", 429),
+        ("408", 408),
+        ("409", 409),
+    ],
+)
+async def test_response_failed_retryable_codes_retry_and_recover(
+    monkeypatch: pytest.MonkeyPatch, code: str, expected_status: int
+) -> None:
+    """Retryable `response.failed` codes re-open the stream and succeed on the next attempt."""
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    client = _proxy_sse_client(
+        attempts=[
+            _proxy_sse(
+                events=[
+                    {
+                        "type": "response.failed",
+                        "sequence_number": 1,
+                        "response": _proxy_response(
+                            status="failed",
+                            usage={"input_tokens": 20, "output_tokens": 5},
+                            error={"code": code, "message": "temporary failure"},
+                        ),
+                    }
+                ]
+            ),
+            _proxy_sse(
+                events=[
+                    {"type": "response.output_text.delta", "delta": "recovered"},
+                    {
+                        "type": "response.completed",
+                        "response": _proxy_response(
+                            status="completed", usage={"input_tokens": 30, "output_tokens": 10}
+                        ),
+                    },
+                ]
+            ),
+        ]
+    )
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
+
+    err = AnswerStreamError(message="temporary failure", code=code)
+    assert err.status_code == expected_status
+    assert err.is_retryable is True
+
+    reply = await stream_answer_with_retry(
+        streamer=streamer, open_stream=open_stream, message_id=message.id
+    )
+
+    assert streamer.attempts == 2
+    assert reply.startswith("recovered")
+    assert (streamer.input_tokens, streamer.output_tokens) == (50, 15)
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_status", "upstream_message"),
+    [
+        ("invalid_request_error", 400, "Unsupported parameter"),
+        ("invalid_prompt", 400, "Invalid prompt"),
+        ("insufficient_quota", 402, "You exceeded your current quota"),
+        ("authentication_error", 401, "Invalid API key"),
+        ("permission_error", 403, "Forbidden"),
+        ("not_found_error", 404, "Model not found"),
+        ("400", 400, "Bad request"),
+        (None, None, "Unknown stream failure"),
+        ("bio_policy", None, "Policy violation"),
+    ],
+)
+async def test_response_failed_non_retryable_codes_fail_fast(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str | None,
+    expected_status: int | None,
+    upstream_message: str,
+) -> None:
+    """Non-retryable `response.failed` codes fail on the first attempt with the exact message."""
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    client = _proxy_sse_client(
+        attempts=[
+            _proxy_sse(
+                events=[
+                    {
+                        "type": "response.failed",
+                        "sequence_number": 1,
+                        "response": _proxy_response(
+                            status="failed",
+                            usage={"input_tokens": 5, "output_tokens": 0},
+                            error={"code": code, "message": upstream_message},
+                        ),
+                    }
+                ]
+            )
+        ]
+    )
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
+
+    with pytest.raises(AnswerStreamError) as raised:
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == 1
+    assert streamer.attempts == 1
+    assert raised.value.code == code
+    assert raised.value.status_code == expected_status
+    assert raised.value.is_retryable is False
+    assert extract_friendly_error(exc=raised.value) == upstream_message
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_attempts", "expected_retryable"),
+    [
+        ("rate_limit_exceeded", ANSWER_STREAM_MAX_ATTEMPTS, True),
+        ("503", ANSWER_STREAM_MAX_ATTEMPTS, True),
+        ("insufficient_quota", 1, False),
+        ("invalid_request_error", 1, False),
+    ],
+)
+async def test_response_error_event_raises_answer_stream_error_and_respects_retryability(
+    monkeypatch: pytest.MonkeyPatch, code: str, expected_attempts: int, expected_retryable: bool
+) -> None:
+    """`ResponseErrorEvent` (`type="error"`) surfaces as `AnswerStreamError` and follows retry rules."""
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    error_sse = _proxy_sse(
+        events=[
+            {
+                "type": "error",
+                "sequence_number": 1,
+                "code": code,
+                "message": f"upstream {code}",
+                "param": None,
+            }
+        ]
+    )
+    client = _proxy_sse_client(attempts=[error_sse] * expected_attempts)
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
+
+    with pytest.raises(AnswerStreamError) as raised:
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == expected_attempts
+    assert streamer.attempts == expected_attempts
+    assert raised.value.code == code
+    assert raised.value.is_retryable is expected_retryable
+    assert str(raised.value) == f"upstream {code}"
+
+
+async def test_response_failed_consume_finally_stamps_duration_and_stops_editor() -> None:
+    """`consume`'s finally block stamps `answer_seconds`, stops the editor, and keeps created model."""
+    message = FakeMessage()
+    streamer = _streamer(message=message, preview_interval_seconds=0.01)
+
+    async def _events() -> AsyncIterator[SimpleNamespace]:
+        yield SimpleNamespace(
+            type="response.created", response=SimpleNamespace(model="captured-model")
+        )
+        yield _text_event(delta="partial")
+        await asyncio.sleep(0.03)
+        yield SimpleNamespace(
+            type="response.failed", response=SimpleNamespace(model="", usage=None, error=None)
+        )
+
+    with pytest.raises(
+        AnswerStreamError, match=r"The model failed to generate a response\."
+    ) as raised:
+        await streamer.consume(responses=cast("AsyncIterator[ResponseStreamEvent]", _events()))
+
+    assert raised.value.code is None
+    assert raised.value.is_retryable is False
+    assert streamer.model_name == "captured-model"
+    assert streamer.answer_seconds > 0
+    assert streamer._editor is not None
+    assert streamer._editor._task is None
+
+
+async def test_empty_stream_without_terminal_event_still_raises_no_terminal_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine empty stream with no terminal event still raises `IncompleteAnswerError`."""
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return _stream_events_from(events=[])
+
+    with pytest.raises(IncompleteAnswerError) as raised:
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
+    assert raised.value.reason == "no_terminal_event"
