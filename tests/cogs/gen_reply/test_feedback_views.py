@@ -463,8 +463,18 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
     )
     assert _has_regen(view=msg1.replies[0].view) is False
 
-    # Blind test on (3 candidates -> max_regens=2): regen_count=1 still shows 🔄, regen_count=2 hides it.
+    # Blind test on (default 2 candidates -> max_regens=1): regen=None shows 🔄, regen_count=1 hides it.
     cog.config.slow_model_blind_test_enabled = True
+    msg_b0 = FakeMessage(content="<@999> qb0")
+    turn_b0 = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg_b0)),
+    )
+    await turn_b0.stream_answer(system_prompt="Be concise.", context=ReplyContext())
+    assert _has_regen(view=msg_b0.replies[0].view) is True
+
     msg_b1 = FakeMessage(content="<@999> qb1")
     turn_b1 = AnswerTurn(
         config=cog.config,
@@ -477,7 +487,27 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         context=ReplyContext(),
         regen=RegenOptions(regen_of_reply_message_id=101, regen_count=1),
     )
-    assert _has_regen(view=msg_b1.replies[0].view) is True
+    assert _has_regen(view=msg_b1.replies[0].view) is False
+
+    # With 3 candidates -> max_regens=2: regen_count=1 still shows 🔄, regen_count=2 hides it.
+    monkeypatch.setattr(
+        type(cog.toolkit.runtime_models),
+        "slow_model_blind_test_candidates",
+        property(lambda _self: ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-extra")),
+    )
+    msg_b1_three = FakeMessage(content="<@999> qb1_3")
+    turn_b1_three = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg_b1_three)),
+    )
+    await turn_b1_three.stream_answer(
+        system_prompt="Be concise.",
+        context=ReplyContext(),
+        regen=RegenOptions(regen_of_reply_message_id=102, regen_count=1),
+    )
+    assert _has_regen(view=msg_b1_three.replies[0].view) is True
 
     msg_b2 = FakeMessage(content="<@999> qb2")
     turn_b2 = AnswerTurn(
@@ -489,7 +519,7 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
     await turn_b2.stream_answer(
         system_prompt="Be concise.",
         context=ReplyContext(),
-        regen=RegenOptions(regen_of_reply_message_id=102, regen_count=2),
+        regen=RegenOptions(regen_of_reply_message_id=103, regen_count=2),
     )
     assert _has_regen(view=msg_b2.replies[0].view) is False
 

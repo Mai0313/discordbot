@@ -108,11 +108,12 @@ def _has_regen_button(view: object) -> bool:
     )
 
 
+@pytest.mark.parametrize("preserved_effort", ["high", "xhigh"])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_reverse_order() -> (
-    None
-):
-    """Regen reuses effort, forces QA even if classifier returns IMAGE, records implicit feedback, and deletes chunks reversed."""
+async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_reverse_order(
+    preserved_effort: str,
+) -> None:
+    """Regen reuses effort (including `xhigh`), forces QA even if classifier returns IMAGE, records implicit feedback, and deletes chunks reversed."""
     cog = _cog()
     cog.config.inline_voice_enabled = False
     cog.config.inline_image_enabled = False
@@ -130,14 +131,14 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
         surface="gateway",
         route="QA",
         model="gemini-4-neon",
-        effort="high",
+        effort=preserved_effort,
         backend="responses",
         question="Explain WAL",
         answer="Old chunked answer",
         reply_message_ids=[2001, 2002],
     )
 
-    # Even if classifier picks IMAGE + low, regen forces QA + preserved effort="high".
+    # Even if classifier picks IMAGE + low, regen forces QA + preserved effort.
     _recorded(cog).responses.output_parsed = RouteClassification(decision="IMAGE", effort="low")
     completed = _completed_event(input_tokens=15, output_tokens=20)
     completed.response.model = "gemini-4-neon"
@@ -152,7 +153,9 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
     assert [edit["content"] for edit in click.edits] == ["正在重新生成回覆中⋯", "已重新生成回覆"]
     assert channel.fetched_ids == [source.id]
     assert channel.deleted_ids == [2002, 2001]
-    assert _recorded(cog).responses.create_reasonings == [{"effort": "high", "summary": "auto"}]
+    assert _recorded(cog).responses.create_reasonings == [
+        {"effort": preserved_effort, "summary": "auto"}
+    ]
 
     assert len(source.replies) == 1
     new_reply = source.replies[0]
@@ -165,7 +168,7 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
     assert old_turn is not None
     assert new_turn is not None
     assert new_turn.regen_of_reply_message_id == 2002
-    assert new_turn.effort == "high"
+    assert new_turn.effort == preserved_effort
     assert parse_reply_message_ids(raw=new_turn.reply_message_ids, fallback_id=new_reply.id) == [
         new_reply.id
     ]
@@ -246,7 +249,7 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
         author_id=100,
         surface="gateway",
         route="QA",
-        model="gemini-4-carbon",
+        model="gemini-4-neon",
         effort="medium",
         backend="responses",
         question="compare models",
@@ -263,36 +266,23 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.secrets.choice", deterministic_choice)
 
-    # First regen (R1 -> R2): carbon excluded -> picks neon, remaining = 1, R2 keeps 🔄.
+    # First regen (R1 -> R2): neon excluded -> picks hydrogen, remaining = 0, R2 hides 🔄.
     c2 = _completed_event(input_tokens=5, output_tokens=5)
-    c2.response.model = "gemini-4-neon"
+    c2.response.model = "gemini-4-hydrogen"
     _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 2"), c2]]
     click1 = _regen_interaction(reply_message_id=2201, user_id=100, channel=channel)
     await cog.regenerator.handle(interaction=as_interaction(fake=click1))
 
-    assert last_pool == ("gemini-4-neon", "gemini-4-hydrogen")
-    assert click1.edits[0]["content"] == "正在換另一個模型重新生成中⋯（本次後剩餘 1 次重抽）"
+    assert last_pool == ("gemini-4-hydrogen",)
+    assert click1.edits[0]["content"] == "正在換另一個模型重新生成中⋯（最後一次重抽）"
     assert click1.edits[-1]["content"] == "已重新生成回覆"
     r2 = source.replies[0]
-    assert _has_regen_button(view=r2.view) is True
+    assert _has_regen_button(view=r2.view) is False
 
-    # Second regen (R2 -> R3): carbon & neon excluded -> picks hydrogen, remaining = 0, R3 hides 🔄.
-    c3 = _completed_event(input_tokens=5, output_tokens=5)
-    c3.response.model = "gemini-4-hydrogen"
-    _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 3"), c3]]
+    # Attempting a second regen on R2 is rejected at the chain-depth cap.
     click2 = _regen_interaction(reply_message_id=r2.id, user_id=100, channel=channel)
     await cog.regenerator.handle(interaction=as_interaction(fake=click2))
-
-    assert last_pool == ("gemini-4-hydrogen",)
-    assert click2.edits[0]["content"] == "正在換另一個模型重新生成中⋯（最後一次重抽）"
-    assert click2.edits[-1]["content"] == "已重新生成回覆"
-    r3 = source.replies[1]
-    assert _has_regen_button(view=r3.view) is False
-
-    # Attempting a third regen on R3 is rejected at the chain-depth cap.
-    click3 = _regen_interaction(reply_message_id=r3.id, user_id=100, channel=channel)
-    await cog.regenerator.handle(interaction=as_interaction(fake=click3))
-    assert click3.edits[-1]["content"] == "已達重新生成次數上限"
+    assert click2.edits[-1]["content"] == "已達重新生成次數上限"
 
 
 @pytest.mark.usefixtures("no_memory_review")

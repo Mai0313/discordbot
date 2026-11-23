@@ -126,10 +126,10 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model_blind_test_candidates(self) -> tuple[str, ...]:
         """Candidate Gemini 4 models sampled uniformly per QA turn while blind testing is on.
 
-        Every entry must support `RouteClassification.effort` (`low`, `medium`, `high`) and
-        agentic YouTube video understanding.
+        Every entry must support `RouteClassification.effort` (`low`, `medium`, `high`, `xhigh`)
+        and agentic YouTube video understanding.
         """
-        return ("gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen")
+        return ("gemini-4-neon", "gemini-4-hydrogen")
 
     @property
     def memory_model(self) -> ModelSettings:
@@ -162,16 +162,19 @@ class RouteClassification(BaseModel):
     )
     # Overrides `slow_model.effort` on QA; every literal must be supported by `slow_model`
     # and its proxy fallback chain.
-    effort: Literal["low", "medium", "high"] = Field(
+    effort: Literal["low", "medium", "high", "xhigh"] = Field(
         default="medium",
         description=(
             "Reasoning effort the answer model should spend. medium is the ordinary grade and "
             "the answer whenever you are unsure. Use low only for a message that asks for "
             "nothing, looks nothing up and works nothing out — banter and greetings, even when "
             "phrased as a question — and that is fully answerable from what you were shown. "
-            "Use high only for work that needs real reasoning: writing or debugging code, "
+            "Use high for work that needs real reasoning: writing or debugging ordinary code, "
             "maths, or a multi-step analysis, comparison or plan, including a follow-up that "
-            "asks to fix or extend code or a calculation you were shown."
+            "asks to fix or extend code or a calculation you were shown. Reserve xhigh strictly "
+            "for unusually hard, deep, multi-part or high-stakes reasoning — complex system "
+            "architecture, subtle multi-file or concurrency debugging, formal proofs, or hard "
+            "derivations where high would fall short."
         ),
     )
 

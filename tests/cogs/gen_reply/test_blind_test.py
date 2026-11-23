@@ -41,7 +41,7 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     finalized_logs: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: "gemini-4-carbon"
+        "discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: "gemini-4-hydrogen"
     )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.streaming.logfire.info",
@@ -53,7 +53,7 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
         "discordbot.utils.model_pricing._LOADED_TABLE",
         _LoadedTable(
             prices={
-                "gemini/gemini-4-carbon": ModelPriceEntry(
+                "gemini/gemini-4-hydrogen": ModelPriceEntry(
                     input_cost_per_token=2e-6, output_cost_per_token=1e-5
                 )
             },
@@ -64,7 +64,7 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     async def fake_create(**kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
         seen_calls.append(kwargs)
         completed = _completed_event(input_tokens=120, output_tokens=45)
-        completed.response.model = "gemini-4-carbon"
+        completed.response.model = "gemini-4-hydrogen"
         return _stream_events_from(events=[_text_event(delta="我是破貓"), completed])
 
     monkeypatch.setattr(cog.openai_client.responses, "create", fake_create)
@@ -81,27 +81,27 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     )
 
     assert len(seen_calls) == 1
-    assert seen_calls[0]["model"] == "gemini-4-carbon"
+    assert seen_calls[0]["model"] == "gemini-4-hydrogen"
     assert seen_calls[0]["reasoning"] == {"effort": "high", "summary": "auto"}
     instructions = str(seen_calls[0]["instructions"])
     assert f"({BLIND_TEST_MODEL_LABEL})" in instructions
     assert RuntimeModelCatalog().slow_model.name not in instructions
-    assert "gemini-4-carbon" not in instructions
+    assert "gemini-4-hydrogen" not in instructions
 
     reply_text = message.replies[0].content or ""
     assert f"-# {BLIND_TEST_MODEL_LABEL} · ⬆ 120 ⬇ 45 · $0.00069000" in reply_text
     assert "(high)" not in reply_text
-    assert "gemini-4-carbon" not in reply_text
+    assert "gemini-4-hydrogen" not in reply_text
     assert USAGE_FOOTER_RE.sub(repl="", string=reply_text).strip() == "我是破貓"
 
     async with open_session() as session:
         rows = list((await session.execute(select(ReplyTurnRow))).scalars())
     assert len(rows) == 1
-    assert rows[0].model == "gemini-4-carbon"
+    assert rows[0].model == "gemini-4-hydrogen"
     assert rows[0].effort == "high"
     assert rows[0].model != BLIND_TEST_MODEL_LABEL
     assert len(finalized_logs) == 1
-    assert finalized_logs[0]["model"] == "gemini-4-carbon"
+    assert finalized_logs[0]["model"] == "gemini-4-hydrogen"
     assert finalized_logs[0]["effort"] == "high"
 
 
@@ -118,7 +118,7 @@ async def test_blind_test_records_real_post_fallback_model_while_hiding_footer(
     message = FakeMessage(content="<@999> test fallback")
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: "gemini-4-carbon"
+        "discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: "gemini-4-neon"
     )
 
     async def fake_create(**_kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
@@ -194,6 +194,6 @@ async def test_blind_test_disabled_uses_default_slow_model_and_visible_name(
 
 
 def test_blind_test_candidates_are_gemini_4_models() -> None:
-    """Blind-test candidate pool names carbon, neon, and hydrogen inside `RuntimeModelCatalog`."""
+    """Blind-test candidate pool names neon and hydrogen inside `RuntimeModelCatalog`."""
     candidates = RuntimeModelCatalog().slow_model_blind_test_candidates
-    assert candidates == ("gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen")
+    assert candidates == ("gemini-4-neon", "gemini-4-hydrogen")

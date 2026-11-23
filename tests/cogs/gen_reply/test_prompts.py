@@ -95,3 +95,11 @@ def test_media_refine_prompts_scope_recent_conversation_to_references(prompt_tex
     """Both media refine prompts restrict Recent conversation to resolving references only."""
     assert "Recent conversation" in prompt_text
     assert "resolve references, pronouns, or follow-up edits" in prompt_text
+
+
+def test_the_route_prompt_defines_all_four_effort_grades() -> None:
+    """The route prompt names all four grades and sets a strict bar for `xhigh` above `high`."""
+    prompt = route_prompt(inline_image_enabled=True)
+    for grade in ("`low`", "`medium`", "`high`", "`xhigh`"):
+        assert grade in prompt
+    assert "four grades" in prompt
