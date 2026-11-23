@@ -16,6 +16,9 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.media import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
 from discordbot.typings.timeouts import GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS
+from discordbot.cogs.gen_reply.input import MessageInputBuilder
+from discordbot.utils.discord_errors import report_discord_failure
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, defuse_separator_fences
 from discordbot.utils.media_delivery import MediaItem, upload_limit_for
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.images import to_data_uri
@@ -27,11 +30,52 @@ from discordbot.cogs.gen_reply.prompts import (
     VIDEO_REPLY_PROMPT,
 )
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
-from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
+from discordbot.typings.context_budgets import (
+    MAX_VIDEO_REFERENCE_IMAGES,
+    MEDIA_REFINE_HISTORY_LIMIT,
+    MEDIA_REFINE_CONTEXT_MAX_CHARS,
+)
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import discard_task
+
+
+def _extract_refine_message_line(
+    input_builder: MessageInputBuilder, msg: Message, prefix: str = ""
+) -> str | None:
+    """Renders one Discord message as a single text line for prompt refinement, or None if empty."""
+    text = input_builder.get_cleaned_content(message=msg)
+    if text:
+        # Strip usage footers even when bot.user is unset or author id differs in synthetic tests.
+        text = USAGE_FOOTER_RE.sub("", f"\n\n{text}").strip()
+    if not text:
+        return None
+    safe_author = " ".join(defuse_separator_fences(text=msg.author.display_name).split()) or "User"
+    safe_text = defuse_separator_fences(text=text)
+    return f"{prefix}{safe_author}: {safe_text}"
+
+
+def _format_refine_context(lines: list[str], max_chars: int) -> str | None:
+    """Joins the newest `lines` that fit within `max_chars`, or None when `lines` is empty."""
+    if not lines:
+        return None
+    kept: list[str] = []
+    spent = 0
+    for line in reversed(lines):
+        separator = 1 if kept else 0
+        if spent + separator + len(line) <= max_chars:
+            kept.append(line)
+            spent += separator + len(line)
+            continue
+        if not kept:
+            # Keep the newest message truncated at the tail so long numbered lists stay usable.
+            kept.append(
+                f"{line[: max_chars - 1].rstrip()}…" if max_chars > 1 else line[:max_chars]
+            )
+        break
+    kept.reverse()
+    return "\n".join(kept)
 
 
 class MediaReplyRoutes(BaseModel):
@@ -89,6 +133,52 @@ class MediaReplyRoutes(BaseModel):
                 raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
             raise
 
+    async def _load_refine_context(self) -> str | None:
+        """Fetches recent text-only history and replied-to text for prompt refinement.
+
+        Best-effort: logs and degrades to whatever replied-to text is already on `message` if
+        channel history cannot be read, and never awaits `parts_task` or attachment uploads.
+        """
+        message = self.message
+        input_builder = self.answer.toolkit.input_builder
+        replied_to = replied_to_message(message=message)
+        try:
+            history = await self.answer.surface.fetch_history(limit=MEDIA_REFINE_HISTORY_LIMIT)
+        except Exception as exc:
+            # Broad: history read is best-effort enrichment; never fail media generation over it.
+            report_discord_failure(
+                error=exc,
+                not_found_message="Channel missing during media prompt refinement history read",
+                forbidden_message=(
+                    "Cannot read channel history for media prompt refinement; continuing without history"
+                ),
+                other_message=(
+                    "Failed to read channel history for media prompt refinement; continuing without history"
+                ),
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
+            history = []
+
+        replied_line = (
+            _extract_refine_message_line(
+                input_builder=input_builder, msg=replied_to, prefix="[Replied-to] "
+            )
+            if replied_to is not None
+            else None
+        )
+        replied_id = replied_to.id if replied_to is not None and replied_line is not None else None
+        lines: list[str] = []
+        for hist_msg in history:
+            if replied_id is not None and hist_msg.id == replied_id:
+                continue
+            line = _extract_refine_message_line(input_builder=input_builder, msg=hist_msg)
+            if line is not None:
+                lines.append(line)
+        if replied_line is not None:
+            lines.append(replied_line)
+        return _format_refine_context(lines=lines, max_chars=MEDIA_REFINE_CONTEXT_MAX_CHARS)
+
     async def handle_image(
         self, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
@@ -119,13 +209,18 @@ class MediaReplyRoutes(BaseModel):
                     model=toolkit.runtime_models.image_model.name,
                     has_source_images=bool(image_bytes_list),
                 )
-
+                conversation_context = (
+                    await self._load_refine_context()
+                    if self.answer.config.image_refine_prompt_enabled
+                    else None
+                )
                 refined_prompt = await toolkit.prompt_generator.refine(
                     user_prompt=user_prompt,
                     instructions=IMAGE_PROMPT,
                     end_user_id=message.author.name,
                     enabled=self.answer.config.image_refine_prompt_enabled,
                     image_bytes_list=image_bytes_list or None,
+                    conversation_context=conversation_context,
                 )
                 # Prompt refinement is best-effort; failures past here belong to image_model.
                 dispatched_model.set(toolkit.runtime_models.image_model.name)
@@ -201,12 +296,18 @@ class MediaReplyRoutes(BaseModel):
                             message=message, replied_to=replied_to
                         )
                     )[:MAX_VIDEO_REFERENCE_IMAGES]
+                    conversation_context = (
+                        await self._load_refine_context()
+                        if self.answer.config.video_refine_prompt_enabled
+                        else None
+                    )
                     refined_prompt = await toolkit.prompt_generator.refine(
                         user_prompt=user_prompt,
                         instructions=VIDEO_PROMPT,
                         end_user_id=message.author.name,
                         enabled=self.answer.config.video_refine_prompt_enabled,
                         image_bytes_list=[loaded.data for loaded in images] or None,
+                        conversation_context=conversation_context,
                     )
                     video_bytes = await toolkit.video_generator.render(
                         prompt=refined_prompt, reference_image_sources=images

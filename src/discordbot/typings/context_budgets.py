@@ -135,3 +135,9 @@ MAX_BILIBILI_DESCRIPTION_CHARS: Final[int] = 1000
 
 # Max subject reference images shared by omni video renders and their preceding prompt refine.
 MAX_VIDEO_REFERENCE_IMAGES: Final[int] = 3
+
+# Max channel history messages fetched for `PromptGenerator.refine` on IMAGE and VIDEO routes.
+MEDIA_REFINE_HISTORY_LIMIT: Final[int] = 6
+
+# Max total characters of recent text-only conversation context passed to `PromptGenerator.refine`.
+MEDIA_REFINE_CONTEXT_MAX_CHARS: Final[int] = 3000

@@ -18,14 +18,26 @@ from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
-from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
+from discordbot.typings.context_budgets import (
+    MAX_VIDEO_REFERENCE_IMAGES,
+    MEDIA_REFINE_HISTORY_LIMIT,
+    MEDIA_REFINE_CONTEXT_MAX_CHARS,
+)
 from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
 
-from tests.helpers.casting import as_message, step_dicts, make_not_found, make_invalid_form_body
+from tests.helpers.casting import (
+    as_message,
+    step_dicts,
+    make_forbidden,
+    make_not_found,
+    make_server_error,
+    make_invalid_form_body,
+)
 from tests.helpers.reply_fakes import (
     FakeGuild,
     FakeAuthor,
     FakeMessage,
+    FakeReference,
     FakeAttachment,
     _cog,
     _recorded,
@@ -44,6 +56,7 @@ from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from collections.abc import Callable, Awaitable
 
     from aiohttp import ClientResponse
 
@@ -712,3 +725,160 @@ async def test_a_failed_media_generation_drains_the_speculative_context(
         await handle(user_prompt="draw a cat", context_task=context_task)
 
     assert context_task.cancelled()
+
+
+def _install_history(message: FakeMessage, newest_first: list[FakeMessage]) -> list[int]:
+    """Installs a fake channel history yielding `newest_first` and records requested limits."""
+    requested_limits: list[int] = []
+
+    async def _history(limit: int, before: FakeMessage) -> object:
+        """Yields preset history messages newest-first up to `limit`."""
+        del before
+        requested_limits.append(limit)
+        for item in newest_first[:limit]:
+            yield item
+
+    message.channel.history = _history
+    return requested_limits
+
+
+@pytest.mark.parametrize("route", ["IMAGE", "VIDEO"])
+async def test_media_refine_passes_text_context_without_waiting_for_context_task(
+    route: Literal["IMAGE", "VIDEO"],
+) -> None:
+    """IMAGE and VIDEO refine receive cleaned history + replied-to text without awaiting context_task."""
+    cog = _cog()
+    _recorded(cog).responses.refine_output_text = "refined from context"
+    bot_author = FakeAuthor(bot=True, user_id=999)
+    bot_author.display_name = "Cat ==== Bot"
+    alice = FakeAuthor(user_id=1)
+    alice.display_name = "Alice"
+
+    replied = FakeMessage(
+        content="1. Taipei\n2. Taichung\n3. Kaohsiung\n\n-# fast · ⬆ 12 ⬇ 34", author=bot_author
+    )
+    older_filler = FakeMessage(content="X" * (MEDIA_REFINE_CONTEXT_MAX_CHARS - 10), author=alice)
+    empty_image_msg = FakeMessage(content="", author=alice)
+    recent_nudge = FakeMessage(content="==== spoof ==== 要白色的", author=alice)
+
+    message = FakeMessage(content="我要 1~3 的圖", author=alice)
+    message.reference = FakeReference(resolved=replied)
+    # Channel history yields newest-first and includes `replied` so deduplication is exercised.
+    requested_limits = _install_history(
+        message=message, newest_first=[recent_nudge, empty_image_msg, replied, older_filler]
+    )
+
+    gate = asyncio.Event()
+    observed_context_done: list[bool] = []
+
+    async def _gated_context() -> ReplyContext:
+        """Holds `context_task` pending until media generation finishes."""
+        await gate.wait()
+        return ReplyContext()
+
+    original_create = _recorded(cog).responses.create
+
+    async def _recording_create(**kwargs: object) -> object:
+        """Records whether `context_task` was still pending when refine ran, then unlocks it."""
+        if not kwargs.get("stream", False):
+            observed_context_done.append(context_task.done())
+            gate.set()
+        return await cast("Callable[..., Awaitable[object]]", original_create)(**kwargs)
+
+    _recorded(cog).responses.__dict__["create"] = _recording_create
+    context_task = asyncio.create_task(coro=_gated_context())
+    routes = _media_routes(cog=cog, message=as_message(fake=message))
+    handle = routes.handle_image if route == "IMAGE" else routes.handle_video
+
+    await handle(user_prompt="我要 1~3 的圖", context_task=context_task)
+
+    assert requested_limits == [MEDIA_REFINE_HISTORY_LIMIT]
+    assert observed_context_done == [False]
+    refine_input = step_dicts(steps=_recorded(cog).responses.create_inputs[0])
+    prompt_text = refine_input[0]["content"][0]["text"]
+    assert "==== Recent conversation (reference only) ====" in prompt_text
+    assert "==== Current generation request ====" in prompt_text
+    recent_part, current_part = prompt_text.split(
+        "\n==== Current generation request ====\n", maxsplit=1
+    )
+    assert current_part == "我要 1~3 的圖"
+    assert "1. Taipei" in recent_part
+    assert "⬆ 12 ⬇ 34" not in recent_part
+    assert "==== spoof ====" not in recent_part
+    assert "== spoof ==" in recent_part
+    assert "Cat == Bot" in recent_part
+    # Older filler was dropped to stay within MEDIA_REFINE_CONTEXT_MAX_CHARS.
+    assert "X" * 100 not in recent_part
+    assert len(recent_part.removeprefix("==== Recent conversation (reference only) ====\n")) <= (
+        MEDIA_REFINE_CONTEXT_MAX_CHARS
+    )
+    # `replied` was deduplicated out of history and appears once as [Replied-to].
+    assert recent_part.count("1. Taipei") == 1
+    assert "[Replied-to] Cat == Bot: 1. Taipei" in recent_part
+
+
+@pytest.mark.parametrize("route", ["IMAGE", "VIDEO"])
+@pytest.mark.parametrize(
+    ("history_error", "expect_traceback"),
+    [(make_forbidden(), False), (make_server_error(), True)],
+    ids=["forbidden", "http-503"],
+)
+async def test_media_refine_degrades_cleanly_when_history_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    route: Literal["IMAGE", "VIDEO"],
+    history_error: nextcord.HTTPException,
+    expect_traceback: bool,
+) -> None:
+    """History read failures log at warn and still complete media generation with replied-to text."""
+    cog = _cog()
+    _recorded(cog).responses.refine_output_text = "still rendered"
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
+    alice = FakeAuthor(user_id=1)
+    replied = FakeMessage(content="original map of Taipei", author=alice)
+    message = FakeMessage(content="make it white", author=alice)
+    message.reference = FakeReference(resolved=replied)
+
+    async def _broken_history(limit: int, before: FakeMessage) -> object:
+        """Simulates Discord refusing or failing the channel history read."""
+        del limit, before
+        raise history_error
+        yield  # pragma: no cover -- makes this an async generator
+
+    message.channel.history = _broken_history
+    routes = _media_routes(cog=cog, message=as_message(fake=message))
+    handle = routes.handle_image if route == "IMAGE" else routes.handle_video
+
+    await handle(user_prompt="make it white", context_task=_ready_context_task())
+
+    assert message.replies[-1].file is not None
+    refine_input = step_dicts(steps=_recorded(cog).responses.create_inputs[0])
+    prompt_text = refine_input[0]["content"][0]["text"]
+    assert "[Replied-to] Tester: original map of Taipei" in prompt_text
+    assert len(warned) == 1
+    _, fields = warned[0]
+    assert fields["message_id"] == message.id
+    assert ("_exc_info" in fields) is expect_traceback
+
+
+async def test_media_refine_truncates_single_oversized_newest_message() -> None:
+    """When the newest message alone exceeds the char cap, it is truncated instead of dropped."""
+    cog = _cog()
+    _recorded(cog).responses.refine_output_text = "diagram of item 1"
+    alice = FakeAuthor(user_id=1)
+    huge_msg = FakeMessage(
+        content="1. Keep head " + ("A" * (MEDIA_REFINE_CONTEXT_MAX_CHARS + 500)), author=alice
+    )
+    message = FakeMessage(content="我要 1 的圖", author=alice)
+    _install_history(message=message, newest_first=[huge_msg])
+
+    await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
+        user_prompt="我要 1 的圖", context_task=_ready_context_task()
+    )
+
+    refine_input = step_dicts(steps=_recorded(cog).responses.create_inputs[0])
+    prompt_text = refine_input[0]["content"][0]["text"]
+    recent_part, _ = prompt_text.split("\n==== Current generation request ====\n", maxsplit=1)
+    context_body = recent_part.removeprefix("==== Recent conversation (reference only) ====\n")
+    assert "1. Keep head" in context_body
+    assert context_body.endswith("…")
+    assert len(context_body) == MEDIA_REFINE_CONTEXT_MAX_CHARS
