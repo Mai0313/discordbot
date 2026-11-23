@@ -11,6 +11,7 @@ from google.genai import types
 from google.genai.errors import APIError
 
 from discordbot.utils.llm_errors import (
+    HIGH_DEMAND_ERROR_NOTICE,
     llm_status_code,
     extract_friendly_error,
     is_retryable_llm_error,
@@ -279,7 +280,7 @@ async def test_adapt_interactions_stream_raises_a_classifiable_error_event() -> 
     transient = await _raise_from_error_event(
         error=SimpleNamespace(code="503", message="high demand")
     )
-    assert extract_friendly_error(exc=transient) == "high demand"
+    assert extract_friendly_error(exc=transient) == HIGH_DEMAND_ERROR_NOTICE
     assert is_retryable_llm_error(exc=transient) is True
 
     # What the SDK actually documents that field as is a URI identifying the error type, so
