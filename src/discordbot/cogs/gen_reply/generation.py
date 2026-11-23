@@ -33,6 +33,7 @@ from discordbot.typings.timeouts import (
     VIDEO_RENDER_TIMEOUT_SECONDS,
     PROMPT_REFINE_TIMEOUT_SECONDS,
 )
+from discordbot.utils.llm_transcript import defuse_separator_fences
 from discordbot.cogs.gen_reply.images import to_data_uri
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_until_active
@@ -225,13 +226,14 @@ class PromptGenerator(BaseModel):
         ..., description="Model settings for the prompt director, which needs the grounding tools."
     )
 
-    async def refine(
+    async def refine(  # noqa: PLR0913 -- optional conversation_context preserves existing call sites
         self,
         user_prompt: str,
         instructions: str,
         end_user_id: str,
         enabled: bool,
         image_bytes_list: list[bytes] | None = None,
+        conversation_context: str | None = None,
     ) -> str:
         """Returns a refined generation prompt, falling back to `user_prompt` when disabled or on failure.
 
@@ -241,16 +243,23 @@ class PromptGenerator(BaseModel):
             end_user_id (str): Discord username sent as the LiteLLM end-user header.
             enabled (bool): Whether prompt refinement is enabled for this call.
             image_bytes_list (list[bytes] | None): Optional source images passed as visual context.
+            conversation_context (str | None): Optional recent text-only conversation lines used
+                only to resolve references, pronouns, or follow-up edits in `user_prompt`.
         """
         if not enabled:
             return user_prompt
+        if conversation_context is not None and conversation_context.strip():
+            safe_context = defuse_separator_fences(text=conversation_context.strip())
+            safe_prompt = defuse_separator_fences(text=user_prompt)
+            request_text = (
+                f"==== Recent conversation (reference only) ====\n{safe_context}\n"
+                f"==== Current generation request ====\n{safe_prompt}"
+            )
+        else:
+            request_text = f"User generation request:\n{user_prompt}"
         director_content: list[
             ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-        ] = [
-            ResponseInputTextParam(
-                text=f"User generation request:\n{user_prompt}", type="input_text"
-            )
-        ]
+        ] = [ResponseInputTextParam(text=request_text, type="input_text")]
         for image_bytes in image_bytes_list or []:
             director_content.append(
                 ResponseInputImageParam(

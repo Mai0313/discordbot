@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from discordbot.cogs.gen_reply.recall import RecallCandidate
-from discordbot.cogs.gen_reply.prompts import ROUTE_RECALL_SECTION, route_prompt
+from discordbot.cogs.gen_reply.prompts import (
+    IMAGE_PROMPT,
+    VIDEO_PROMPT,
+    ROUTE_RECALL_SECTION,
+    route_prompt,
+)
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 from tests.helpers.casting import as_message
@@ -75,3 +80,10 @@ async def test_a_recall_turn_appends_its_section_to_either_route_prompt(
     assert _recorded(cog).responses.parse_instructions == [
         route_prompt(inline_image_enabled=inline_image_enabled) + ROUTE_RECALL_SECTION
     ]
+
+
+@pytest.mark.parametrize("prompt_text", [IMAGE_PROMPT, VIDEO_PROMPT], ids=["image", "video"])
+def test_media_refine_prompts_scope_recent_conversation_to_references(prompt_text: str) -> None:
+    """Both media refine prompts restrict Recent conversation to resolving references only."""
+    assert "Recent conversation" in prompt_text
+    assert "resolve references, pronouns, or follow-up edits" in prompt_text
