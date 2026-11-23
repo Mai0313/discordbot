@@ -14,7 +14,11 @@ from nextcord import Embed
 
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
-from discordbot.utils.llm_errors import llm_status_code, extract_friendly_error
+from discordbot.utils.llm_errors import (
+    HIGH_DEMAND_ERROR_NOTICE,
+    llm_status_code,
+    extract_friendly_error,
+)
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.cogs.gen_reply.streaming import (
@@ -720,7 +724,7 @@ async def test_response_failed_server_error_retries_and_surfaces_friendly_messag
     assert raised.value.status_code == 500
     assert llm_status_code(exc=raised.value) == 500
     assert raised.value.is_retryable is True
-    assert extract_friendly_error(exc=raised.value) == high_demand
+    assert extract_friendly_error(exc=raised.value) == HIGH_DEMAND_ERROR_NOTICE
     assert streamer.model_name == TEST_LLM_MODEL
     assert streamer.input_tokens == 11 * ANSWER_STREAM_MAX_ATTEMPTS
 
@@ -790,17 +794,17 @@ async def test_response_failed_retryable_codes_retry_and_recover(
 
 
 @pytest.mark.parametrize(
-    ("code", "expected_status", "upstream_message"),
+    ("code", "expected_status", "upstream_message", "expected_friendly"),
     [
-        ("invalid_request_error", 400, "Unsupported parameter"),
-        ("invalid_prompt", 400, "Invalid prompt"),
-        ("insufficient_quota", 402, "You exceeded your current quota"),
-        ("authentication_error", 401, "Invalid API key"),
-        ("permission_error", 403, "Forbidden"),
-        ("not_found_error", 404, "Model not found"),
-        ("400", 400, "Bad request"),
-        (None, None, "Unknown stream failure"),
-        ("bio_policy", None, "Policy violation"),
+        ("invalid_request_error", 400, "Unsupported parameter", "Unsupported parameter"),
+        ("invalid_prompt", 400, "Invalid prompt", "Invalid prompt"),
+        ("insufficient_quota", 402, "You exceeded your current quota", HIGH_DEMAND_ERROR_NOTICE),
+        ("authentication_error", 401, "Invalid API key", HIGH_DEMAND_ERROR_NOTICE),
+        ("permission_error", 403, "Forbidden", HIGH_DEMAND_ERROR_NOTICE),
+        ("not_found_error", 404, "Model not found", HIGH_DEMAND_ERROR_NOTICE),
+        ("400", 400, "Bad request", "Bad request"),
+        (None, None, "Unknown stream failure", "Unknown stream failure"),
+        ("bio_policy", None, "Policy violation", "Policy violation"),
     ],
 )
 async def test_response_failed_non_retryable_codes_fail_fast(
@@ -808,8 +812,9 @@ async def test_response_failed_non_retryable_codes_fail_fast(
     code: str | None,
     expected_status: int | None,
     upstream_message: str,
+    expected_friendly: str,
 ) -> None:
-    """Non-retryable `response.failed` codes fail on the first attempt with the exact message."""
+    """Non-retryable `response.failed` codes fail on the first attempt, masking operator/quota notices."""
     _no_retry_backoff(monkeypatch=monkeypatch)
     client = _proxy_sse_client(
         attempts=[
@@ -847,7 +852,55 @@ async def test_response_failed_non_retryable_codes_fail_fast(
     assert raised.value.code == code
     assert raised.value.status_code == expected_status
     assert raised.value.is_retryable is False
-    assert extract_friendly_error(exc=raised.value) == upstream_message
+    assert extract_friendly_error(exc=raised.value) == expected_friendly
+
+
+def test_answer_stream_error_masks_overload_and_quota_payloads() -> None:
+    """`AnswerStreamError` masks operator/backend codes while preserving 400/408 and `IncompleteAnswerError`."""
+    quota_msg = "You exceeded your current quota, please check your plan and billing details."
+    for masked_code in (
+        "rate_limit_exceeded",
+        "insufficient_quota",
+        "authentication_error",
+        "permission_error",
+        "not_found_error",
+        "server_error",
+        "500",
+        "502",
+        "503",
+        "504",
+    ):
+        assert (
+            extract_friendly_error(exc=AnswerStreamError(message=quota_msg, code=masked_code))
+            == HIGH_DEMAND_ERROR_NOTICE
+        )
+    wrapped_429 = (
+        "litellm.RateLimitError: Vertex_ai_betaException - "
+        f"{json.dumps(obj={'error': {'code': 429, 'message': quota_msg}}).encode()!r}"
+    )
+    assert (
+        extract_friendly_error(exc=AnswerStreamError(message=wrapped_429, code="server_error"))
+        == HIGH_DEMAND_ERROR_NOTICE
+    )
+    wrapped_503 = (
+        "litellm.ServiceUnavailableError: Vertex_ai_betaException - "
+        f"{json.dumps(obj={'error': {'code': 503, 'message': 'Model overloaded'}}).encode()!r}"
+    )
+    assert (
+        extract_friendly_error(exc=AnswerStreamError(message=wrapped_503, code="server_error"))
+        == HIGH_DEMAND_ERROR_NOTICE
+    )
+    assert (
+        extract_friendly_error(exc=AnswerStreamError(message="Request timed out", code="408"))
+        == "Request timed out"
+    )
+    assert (
+        extract_friendly_error(exc=AnswerStreamError(message="Bad request", code="400"))
+        == "Bad request"
+    )
+    for reason in ("content_filter", "max_output_tokens", "no_terminal_event"):
+        incomplete = IncompleteAnswerError(reason=reason)
+        assert extract_friendly_error(exc=incomplete) == str(incomplete)
 
 
 @pytest.mark.parametrize(
