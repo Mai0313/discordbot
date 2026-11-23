@@ -1067,9 +1067,9 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
         assert not has_link_context_block(request=answer, source=name)
 
 
-@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
 async def test_handle_message_reply_uses_route_effort(
-    effort: Literal["low", "medium", "high", "xhigh"],
+    effort: Literal["low", "medium", "high"],
 ) -> None:
     """The answer request's reasoning effort follows the route's grade, whichever it is."""
     cog = _cog()

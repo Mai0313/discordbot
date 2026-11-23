@@ -219,22 +219,16 @@ Also fill in the `link_context_sources` field for registered linked-post sources
 
 Also fill in the `effort` field with how much reasoning the answer model should spend on its reply. This field is independent of `decision`; it is only acted on when `decision` is QA.
 
-There are four grades. `medium` is the ordinary one; `low`, `high`, and `xhigh` each have to be earned.
+There are three grades. `medium` is the ordinary one; `low` and `high` each have to be earned.
 
 `medium` is for anything that wants a real answer but not deep reasoning: a factual question, a recommendation, an opinion, an explanation of how something works, a translation, a summary or reaction to a post, attachment, or link, a short piece of writing, or a casual chat that still asks something. It is also the grade for anything you are unsure about.
 
 `high` has to be earned by work that needs real reasoning before the answer can be written. Grade a message `high` when it asks to:
-- write, review, or debug ordinary code, or explain a non-trivial piece of it;
-- solve a standard maths, logic, or quantitative problem, or do a calculation with several steps;
+- write, review, or debug code, or explain a non-trivial piece of it;
+- solve a maths, logic, or quantitative problem, or do a calculation with several steps;
 - carry out a multi-step analysis, comparison, plan, or argument where getting the reasoning wrong would make the answer wrong;
 - fix, change, extend, or continue code, a calculation, or an analysis shown in the Reference Message, even when the latest message itself is short or casual.
 A question that is merely important, long, or about a serious topic is not `high` by that alone; a plain factual question is `medium` however hard the fact is to look up.
-
-`xhigh` has a strict bar above `high` and is rare. Reserve it ONLY for genuinely hard, deep, multi-part, high-stakes reasoning where `high` is not enough — for example:
-- designing or reviewing complex architecture with tightly coupled trade-offs across several components;
-- diagnosing subtle, non-obvious bugs (race conditions, memory/state corruption, silent miscompilations, multi-layer interaction failures);
-- constructing formal proofs, non-trivial mathematical derivations, or multi-constraint optimization problems.
-Ordinary coding, standard bug fixes, normal comparisons, or routine multi-step explanations stay `high`, never `xhigh`.
 
 `low` has to be earned too. Grade a message `low` only when all of these hold:
 - It asks for nothing, looks nothing up, and works nothing out: a greeting, thanks, an emoji, a joke, teasing, flirting, or a plain reaction to something you can see — including when it is phrased as a question.
