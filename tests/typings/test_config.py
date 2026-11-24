@@ -1,17 +1,26 @@
 """Tests for TOML bot configuration loading, deep-merging, strict validation, and LLMConfig wiring."""
 
+from typing import get_args
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from logfire._internal.constants import LEVEL_NUMBERS
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.config import (
     DEFAULT_CONFIG_PATH,
     BotConfig,
+    LoggingConfig,
     load_bot_config,
     clear_bot_config_cache,
 )
+
+
+def test_log_level_setting_accepts_only_real_logfire_levels() -> None:
+    """`LOG_LEVEL` is checked against logfire's own table, not a hand-copied list."""
+    accepted = set(get_args(LoggingConfig.model_fields["log_level"].annotation))
+    assert accepted == set(LEVEL_NUMBERS)
 
 
 def test_packaged_config_toml_parses_cleanly_with_expected_defaults() -> None:

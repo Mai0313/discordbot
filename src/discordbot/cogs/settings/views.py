@@ -11,6 +11,7 @@ from nextcord.ext import commands
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_YELLOW
 from discordbot.typings.config import AutoExpandPlatform, load_bot_config
 from discordbot.utils.logged_ui import LoggedView
+from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.server_settings import (
     AUTO_EXPAND_PLATFORMS,
     GuildAutoExpandState,
@@ -126,11 +127,7 @@ class _ResetDefaultsButton(Button["ServerSettingsView"]):
             has_overrides (bool): Whether at least one override is stored for the guild.
         """
         super().__init__(
-            label="恢復預設",
-            emoji="↺",
-            style=ButtonStyle.secondary,
-            disabled=not has_overrides,
-            row=1,
+            label="↺ 恢復預設", style=ButtonStyle.secondary, disabled=not has_overrides, row=1
         )
 
     async def callback(self, interaction: Interaction[commands.Bot]) -> None:
@@ -162,6 +159,8 @@ class ServerSettingsView(LoggedView):
         self.guild_name = guild_name
         self.state = state
         self._origin: Interaction[commands.Bot] | None = None
+        self._lock = LoopLocalLock()
+        self._timed_out = False
         self._platform_buttons: dict[AutoExpandPlatform, _PlatformToggleButton] = {}
         for platform in AUTO_EXPAND_PLATFORMS:
             button = _PlatformToggleButton(
@@ -213,33 +212,36 @@ class ServerSettingsView(LoggedView):
         if not await self._require_admin(interaction=interaction):
             return
         await interaction.response.defer()
-        self.bind_origin(interaction=interaction)
-        next_enabled = not self.state.effective(platform=platform)
-        try:
-            self.state = await set_auto_expand_override(
-                guild_id=self.guild_id, platform=platform, enabled=next_enabled
-            )
-        except Exception as exc:
-            # Broad on purpose: button-callback boundary after defer; report failure ephemerally
-            # instead of leaving the interaction silently stuck.
-            logfire.error(
-                "Failed to update server auto-expand setting",
-                guild_id=self.guild_id,
-                platform=platform,
-                enabled=next_enabled,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            with contextlib.suppress(HTTPException):
-                await interaction.followup.send(
-                    embed=build_error_embed(description="更新伺服器設定失敗，請稍後再試。"),
-                    ephemeral=True,
+        async with self._lock.get():
+            if self._timed_out:
+                return
+            self.bind_origin(interaction=interaction)
+            next_enabled = not self.state.effective(platform=platform)
+            try:
+                self.state = await set_auto_expand_override(
+                    guild_id=self.guild_id, platform=platform, enabled=next_enabled
                 )
-            return
-        self._sync_buttons()
-        await interaction.edit_original_message(
-            embed=build_settings_embed(guild_name=self.guild_name, state=self.state), view=self
-        )
+            except Exception as exc:
+                # Broad on purpose: button-callback boundary after defer; report failure ephemerally
+                # instead of leaving the interaction silently stuck.
+                logfire.error(
+                    "Failed to update server auto-expand setting",
+                    guild_id=self.guild_id,
+                    platform=platform,
+                    enabled=next_enabled,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+                with contextlib.suppress(HTTPException):
+                    await interaction.followup.send(
+                        embed=build_error_embed(description="更新伺服器設定失敗，請稍後再試。"),
+                        ephemeral=True,
+                    )
+                return
+            self._sync_buttons()
+            await interaction.edit_original_message(
+                embed=build_settings_embed(guild_name=self.guild_name, state=self.state), view=self
+            )
 
     async def handle_reset(self, interaction: Interaction[commands.Bot]) -> None:
         """Clears every auto-expand override for this guild and refreshes the panel.
@@ -250,36 +252,41 @@ class ServerSettingsView(LoggedView):
         if not await self._require_admin(interaction=interaction):
             return
         await interaction.response.defer()
-        self.bind_origin(interaction=interaction)
-        try:
-            self.state = await reset_auto_expand_overrides(guild_id=self.guild_id)
-        except Exception as exc:
-            # Broad on purpose: button-callback boundary after defer; report failure ephemerally
-            # instead of leaving the interaction silently stuck.
-            logfire.error(
-                "Failed to reset server auto-expand settings",
-                guild_id=self.guild_id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            with contextlib.suppress(HTTPException):
-                await interaction.followup.send(
-                    embed=build_error_embed(description="恢復預設設定失敗，請稍後再試。"),
-                    ephemeral=True,
+        async with self._lock.get():
+            if self._timed_out:
+                return
+            self.bind_origin(interaction=interaction)
+            try:
+                self.state = await reset_auto_expand_overrides(guild_id=self.guild_id)
+            except Exception as exc:
+                # Broad on purpose: button-callback boundary after defer; report failure ephemerally
+                # instead of leaving the interaction silently stuck.
+                logfire.error(
+                    "Failed to reset server auto-expand settings",
+                    guild_id=self.guild_id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
                 )
-            return
-        self._sync_buttons()
-        await interaction.edit_original_message(
-            embed=build_settings_embed(guild_name=self.guild_name, state=self.state), view=self
-        )
+                with contextlib.suppress(HTTPException):
+                    await interaction.followup.send(
+                        embed=build_error_embed(description="恢復預設設定失敗，請稍後再試。"),
+                        ephemeral=True,
+                    )
+                return
+            self._sync_buttons()
+            await interaction.edit_original_message(
+                embed=build_settings_embed(guild_name=self.guild_name, state=self.state), view=self
+            )
 
     async def on_timeout(self) -> None:
         """Disables every button once the panel goes idle, ignoring cleanup errors."""
-        if self._origin is None:
-            return
-        for child in self.children:
-            if isinstance(child, Button):
-                child.disabled = True
-        # Broad on purpose: inert cleanup when the ephemeral panel may already be dismissed.
-        with contextlib.suppress(Exception):
-            await self._origin.edit_original_message(view=self)
+        async with self._lock.get():
+            self._timed_out = True
+            if self._origin is None:
+                return
+            for child in self.children:
+                if isinstance(child, Button):
+                    child.disabled = True
+            # Broad on purpose: inert cleanup when the ephemeral panel may already be dismissed.
+            with contextlib.suppress(Exception):
+                await self._origin.edit_original_message(view=self)

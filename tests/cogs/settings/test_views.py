@@ -1,5 +1,6 @@
 """Tests for `ServerSettingsView` button toggles, reset, permission checks, and timeout."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -136,3 +137,78 @@ async def test_timeout_disables_all_buttons_via_bound_origin() -> None:
     assert all(child.disabled for child in view.children if isinstance(child, Button))
     assert len(origin.edits) == 1
     assert origin.edits[0].get("view") is view
+
+
+async def test_reset_button_keeps_symbol_in_label_rather_than_emoji() -> None:
+    """Discord rejects non-emoji Unicode arrows like `↺` in `Button.emoji`; keep it in `label`."""
+    initial = await get_guild_auto_expand(guild_id=33)
+    view = ServerSettingsView(guild_id=33, guild_name="測試群", state=initial)
+
+    assert view._reset_button.emoji is None
+    assert view._reset_button.label == "↺ 恢復預設"
+
+
+async def test_reset_write_error_logs_and_sends_ephemeral_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A database failure during reset reports an ephemeral error without mutating view state."""
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    await views_module.set_auto_expand_override(guild_id=67, platform="twitter", enabled=False)
+    initial = await get_guild_auto_expand(guild_id=67)
+    view = ServerSettingsView(guild_id=67, guild_name="測試群", state=initial)
+
+    async def broken_reset(guild_id: int) -> object:
+        del guild_id
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(
+        target=views_module, name="reset_auto_expand_overrides", value=broken_reset
+    )
+    click = FakeInteraction(in_guild=True, guild_id=67, administrator=True)
+    await view._reset_button.callback(as_interaction(fake=click))
+
+    assert click.response.deferred is True
+    assert click.edits == []
+    assert len(click.followup.sent) == 1
+    assert click.followup.sent[0].get("ephemeral") is True
+    assert view._reset_button.disabled is False
+    assert len(errors) == 1
+
+
+async def test_toggle_arriving_after_timeout_does_not_reenable_buttons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Serialized locking ensures `on_timeout` leaves buttons disabled even across in-flight presses."""
+    initial = await get_guild_auto_expand(guild_id=45)
+    view = ServerSettingsView(guild_id=45, guild_name="測試群", state=initial)
+    origin = FakeInteraction(in_guild=True, guild_id=45, administrator=True)
+    view.bind_origin(interaction=as_interaction(fake=origin))
+
+    entered_write = asyncio.Event()
+    release_write = asyncio.Event()
+    real_set = views_module.set_auto_expand_override
+
+    async def slow_set(guild_id: int, platform: str, enabled: bool) -> object:
+        entered_write.set()
+        await release_write.wait()
+        return await real_set(guild_id=guild_id, platform=platform, enabled=enabled)  # ty: ignore[invalid-argument-type]
+
+    monkeypatch.setattr(target=views_module, name="set_auto_expand_override", value=slow_set)
+
+    click = FakeInteraction(in_guild=True, guild_id=45, administrator=True)
+    toggle_task = asyncio.create_task(
+        view._platform_buttons["twitter"].callback(as_interaction(fake=click))
+    )
+    await entered_write.wait()
+    timeout_task = asyncio.create_task(view.on_timeout())
+    await asyncio.sleep(0)
+    release_write.set()
+    await asyncio.gather(toggle_task, timeout_task)
+
+    assert all(child.disabled for child in view.children if isinstance(child, Button))
+
+    # Any late click after timeout is ignored without editing or writing.
+    late_click = FakeInteraction(in_guild=True, guild_id=45, administrator=True)
+    await view._platform_buttons["threads"].callback(as_interaction(fake=late_click))
+    assert late_click.edits == []
+    assert await is_auto_expand_enabled(guild_id=45, platform="threads") is True
