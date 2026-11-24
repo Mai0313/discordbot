@@ -15,7 +15,7 @@ A completed review delivers:
 - Overall and per-model approval rates (distinguishing all votes from asker-only votes), regeneration rates (`Regen`), pairwise head-to-head regeneration outcomes (`Pairwise`), and downvote reason breakdown for the inspected window.
 - Average reply length by `(model, effort)` on `reply_turn` so verbosity patterns are measured rather than guessed.
 - A classification of real defects into the four root-cause buckets below, with noisy votes separated out and explained.
-- Whether an active slow-model blind test (`SLOW_MODEL_BLIND_TEST_ENABLED`) is running and would be confounded by a prompt edit.
+- Whether an active slow-model blind test (`[global.reply].slow_model_blind_test_enabled` in `config.toml`) is running and would be confounded by a prompt edit.
 - Real Q&A examples (with preceding channel context, voter identity, reason, and relevant memory/log findings) alongside concrete options to discuss before making any change.
 
 ## Gathering Evidence
@@ -79,6 +79,6 @@ Assign each real finding to one primary bucket so the fix targets the right laye
 
 ## Safeguards Before Editing
 
-- **Check for an active blind test (`SLOW_MODEL_BLIND_TEST_ENABLED`)**: inspect whether recent `reply_turn` rows distribute across the blind-test candidate models (or check the running deployment config without printing `.env` secrets). Editing `prompts.py` while a blind test is running confounds pre- and post-edit turns in the same comparison; warn the user explicitly and recommend either waiting for the blind test to finish or treating the edit date as a new `--since` cohort boundary.
+- **Check for an active blind test (`[global.reply].slow_model_blind_test_enabled`)**: inspect whether recent `reply_turn` rows distribute across the blind-test candidate models (or check `./data/config.toml` / `load_bot_config()` in the running container without printing `.env` secrets). Editing `prompts.py` while a blind test is running confounds pre- and post-edit turns in the same comparison; warn the user explicitly and recommend either waiting for the blind test to finish or treating the edit date as a new `--since` cohort boundary.
 - **Discuss real examples before editing `prompts.py`**: present the actual Q&A excerpts, context, and classification first, and get agreement on what should change. Every string in `prompts.py` is model input, and adding rules for single anecdotes degrades general replies.
 - **Verify before deleting an existing prompt rule**: before proposing to remove a line from `prompts.py` as redundant, count whether the failure it guards against still appears in bot replies in `data/database/messages.db`.

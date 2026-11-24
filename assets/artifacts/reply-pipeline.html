@@ -647,7 +647,7 @@ footer.end{
         <tr><td class="nowrap"><b>訊息額度</b></td><td>無上限</td><td>編輯原始回應不限次，但<strong>只能再發 5 則 follow-up</strong>。超過大約一萬二千字的答案會被截斷並註明</td></tr>
         <tr><td class="nowrap"><b>時間額度</b></td><td>無</td><td>互動 token <strong>15 分鐘</strong>後失效，之後連失敗通知都送不出去。所以 IMAGE / VIDEO 生成、QA 答案串流與 QA 回覆的內嵌媒體都被綁在「token 剩餘時間扣掉 60 秒」之內：生成或答案來不及就說明 Discord 視窗關了，內嵌媒體來不及就丟掉並留 ⏱️。IMAGE / VIDEO 交付後的人格回話刻意不綁，它沒有失敗通知需要留這段餘裕；VIDEO 人格回話看片用的 Files 上傳與記憶結果那行的事後編輯也沒綁</td></tr>
         <tr><td class="nowrap"><b>伺服器記憶</b></td><td>會讀也會寫（限公開頻道）</td><td>完全不碰。bot 不在頻道裡，判斷不了誰看得到，寫得進去卻讀不回來的社群記憶只會默默過期</td></tr>
-        <tr><td class="nowrap"><b>回饋與重抽按鈕</b></td><td>開啟 <code>FEEDBACK_ENABLED</code> 時附帶 👍 / 👎；QA 回覆在未達重抽上限前另附 🔄</td><td>開啟 <code>FEEDBACK_ENABLED</code> 時附帶 👍 / 👎，但不提供 🔄（沒有可重抓的來源訊息）</td></tr>
+        <tr><td class="nowrap"><b>回饋與重抽按鈕</b></td><td>開啟 <code>global.reply.feedback_enabled</code> 時附帶 👍 / 👎；QA 回覆在未達重抽上限前另附 🔄</td><td>開啟 <code>global.reply.feedback_enabled</code> 時附帶 👍 / 👎，但不提供 🔄（沒有可重抓的來源訊息）</td></tr>
       </tbody>
     </table></div>
   </section>
@@ -763,7 +763,7 @@ footer.end{
 
     <h3>送進答案模型的東西，順序是固定的</h3>
     <ol class="flow">
-      <li><span class="st">能力說明文件</span><span class="sd">放最前面。同一個部署的每則回覆它都完全一樣，擺前面對前綴快取最划算。它照部署的開關與金鑰改寫：沒有直連金鑰時省略音樂、影片、YouTube、深度研究，關閉 <code>FILE_API_ENABLED</code> 或缺金鑰時改寫抖音與 Bilibili 為純文字，關閉 <code>FEEDBACK_ENABLED</code> 時拿掉回饋按鈕說明；全部就緒時就是原文。這份英文文件是唯一描述「這隻 bot 會什麼」的地方，取代了被刪掉的 <code>/help</code>。只有 QA 帶它——交付一張生成圖時不是在回答「你會什麼」。</span></li>
+      <li><span class="st">能力說明文件</span><span class="sd">放最前面。同一個部署的每則回覆它都完全一樣，擺前面對前綴快取最划算。它照部署的開關與金鑰改寫：沒有直連金鑰時省略音樂、影片、YouTube、深度研究，關閉 <code>global.reply.file_api_enabled</code> 或缺金鑰時改寫抖音與 Bilibili 為純文字，關閉 <code>global.reply.feedback_enabled</code> 時拿掉回饋按鈕說明；全部就緒時就是原文。這份英文文件是唯一描述「這隻 bot 會什麼」的地方，取代了被刪掉的 <code>/help</code>。只有 QA 帶它——交付一張生成圖時不是在回答「你會什麼」。</span></li>
       <li><span class="st">頻道歷史</span><span class="sd">三個軸同時限制，誰先撞到算誰：最多 50 則、4000 字、每則額外算 40 字的開銷。從最新往回留，切在訊息邊界上。附件另有第三軸，最多 5 個真實檔案，超出的訊息退回純標記——一旦有一則被拒，比它更舊的全部一起拒，模型看到的檔案永遠是一段連到現在為止不中斷的區間。附件以內嵌送出時再多一道位元組預算（約 24 MB），超過的較舊訊息同樣退回標記；單一附件超過 20 MiB 則在模態閘就不內嵌。</span></li>
       <li><span class="st">伺服器記憶</span><span class="sd">每個公會一份，直接讀檔沒有選取階段。私訊和 <code>/ask</code> 沒有。</span></li>
       <li><span class="st">使用者記憶</span><span class="sd">程式端固定解析：發話者、被回覆訊息的作者、當前訊息裡明確提及的人，再加上公開頻道裡分類挑中的第三人。目標 8 人：程式端確定的人不受限，挑中的人只補剩下的名額。</span></li>
@@ -779,7 +779,7 @@ footer.end{
       <div class="branch-col">
         <header><b>預設後端</b><span class="chip proxy">Proxy</span></header>
         <div class="bc-body">
-          <p>全天都是 <code>gemini-4-neon</code>（開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時則從候選池 <code>gemini-4-neon</code> / <code>gemini-4-hydrogen</code> 均勻抽樣），用路由給的強度，開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
+          <p>全天都是 <code>gemini-4-neon</code>（開啟 <code>global.reply.slow_model_blind_test_enabled</code> 時則從候選池 <code>gemini-4-neon</code> / <code>gemini-4-hydrogen</code> 均勻抽樣），用路由給的強度，開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
           <p class="mut">這一輪不掛任何自訂 function tool，這是刻意的：一旦掛上，Gemini 那一輪會變成「呼叫工具就結束、正文空白」，接地引用歸零。</p>
         </div>
       </div>
@@ -802,8 +802,8 @@ footer.end{
 
     <h3>盲測抽樣與 🔄 重新生成</h3>
     <div class="kv">
-      <dt>盲測遮蔽</dt><dd>開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時，每一輪 QA 會從候選清單均勻抽一個模型，並將系統提示詞與頁尾可見的模型名稱改寫為 <code>blind-test-model</code>（同時隱藏思考強度）；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
-      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>FEEDBACK_ENABLED</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：一般模式最多重抽 1 次；盲測模式最多重抽 <code>候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
+      <dt>盲測遮蔽</dt><dd>開啟 <code>global.reply.slow_model_blind_test_enabled</code> 時，每一輪 QA 會從候選清單均勻抽一個模型，並將系統提示詞與頁尾可見的模型名稱改寫為 <code>blind-test-model</code>（同時隱藏思考強度）；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
+      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>global.reply.feedback_enabled</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：一般模式最多重抽 1 次；盲測模式最多重抽 <code>候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
       <dt>重抽與刪舊順序</dt><dd>僅限原發問者（或 bot 擁有者）點擊，同一則回覆以鎖序列化防連點。重抽時會重取原始發問訊息、保留原思考強度並強制走 QA 路線（仍執行分類以保留 YouTube、連結貼文與第三人記憶判定）。只有在新回覆順利落地並寫入 <code>reply.db</code> 後，才會對舊回合補記一筆 <code>regen</code> 隱含倒讚（若使用者原本已點過明確 👎 則保留原原因不覆寫）並由後往前刪除舊分段訊息；任何失敗都會保留舊回覆與評分原狀。</dd>
     </div>
 
@@ -811,7 +811,7 @@ footer.end{
     <div class="note warn">
       <span class="tag">哪些路徑會由 bot 端重試</span>
       <p>LiteLLM 的 router 負責非串流與串流路徑的 fallback（<code>num_retries: 0</code>），SDK 端維持各自預設重試（<code>OpenAI</code> 與 <code>google-genai</code>）；bot 端不再為答案串流加外層重試迴圈。唯一保留 bot 端重試的是圖像生成（<code>ImageGenerator</code>），回傳空結果時會自動重試一次才報錯。</p>
-      <p>QA 答案與 IMAGE / VIDEO 交付後的人格化回話預設透過單次的 <code>stream_answer</code> 串流（<code>ANSWER_STREAMING_ENABLED=false</code> 時改走 <code>non_streaming.py</code> 一次取回完整結果、不做即時預覽編輯）：在 <code>/ask</code> 上，QA 答案呼叫綁在 token 剩餘時間扣掉 60 秒的交付視窗內，逾時直接回報 Discord 視窗關閉；若串流中途失敗或未收到完成事件（如內容過濾、輸出預算用盡），回覆會保留已寫出的文字並在底下附上錯誤 embed。</p>
+      <p>QA 答案與 IMAGE / VIDEO 交付後的人格化回話預設透過單次的 <code>stream_answer</code> 串流（<code>global.reply.streaming_enabled = false</code> 時改走 <code>non_streaming.py</code> 一次取回完整結果、不做即時預覽編輯）：在 <code>/ask</code> 上，QA 答案呼叫綁在 token 剩餘時間扣掉 60 秒的交付視窗內，逾時直接回報 Discord 視窗關閉；若串流中途失敗或未收到完成事件（如內容過濾、輸出預算用盡），回覆會保留已寫出的文字並在底下附上錯誤 embed。</p>
     </div>
   </section>
 
@@ -939,7 +939,7 @@ footer.end{
     <ol class="flow">
       <li><span class="st">搶佔名額</span><span class="sd">一個人同時只能有一份研究在跑。已經有了就回覆現有討論串的連結。</span></li>
       <li class="px"><span class="st">生一個討論串標題</span><span class="sd">triage 模型，走 proxy，15 秒上限。失敗就退回用 brief 的第一行。</span></li>
-      <li><span class="st">開討論串、寫進資料庫、討論串掛的那則訊息上 🔬</span><span class="sd">預設為 🔬（可用 <code>EMOJI_RESEARCH</code> 覆寫為自訂表情），刻意跟一般 QA 的表情不同，一眼就看得出這是研究而不是回覆。</span></li>
+      <li><span class="st">開討論串、寫進資料庫、討論串掛的那則訊息上 🔬</span><span class="sd">預設為 🔬（可在 <code>config.toml</code> 的 <code>[global.emojis].research</code> 覆寫為自訂表情），刻意跟一般 QA 的表情不同，一眼就看得出這是研究而不是回覆。</span></li>
       <li class="dx"><span class="st">跑 agent</span><span class="sd"><code>antigravity-preview-09-2026</code>，推理模型指定為 <code>gemini-4-hydrogen</code>，開著網頁搜尋與 URL 讀取（<strong>刻意不開程式執行</strong>：agent 的 bash/python 呼叫會以原始文字漏進報告裡）。用 <code>background=true</code> + <code>store=true</code> + <code>stream=true</code>，所以它的思路會即時畫在討論串開頭那則狀態訊息上。</span></li>
       <li class="dx"><span class="st">串流斷了就重新接上</span><span class="sd">SDK 會在 agent 還在工作時把長連線關掉，所以會帶著續傳 token 重新掛回去。</span></li>
       <li class="dx"><span class="st">最終結果一律另外取一次</span><span class="sd">完成事件<strong>刻意不帶報告本體</strong>，串流出來的只是即時視圖。所以永遠用一次終態查詢把報告拿回來，順便把「串流死了但 agent 沒死」的情況也一起收尾。</span></li>
@@ -973,7 +973,7 @@ footer.end{
           <td class="nowrap"><b>Threads</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>整串對話（祖先鏈、目標貼文、它引用的貼文、底下的留言），但只吃<strong>目標貼文</strong>和<strong>被引用貼文</strong>的媒體。鏈與留言各有獨立上限，互不排擠</td>
-          <td>共用 <code>FILE_API_ENABLED</code> 與直連金鑰</td>
+          <td>共用 <code>global.reply.file_api_enabled</code> 與直連金鑰</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Facebook</b></td>
@@ -1139,15 +1139,15 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 14 -->
   <section id="s14">
     <div class="s-head"><span class="s-num">14</span><h2>總開關與它們關掉之後的行為</h2></div>
-    <p class="lede">直連 Google 的功能（音樂、內嵌影片、YouTube 觀看、深度研究）只以是否設定 <code>GEMINI_API_KEY</code> 為閘，不再各自留環境變數開關；下列為僅存的四個營運／實驗總開關，修改後需要重啟。</p>
+    <p class="lede">直連 Google 的功能（音樂、內嵌影片、YouTube 觀看、深度研究）只以是否設定 <code>GEMINI_API_KEY</code> 為閘，不再各自留開關；下列四個營運／實驗總開關定義於 <code>src/discordbot/config.toml</code> 的 <code>[global.reply]</code>（可在 <code>./data/config.toml</code> 覆寫，修改後重啟即生效）。</p>
 
     <div class="tw"><table>
-      <thead><tr><th>開關</th><th>關掉（或開啟）會怎樣</th><th>需要直連金鑰</th></tr></thead>
+      <thead><tr><th>開關（<code>[global.reply]</code>）</th><th>關掉（或開啟）會怎樣</th><th>需要直連金鑰</th></tr></thead>
       <tbody>
-        <tr><td class="m">FEEDBACK_ENABLED</td><td>完成的回覆不再附帶 👍 / 👎 / 🔄 按鈕與評分小字，也不寫入 <code>reply.db</code> 回合快照，並停用 🔄 重新生成</td><td>否</td></tr>
-        <tr><td class="m">SLOW_MODEL_BLIND_TEST_ENABLED</td><td>預設關閉。開啟時 QA 從候選模型均勻抽樣、在提示詞與頁尾改以 <code>blind-test-model</code> 遮蔽模型與強度，並允許多輪不重複模型重抽</td><td>否</td></tr>
-        <tr><td class="m">FILE_API_ENABLED</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
-        <tr><td class="m">ANSWER_STREAMING_ENABLED</td><td>QA 回覆（含 YouTube Interactions）與 IMAGE / VIDEO 人格化回話改走非串流（<code>stream=False</code>），等完整結果回來後一次貼出，不做即時預覽編輯</td><td>否</td></tr>
+        <tr><td class="m">feedback_enabled</td><td>完成的回覆不再附帶 👍 / 👎 / 🔄 按鈕與評分小字，也不寫入 <code>reply.db</code> 回合快照，並停用 🔄 重新生成</td><td>否</td></tr>
+        <tr><td class="m">slow_model_blind_test_enabled</td><td>預設關閉。開啟時 QA 從候選模型均勻抽樣、在提示詞與頁尾改以 <code>blind-test-model</code> 遮蔽模型與強度，並允許多輪不重複模型重抽</td><td>否</td></tr>
+        <tr><td class="m">file_api_enabled</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
+        <tr><td class="m">streaming_enabled</td><td>QA 回覆（含 YouTube Interactions）與 IMAGE / VIDEO 人格化回話改走非串流（<code>stream=False</code>），等完整結果回來後一次貼出，不做即時預覽編輯</td><td>否</td></tr>
       </tbody>
     </table></div>
   </section>
@@ -1155,7 +1155,7 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 15 -->
   <section id="s15">
     <div class="s-head"><span class="s-num">15</span><h2>使用者在畫面上會看到的訊號</h2></div>
-    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。狀態鏈、連結來源、YouTube（▶️）、研究（🔬）與語音（🗣️）預設為 Unicode，部署時可透過 <code>EMOJI_*</code> 環境變數覆寫為自訂應用程式表情；其餘提示標記（音樂 🎵、⏱️、⚠️、❓）為固定 Unicode。</p>
+    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。狀態鏈、連結來源、YouTube（▶️）、研究（🔬）與語音（🗣️）預設為 Unicode，部署時可透過 <code>./data/config.toml</code> 的 <code>[global.emojis]</code> 覆寫為自訂應用程式表情；其餘提示標記（音樂 🎵、⏱️、⚠️、❓）為固定 Unicode。</p>
 
     <h4>狀態鏈（會被下一個取代）</h4>
     <div class="signals">
@@ -1185,8 +1185,8 @@ footer.end{
 
     <h4>回覆底下的小字</h4>
     <div class="kv">
-      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時模型與強度會被遮蔽成 <code>blind-test-model</code>（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。</dd>
-      <dt>回饋按鈕與評分小字</dt><dd>開啟 <code>FEEDBACK_ENABLED</code> 時，最終回覆（或長回覆最後一段）底下會附帶 <code>-# 評分將用於架構改進⋯</code> 小字與常駐按鈕：👍 / 👎 供任何人評分（再按取消、切換覆寫，👎 另提供僅本人可見的原因按鈕、自由填寫與「取消評分」）；伺服器與私訊的 QA 回覆在未達重抽上限前另附 🔄，供原發問者就地重新生成。</dd>
+      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；開啟 <code>global.reply.slow_model_blind_test_enabled</code> 時模型與強度會被遮蔽成 <code>blind-test-model</code>（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。</dd>
+      <dt>回饋按鈕與評分小字</dt><dd>開啟 <code>global.reply.feedback_enabled</code> 時，最終回覆（或長回覆最後一段）底下會附帶 <code>-# 評分將用於架構改進⋯</code> 小字與常駐按鈕：👍 / 👎 供任何人評分（再按取消、切換覆寫，👎 另提供僅本人可見的原因按鈕、自由填寫與「取消評分」）；伺服器與私訊的 QA 回覆在未達重抽上限前另附 🔄，供原發問者就地重新生成。</dd>
       <dt>📖 讀了</dt><dd>這則回覆讀了誰的記憶。超過兩個人會收斂成「等 N 人」。</dd>
       <dt>✏️ 記下了 / 🩹 不再記得</dt><dd>背景審查完才會出現，換掉那句「正在整理記憶⋯」。一則回覆只會有一條記憶結果，而且這行不會進入之後的對話歷史。</dd>
       <dt>媒體過大，改用連結</dt><dd>附件超過該處的上傳上限，改成託管網址。放在用量頁尾<strong>之前</strong>，否則之後的歷史渲染會把頁尾當成回覆內容的一部分。</dd>
