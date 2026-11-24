@@ -6,6 +6,7 @@ enters the same pipeline through an interaction-backed `TurnSurface` where gatew
 never arrive (unjoined servers, group DMs, and other users' DMs).
 """
 
+import time
 from typing import TypedDict
 import asyncio
 from functools import cached_property
@@ -32,7 +33,7 @@ from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.utils.llm_errors import extract_friendly_error
+from discordbot.utils.llm_errors import llm_status_code, extract_friendly_error
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
 from discordbot.utils.sqlite_config import ensure_database_upgraded
@@ -197,6 +198,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _run_turn(self, surface: TurnSurface, content: str) -> None:
         """Runs one turn and delivers a last-resort failure notice if an unhandled error escapes."""
+        started_at = time.monotonic()
         message = surface.message
         reactions = surface.status_chain(bot_user=self.bot.user)
         dispatched_model.set(None)
@@ -208,6 +210,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 "gen_reply failed",
                 **_message_log_fields(surface=surface),
                 model=dispatched_model.get(),
+                streaming=self.config.answer_streaming_enabled,
+                elapsed_seconds=time.monotonic() - started_at,
+                status_code=llm_status_code(exc=e),
                 error_type=type(e).__name__,
                 _exc_info=True,
             )

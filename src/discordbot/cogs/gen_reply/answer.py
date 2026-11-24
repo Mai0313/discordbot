@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence, Awaitable, AsyncIterator
 import logfire
 from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict
-from openai.types.responses import ResponseStreamEvent
+from openai.types.responses import Response, ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -62,6 +62,11 @@ from discordbot.cogs.gen_reply.status_marks import (
     YOUTUBE_EMOJI,
     MEMORY_WRITE_EMOJI,
     MEMORY_FORGET_EMOJI,
+)
+from discordbot.cogs.gen_reply.non_streaming import (
+    complete_responses_answer,
+    create_interactions_answer,
+    complete_interactions_answer,
 )
 from discordbot.cogs.gen_reply.feedback_store import (
     ReplyRoute,
@@ -327,6 +332,7 @@ class AnswerTurn(BaseModel):
                 )
             )
 
+            streaming = self.config.answer_streaming_enabled
             streamer = ResponseStreamer(
                 message=self.message,
                 surface=self.surface,
@@ -335,6 +341,7 @@ class AnswerTurn(BaseModel):
                 carries_turn_notices=False,
                 memory_lookups=context.memory_credits,
                 model_effort=model.effort or "",
+                streaming=streaming,
                 media_delivery=self.media_delivery,
                 feedback_view=(
                     ReplyFeedbackView(allow_regen=False) if self.config.feedback_enabled else None
@@ -349,27 +356,44 @@ class AnswerTurn(BaseModel):
                     answer_seconds=answer_seconds,
                 ),
             )
+            instructions = build_runtime_instructions(
+                system_prompt=system_prompt, message=self.message, guild_id=self.surface.guild_id
+            )
             with logfire.span(
                 f"gen_reply {media_noun} reply", model=model.name, message_id=self.message.id
             ):
+                if streaming:
 
-                async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-                    """Issues the persona-reply request inside the stream helper."""
-                    return await self.toolkit.openai_client.responses.create(
-                        model=model.name,
-                        instructions=build_runtime_instructions(
-                            system_prompt=system_prompt,
-                            message=self.message,
-                            guild_id=self.surface.guild_id,
-                        ),
-                        input=response_input,
-                        reasoning=model.reasoning,
-                        stream=True,
-                        service_tier="auto",
-                        extra_headers={"x-litellm-end-user-id": self.message.author.name},
+                    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+                        """Issues the persona-reply request inside the stream helper."""
+                        return await self.toolkit.openai_client.responses.create(
+                            model=model.name,
+                            instructions=instructions,
+                            input=response_input,
+                            reasoning=model.reasoning,
+                            stream=True,
+                            service_tier="auto",
+                            extra_headers={"x-litellm-end-user-id": self.message.author.name},
+                        )
+
+                    persona_reply = await stream_answer(streamer=streamer, open_stream=open_stream)
+                else:
+
+                    async def fetch_response() -> Response:
+                        """Issues the non-streaming persona-reply request."""
+                        return await self.toolkit.openai_client.responses.create(
+                            model=model.name,
+                            instructions=instructions,
+                            input=response_input,
+                            reasoning=model.reasoning,
+                            stream=False,
+                            service_tier="auto",
+                            extra_headers={"x-litellm-end-user-id": self.message.author.name},
+                        )
+
+                    persona_reply = await complete_responses_answer(
+                        streamer=streamer, fetch=fetch_response
                     )
-
-                persona_reply = await stream_answer(streamer=streamer, open_stream=open_stream)
             # Record the persona reply so `/ask` history retains evidence the media was delivered.
             await self.surface.record_turn(answer=persona_reply)
         except Exception as exc:
@@ -473,6 +497,69 @@ class AnswerTurn(BaseModel):
             return "no-gemini-key"
         return None
 
+    async def _deliver_qa_answer(
+        self,
+        streamer: ResponseStreamer,
+        slow_model: ModelSettings,
+        instructions: str,
+        answer_input: ResponseInputParam,
+        yt_url: str | None,
+    ) -> str:
+        """Runs the QA answer request in streaming or non-streaming mode and finalizes `streamer`."""
+        if self.config.answer_streaming_enabled:
+
+            async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+                """Issues the answer request inside the `/ask` delivery window."""
+                if yt_url is not None:
+                    return create_interactions_answer_stream(
+                        client=self.toolkit.gemini_client,
+                        model=slow_model.name,
+                        system_instruction=instructions,
+                        steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
+                        effort=slow_model.effort,
+                        tool_use=streamer.tool_use,
+                    )
+                return await self.toolkit.openai_client.responses.create(
+                    model=slow_model.name,
+                    instructions=instructions,
+                    input=answer_input,
+                    reasoning=slow_model.reasoning,
+                    tools=list(slow_model.tools),
+                    stream=True,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": self.message.author.name},
+                )
+
+            return await stream_answer(streamer=streamer, open_stream=open_stream)
+        if yt_url is not None:
+
+            async def fetch_interaction() -> object:
+                """Issues the non-streaming Interactions answer inside the delivery window."""
+                return await create_interactions_answer(
+                    client=self.toolkit.gemini_client,
+                    model=slow_model.name,
+                    system_instruction=instructions,
+                    steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
+                    effort=slow_model.effort,
+                )
+
+            return await complete_interactions_answer(streamer=streamer, fetch=fetch_interaction)
+
+        async def fetch_response() -> Response:
+            """Issues the non-streaming Responses answer inside the delivery window."""
+            return await self.toolkit.openai_client.responses.create(
+                model=slow_model.name,
+                instructions=instructions,
+                input=answer_input,
+                reasoning=slow_model.reasoning,
+                tools=list(slow_model.tools),
+                stream=False,
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": self.message.author.name},
+            )
+
+        return await complete_responses_answer(streamer=streamer, fetch=fetch_response)
+
     async def stream_answer(  # noqa: PLR0913 -- QA turn parameters from pipeline
         self,
         system_prompt: str,
@@ -554,6 +641,7 @@ class AnswerTurn(BaseModel):
         allow_regen = self.surface.interaction is None and regen_count < max_regens_for(
             config=self.config, candidates=toolkit.runtime_models.slow_model_blind_test_candidates
         )
+        streaming = self.config.answer_streaming_enabled
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
@@ -561,6 +649,7 @@ class AnswerTurn(BaseModel):
             model_display_name=model_display_name,
             model_effort=effort,
             backend=backend,
+            streaming=streaming,
             voice_generator=voice_generator,
             image_generator=image_generator,
             music_generator=music_generator,
@@ -586,6 +675,7 @@ class AnswerTurn(BaseModel):
             message_id=self.message.id,
             model=slow_model.name,
             backend=backend,
+            streaming=streaming,
             effort=effort,
             input_blocks=len(answer_input),
             history=len(context.hist_messages),
@@ -604,30 +694,13 @@ class AnswerTurn(BaseModel):
         with logfire.span(
             "gen_reply answer", model=slow_model.name, backend=backend, message_id=self.message.id
         ):
-
-            async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-                """Issues the answer request inside the `/ask` delivery window."""
-                if use_interactions and yt_url is not None:
-                    return create_interactions_answer_stream(
-                        client=toolkit.gemini_client,
-                        model=slow_model.name,
-                        system_instruction=instructions,
-                        steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
-                        effort=slow_model.effort,
-                        tool_use=streamer.tool_use,
-                    )
-                return await self.toolkit.openai_client.responses.create(
-                    model=slow_model.name,
-                    instructions=instructions,
-                    input=answer_input,
-                    reasoning=slow_model.reasoning,
-                    tools=list(slow_model.tools),
-                    stream=True,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": self.message.author.name},
-                )
-
-            full_reply = await stream_answer(streamer=streamer, open_stream=open_stream)
+            full_reply = await self._deliver_qa_answer(
+                streamer=streamer,
+                slow_model=slow_model,
+                instructions=instructions,
+                answer_input=answer_input,
+                yt_url=yt_url if use_interactions else None,
+            )
         await self._sync_extra_reply_chunk_ids(streamer=streamer)
         # Launch after streaming finishes so thread creation never races the reply's media edit.
         if research_offered and streamer.markers.research_brief:

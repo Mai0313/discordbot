@@ -811,7 +811,7 @@ footer.end{
     <div class="note warn">
       <span class="tag">哪些路徑會由 bot 端重試</span>
       <p>LiteLLM 的 router 負責非串流與串流路徑的 fallback（<code>num_retries: 0</code>），SDK 端維持各自預設重試（<code>OpenAI</code> 與 <code>google-genai</code>）；bot 端不再為答案串流加外層重試迴圈。唯一保留 bot 端重試的是圖像生成（<code>ImageGenerator</code>），回傳空結果時會自動重試一次才報錯。</p>
-      <p>QA 答案串流與 IMAGE / VIDEO 交付後的人格化回話都透過單次的 <code>stream_answer</code> 承接：在 <code>/ask</code> 上，QA 答案串流綁在 token 剩餘時間扣掉 60 秒的交付視窗內，逾時直接回報 Discord 視窗關閉；若串流中途失敗或未收到完成事件（如內容過濾、輸出預算用盡），回覆會保留已寫出的文字並在底下附上錯誤 embed。</p>
+      <p>QA 答案與 IMAGE / VIDEO 交付後的人格化回話預設透過單次的 <code>stream_answer</code> 串流（<code>ANSWER_STREAMING_ENABLED=false</code> 時改走 <code>non_streaming.py</code> 一次取回完整結果、不做即時預覽編輯）：在 <code>/ask</code> 上，QA 答案呼叫綁在 token 剩餘時間扣掉 60 秒的交付視窗內，逾時直接回報 Discord 視窗關閉；若串流中途失敗或未收到完成事件（如內容過濾、輸出預算用盡），回覆會保留已寫出的文字並在底下附上錯誤 embed。</p>
     </div>
   </section>
 
@@ -1113,12 +1113,12 @@ footer.end{
       <thead><tr><th>功能</th><th>觸發時機</th><th>路徑</th><th>SDK / API</th><th>模型</th></tr></thead>
       <tbody>
         <tr><td><b>路由分類</b>（含思考強度、第三人記憶）</td><td class="mut">每一輪</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
-        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設（含 🔄 重新生成）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses stream</td><td class="m">gemini-4-neon（盲測抽樣碳/氖/氫）<br>· 路由給的強度</td></tr>
-        <tr><td><b>QA 答案（看 YouTube）</b></td><td class="mut">四道閘全過</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions stream</td><td class="m">同上</td></tr>
+        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設（含 🔄 重新生成）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses（預設 stream）</td><td class="m">gemini-4-neon（盲測抽樣碳/氖/氫）<br>· 路由給的強度</td></tr>
+        <tr><td><b>QA 答案（看 YouTube）</b></td><td class="mut">四道閘全過</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions（預設 stream）</td><td class="m">同上</td></tr>
         <tr><td><b>提示詞導演</b></td><td class="mut">IMAGE / VIDEO 生成前（編輯影片時跳過）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses + 搜尋工具</td><td class="m">gemini-4-hydrogen · low</td></tr>
         <tr><td><b>圖片生成 / 編輯</b></td><td class="mut">IMAGE 路線、<code>generate-image</code> 標記</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · images.generate / edit</td><td class="m">gemini-nano-banana-2.1</td></tr>
         <tr><td><b>語音合成</b></td><td class="mut"><code>generate-voice</code> 標記</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · audio.speech</td><td class="m">gemini-3.8-flash-tts</td></tr>
-        <tr><td><b>人格化回話</b></td><td class="mut">IMAGE / VIDEO 交付之後</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses stream</td><td class="m">gemini-4-hydrogen · low</td></tr>
+        <tr><td><b>人格化回話</b></td><td class="mut">IMAGE / VIDEO 交付之後</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses（預設 stream）</td><td class="m">gemini-4-hydrogen · low</td></tr>
         <tr><td><b>影片生成 / 編輯</b></td><td class="mut">VIDEO 路線、<code>generate-video</code> 標記</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions</td><td class="m">gemini-omni-1.2-flash</td></tr>
         <tr><td><b>音樂生成</b></td><td class="mut"><code>generate-music</code> 標記</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions</td><td class="m">lyria-3.5</td></tr>
         <tr><td><b>深度研究</b></td><td class="mut"><code>deep-research</code> 標記、<code>/deep_research</code></td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions（背景 agent）</td><td class="m">antigravity-preview-09-2026<br>· 推理 gemini-4-hydrogen</td></tr>
@@ -1157,6 +1157,7 @@ footer.end{
         <tr><td class="m">IMAGE_REFINE_PROMPT_ENABLED</td><td>IMAGE 路線跳過導演，原始請求直接送給圖像模型</td><td>否</td></tr>
         <tr><td class="m">VIDEO_REFINE_PROMPT_ENABLED</td><td>同上，對 VIDEO 路線</td><td>否</td></tr>
         <tr><td class="m">FILE_API_ENABLED</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
+        <tr><td class="m">ANSWER_STREAMING_ENABLED</td><td>QA 回覆（含 YouTube Interactions）與 IMAGE / VIDEO 人格化回話改走非串流（<code>stream=False</code>），等完整結果回來後一次貼出，不做即時預覽編輯</td><td>否</td></tr>
       </tbody>
     </table></div>
   </section>

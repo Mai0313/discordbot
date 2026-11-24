@@ -198,6 +198,13 @@ class ResponseStreamer(BaseModel):
         "them reports is not read as an absence on the other.",
         examples=["responses", "interactions"],
     )
+    streaming: bool = Field(
+        default=True,
+        description=(
+            "Whether this reply streamed live preview edits; logged on finalization so streaming "
+            "and non-streaming turns are distinguishable in telemetry."
+        ),
+    )
     tool_use: AnswerToolUse = Field(
         default_factory=AnswerToolUse,
         description=(
@@ -277,6 +284,38 @@ class ResponseStreamer(BaseModel):
     def answer_seconds(self) -> float:
         """Returns elapsed seconds from streamer creation through stream completion."""
         return self._answer_seconds
+
+    def populate_answer(
+        self,
+        text: str,
+        reasoning: str = "",
+        model_name: str = "",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ) -> None:
+        """Populates completed non-streaming answer state and stamps elapsed answer latency.
+
+        Args:
+            text (str): Completed reply text before marker stripping.
+            reasoning (str): Optional reasoning-summary text for telemetry.
+            model_name (str): Model name reported by the completed response.
+            input_tokens (int): Billed input tokens reported by the response.
+            output_tokens (int): Billed output tokens reported by the response.
+        """
+        if model_name:
+            self.model_name = model_name
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        cleaned_reasoning = reasoning.lstrip("\n")
+        if cleaned_reasoning:
+            self.reasoning_content = cleaned_reasoning
+        cleaned_text = text.lstrip("\n")
+        if cleaned_text:
+            self.content_started = True
+            self.stored_content = cleaned_text
+        self._answer_seconds = time.monotonic() - self.created_at
+        if self.carries_turn_notices:
+            current_answer_streamer.set(self)
 
     def _render_preview(self) -> str:
         """Returns the preview text: scrubbed content once started, else a reasoning tail."""
@@ -578,6 +617,7 @@ class ResponseStreamer(BaseModel):
             message_id=self.message.id,
             model=self.model_name,
             backend=self.backend,
+            streaming=self.streaming,
             effort=self.model_effort,
             answer_seconds=self._answer_seconds,
             input_tokens=self.input_tokens,

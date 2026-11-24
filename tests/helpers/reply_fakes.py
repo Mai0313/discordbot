@@ -360,6 +360,8 @@ class FakeResponses:
         # may instead be an Exception, which makes that stream raise instead of yielding, as a
         # provider error frame does -- the only way to drive the answer turn's retry end to end.
         self.stream_queue: list[list[SimpleNamespace] | Exception] = []
+        # Each entry is returned (or raised) by a non-streaming create() when non-empty.
+        self.response_queue: list[SimpleNamespace | Exception] = []
         # `.output_text` returned by each non-streaming create(); the prompt director reads it.
         # None (the default) leaves it empty so `refine` falls back to the raw prompt.
         self.refine_output_text: str | None = None
@@ -390,6 +392,11 @@ class FakeResponses:
             if isinstance(events, Exception):
                 return _stream_events_then_raise(events=[], error=events)
             return _stream_events_from(events=events)
+        if self.response_queue:
+            queued = self.response_queue.pop(0)
+            if isinstance(queued, Exception):
+                raise queued
+            return queued
         output: list[SimpleNamespace] = []
         if self.refine_output_text is not None:
             # The prompt director reads text via `output_text_or_empty`, which aggregates the
