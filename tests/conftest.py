@@ -53,6 +53,7 @@ for name in list(os.environ):
     )):
         del os.environ[name]
 
+from discordbot.utils.lru import BoundedLRU  # noqa: E402 -- `.env` must be off first
 from discordbot.utils.model_pricing import _LoadedTable  # noqa: E402 -- `.env` must be off first
 from discordbot.services.memory.git_history import memory_git  # noqa: E402 -- `.env` must be off first
 
@@ -109,7 +110,7 @@ def migrated_databases(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pa
     """Each database upgraded to its newest migration once per worker, keyed by its section."""
     root = tmp_path_factory.mktemp(basename="migrated")
     templates: dict[str, Path] = {}
-    for database in ("cleanup", "economy", "games", "reply", "messages"):
+    for database in ("cleanup", "economy", "games", "reply", "messages", "settings"):
         templates[database] = root / f"{database}.db"
         command.upgrade(
             config=migration_config(database=database, db_path=templates[database]),
@@ -128,7 +129,10 @@ def upgraded_sections_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     repo_root = REPO_ROOT.resolve()
     monkeypatch.setattr(
         "discordbot.utils.sqlite_config._upgraded_sections",
-        {(repo_root, section) for section in ("cleanup", "economy", "games", "reply", "messages")},
+        {
+            (repo_root, section)
+            for section in ("cleanup", "economy", "games", "reply", "messages", "settings")
+        },
     )
 
 
@@ -360,6 +364,25 @@ def games_history_isolated_db(
         db_path=tmp_path / "games_history.db",
         template=migrated_databases["games"],
     )
+
+
+@pytest.fixture(autouse=True)
+def settings_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
+    """Points per-server settings at a throwaway `settings.db` and starts with an empty LRU cache.
+
+    Autouse because every expansion cog reads `settings.db` on `on_message` and expansion tests
+    reuse guild ids such as `100`; without both resets an override written in one test would leak
+    into the next or hit the live database.
+    """
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.utils.server_settings._engine",
+        db_path=tmp_path / "settings.db",
+        template=migrated_databases["settings"],
+    )
+    monkeypatch.setattr("discordbot.utils.server_settings._cache", BoundedLRU(max_entries=1024))
 
 
 @pytest.fixture(autouse=True)

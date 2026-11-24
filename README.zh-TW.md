@@ -78,40 +78,41 @@ flowchart TD
 
 ## 指令
 
-| 指令                                        | 功能                                                                                                       |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `@bot <message>`                            | 和 AI 聊天。需要 bot 檢查檔案或圖片時，可附上支援的附件。                                                  |
-| `/ask <question> [attachment]`              | 在 bot 看不到對話的地方和 AI 聊天：bot 沒加入的伺服器、群組 DM，或你和別人的 DM。                          |
-| `/deep_research <topic>`                    | 在自己開的討論串裡產出一份附引用的長篇研究報告；只能在 bot 所在伺服器的一般文字頻道使用。                  |
-| _Threads URL_                               | 自動展開 Threads 貼文與媒體；被 tag 時改為連留言一起讀過再回答。                                           |
-| `/clean_threads_url <url>`                  | 私密地把 Threads 分享連結還原成貼文本身的網址，轉貼時不會帶出分享者。                                      |
-| _Facebook URL_                              | 自動展開公開貼文、圖片與影片；被 tag 時改為讀過貼文再回答。帶 `comment_id` 的連結會多顯示那則留言。        |
-| _Instagram URL_                             | 自動展開公開貼文、輪播圖片與影片（含 Reel）；被 tag 時改為讀過貼文再回答。指向留言的連結會多顯示那則留言。 |
-| _Twitter URL_                               | 自動展開貼文、圖片、影片與上面的整串；被 tag 時改為連同熱門留言讀過再回答。                                |
-| _抖音 URL_                                  | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                                                          |
-| _Bilibili URL + tag_                        | 看過連結的影片後回答（單獨貼連結不會自動展開）。                                                           |
-| `/download_video <url> [quality]`           | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                                                         |
-| `/balance [member]`                         | 私密顯示成員的虛擬歡樂豆餘額、債務、淨資產與 VIP 狀態。                                                    |
-| `/vip`                                      | 購買永久 VIP 特權；重複購買只會扣款一次，並顯示已有的 VIP 狀態。                                           |
-| `/leaderboard`                              | 顯示全域餘額排行榜。                                                                                       |
-| `/loss_leaderboard`                         | 顯示今日賭場輸錢累計排行榜。                                                                               |
-| `/credit status\|borrow\|call\|repay`       | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。                                             |
-| `/central_bank status\|borrow\|call\|repay` | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。                                       |
-| `/give <member> <amount>`                   | 轉帳虛擬歡樂豆給其他成員或 bot。                                                                           |
-| `/admin refund_tax\|collect_tax`            | 手動調整成員或 bot 餘額；限定 `economy admin` 帳號權限，不是 Discord 身分組。                              |
-| `/games blackjack <bet>`                    | 開一個多人 Blackjack 牌桌；`bet` 可輸入含逗號的數字，`0` 代表全下。                                        |
-| `/games dragon_gate`                        | 開一個由共享獎池支撐的多人射龍門桌。                                                                       |
-| `/games blackjack_history [member] [count]` | 顯示某位玩家最近的 Blackjack 牌局：手牌、下注與結果（預設 10 場，最多 50 場）。                            |
-| `/casino`                                   | 顯示賭場系統的累積損益。                                                                                   |
-| `/pocat`                                    | 顯示 bot 玩家自己的錢包：餘額與累計流水。                                                                  |
-| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。                     |
-| `/memory server show`                       | 私密查看 bot 對這個伺服器社群的記憶；只能在 bot 所在的伺服器使用。                                         |
-| `/memory server catchup`                    | 把這個頻道上次整理後的聊天整理進伺服器社群記憶，結果公開貼出；每個伺服器 10 分鐘一次。                     |
-| `/ping`                                     | 檢查 bot 回應延遲。                                                                                        |
+| 指令                                        | 功能                                                                                                            |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `@bot <message>`                            | 和 AI 聊天。需要 bot 檢查檔案或圖片時，可附上支援的附件。                                                       |
+| `/ask <question> [attachment]`              | 在 bot 看不到對話的地方和 AI 聊天：bot 沒加入的伺服器、群組 DM，或你和別人的 DM。                               |
+| `/deep_research <topic>`                    | 在自己開的討論串裡產出一份附引用的長篇研究報告；只能在 bot 所在伺服器的一般文字頻道使用。                       |
+| _Threads URL_                               | 自動展開 Threads 貼文與媒體；被 tag 時改為連留言一起讀過再回答。                                                |
+| `/clean_threads_url <url>`                  | 私密地把 Threads 分享連結還原成貼文本身的網址，轉貼時不會帶出分享者。                                           |
+| _Facebook URL_                              | 自動展開公開貼文、圖片與影片；被 tag 時改為讀過貼文再回答。帶 `comment_id` 的連結會多顯示那則留言。             |
+| _Instagram URL_                             | 自動展開公開貼文、輪播圖片與影片（含 Reel）；被 tag 時改為讀過貼文再回答。指向留言的連結會多顯示那則留言。      |
+| _Twitter URL_                               | 自動展開貼文、圖片、影片與上面的整串；被 tag 時改為連同熱門留言讀過再回答。                                     |
+| _抖音 URL_                                  | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                                                               |
+| _Bilibili URL + tag_                        | 看過連結的影片後回答（單獨貼連結不會自動展開）。                                                                |
+| `/download_video <url> [quality]`           | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                                                              |
+| `/balance [member]`                         | 私密顯示成員的虛擬歡樂豆餘額、債務、淨資產與 VIP 狀態。                                                         |
+| `/vip`                                      | 購買永久 VIP 特權；重複購買只會扣款一次，並顯示已有的 VIP 狀態。                                                |
+| `/leaderboard`                              | 顯示全域餘額排行榜。                                                                                            |
+| `/loss_leaderboard`                         | 顯示今日賭場輸錢累計排行榜。                                                                                    |
+| `/credit status\|borrow\|call\|repay`       | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。                                                  |
+| `/central_bank status\|borrow\|call\|repay` | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。                                            |
+| `/give <member> <amount>`                   | 轉帳虛擬歡樂豆給其他成員或 bot。                                                                                |
+| `/admin refund_tax\|collect_tax`            | 手動調整成員或 bot 餘額；限定 `economy admin` 帳號權限，不是 Discord 身分組。                                   |
+| `/games blackjack <bet>`                    | 開一個多人 Blackjack 牌桌；`bet` 可輸入含逗號的數字，`0` 代表全下。                                             |
+| `/games dragon_gate`                        | 開一個由共享獎池支撐的多人射龍門桌。                                                                            |
+| `/games blackjack_history [member] [count]` | 顯示某位玩家最近的 Blackjack 牌局：手牌、下注與結果（預設 10 場，最多 50 場）。                                 |
+| `/casino`                                   | 顯示賭場系統的累積損益。                                                                                        |
+| `/pocat`                                    | 顯示 bot 玩家自己的錢包：餘額與累計流水。                                                                       |
+| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。                          |
+| `/memory server show`                       | 私密查看 bot 對這個伺服器社群的記憶；只能在 bot 所在的伺服器使用。                                              |
+| `/memory server catchup`                    | 把這個頻道上次整理後的聊天整理進伺服器社群記憶，結果公開貼出；每個伺服器 10 分鐘一次。                          |
+| `/settings`                                 | 私密開啟本伺服器的社群連結自動展開開關面板（Twitter、Threads、Facebook、Instagram、Douyin）；僅限伺服器管理員。 |
+| `/ping`                                     | 檢查 bot 回應延遲。                                                                                             |
 
 ## 快速開始
 
-啟動 bot 僅需設定 `DISCORD_BOT_TOKEN`；若要啟用 AI 對話與媒體生成，請在 `.env` 一併填入 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 與 `GEMINI_API_KEY`（見 `.env.example`）。
+啟動 bot 僅需設定 `DISCORD_BOT_TOKEN`；若要啟用 AI 對話與媒體生成，請在 `.env` 一併填入 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 與 `GEMINI_API_KEY`（見 `.env.example`）。非機密的預設設定放在 `src/discordbot/config.toml`，需要覆蓋時可放在 `./data/config.toml`（修改後只需重啟，不必重新建置）。
 
 使用 [uv](https://docs.astral.sh/uv/) 在本機執行：
 
@@ -132,11 +133,12 @@ docker compose up -d
 
 ## Cog 架構
 
-進入點（`src/discordbot/cli.py`）與各功能解耦，會自動載入 `src/discordbot/cogs/` 下每個包含 `__init__.py` 與 `cog.py` 的目錄。選用 cog 各自在 `setup()` 中升級自己的 SQLite 資料庫，可以乾淨增刪；狀態列（`DISCORD_BOT_ACTIVITY`）與狀態/反應表情（`EMOJI_*`）預設採用中性通用值，全新部署不需設定自訂 Discord Application Emoji。
+進入點（`src/discordbot/cli.py`）與各功能解耦，會自動載入 `src/discordbot/cogs/` 下每個包含 `__init__.py` 與 `cog.py` 的目錄。選用 cog 各自在 `setup()` 中升級自己的 SQLite 資料庫，可以乾淨增刪；狀態列與狀態/反應表情在 `src/discordbot/config.toml` 中預設採用中性通用值（可由 `./data/config.toml` 覆蓋），全新部署不需設定自訂 Discord Application Emoji。
 
 - `gen_reply`：AI 聊天（`@mention`、DM、`/ask`）、媒體生成、內嵌標記、回饋與 `🔄` 重新生成
 - `memory`：`/memory` 指令與獨立的長期記憶重啟恢復生命週期
 - `research`：`/deep_research` 深度研究討論串
+- `settings`：`/settings` 伺服器層級功能覆蓋設定（`data/database/settings.db`）
 - `parse_threads`、`parse_facebook`、`parse_instagram`、`parse_twitter`、`parse_douyin`：社群連結自動展開（`parse_threads` 另提供 `/clean_threads_url`）
 - `video`：`/download_video` 影片與抖音圖文下載
 - `economy`：虛擬歡樂豆、發言獎勵、VIP、借貸與排行榜

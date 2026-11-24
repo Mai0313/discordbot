@@ -16,7 +16,9 @@ from tests.helpers.migrations import migration_config
 from tests.helpers.source_tree import REPO_ROOT
 
 
-@pytest.mark.parametrize("database", ["cleanup", "economy", "games", "reply", "messages"])
+@pytest.mark.parametrize(
+    "database", ["cleanup", "economy", "games", "reply", "messages", "settings"]
+)
 def test_migrations_build_the_schema_the_models_declare(
     database: str, migrated_databases: dict[str, Path]
 ) -> None:
@@ -60,6 +62,15 @@ def test_migrations_build_the_schema_the_models_declare(
                 "discordbot.cogs.research",
                 "discordbot.cogs.gen_reply",
                 "discordbot.services.economy",
+            ),
+        ),
+        (
+            "settings",
+            (
+                "discordbot.cogs.",
+                "discordbot.services.economy",
+                "discordbot.services.memory",
+                "discordbot.utils.message_cleanup",
             ),
         ),
     ],

@@ -51,6 +51,7 @@ _VIEW_IDLE_EXPIRY = frozenset({
     "FEEDBACK_REASON_VIEW_TIMEOUT_SECONDS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MEMORY_VIEW_TIMEOUT_SECONDS",
+    "SETTINGS_VIEW_TIMEOUT_SECONDS",
 })
 
 # How long the hosted-media reaper leaves a just-published file alone. Out of scope for the

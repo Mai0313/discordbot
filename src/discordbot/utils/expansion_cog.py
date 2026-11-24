@@ -5,7 +5,8 @@
 `utils/expansion_placeholder.py` owns the persisted placeholder and restart-resume half.
 
 Failures leave no message in the channel; the reaction on the source message is the sole report.
-There is deliberately no kill-switch; disabling an expansion means removing its cog.
+Per-server overrides in `settings.db` (falling back to `[server.auto_expand]` in `config.toml`)
+gate `on_message`.
 """
 
 import re
@@ -25,7 +26,8 @@ from nextcord.ext import commands
 
 from discordbot.utils.urls import PostLink
 from discordbot.typings.media import LoadedMedia
-from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
+from discordbot.typings.config import AutoExpandPlatform
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
@@ -62,6 +64,7 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
+from discordbot.utils.server_settings import is_auto_expand_enabled
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
@@ -434,8 +437,8 @@ class ExpansionCog[ParsedT](commands.Cog):
         bot (commands.Bot): The Discord bot instance that owns this cog.
     """
 
-    SOURCE: ClassVar[LinkSourceName]
-    """Pending-expansion table key and `LINK_SOURCE_EMOJIS` key for this platform."""
+    SOURCE: ClassVar[AutoExpandPlatform]
+    """Pending-expansion table key, `LINK_SOURCE_EMOJIS` key, and `settings.db` key."""
 
     PLATFORM: ClassVar[str]
     """The platform's display name, for log messages."""
@@ -453,9 +456,10 @@ class ExpansionCog[ParsedT](commands.Cog):
             bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
-        # Every expansion cog persists placeholders in `reply.db`, so upgrade it even when no
-        # AI or memory cog is loaded.
+        # Every expansion cog persists placeholders in `reply.db` and reads overrides from
+        # `settings.db`, so upgrade both even when no AI, memory, or settings cog is loaded.
         ensure_database_upgraded(section="reply")
+        ensure_database_upgraded(section="settings")
         # Host-free on purpose: an image left without room keeps the link it already has.
         self.card_image_planner = MediaDeliveryPlanner(
             media_hosting=MediaHostingService(
@@ -549,6 +553,10 @@ class ExpansionCog[ParsedT](commands.Cog):
 
         # Messages addressed to the bot belong to gen_reply; checked after regex to skip non-links.
         if is_addressed_to_bot(message=message, bot_user=self.bot.user):
+            return
+
+        guild_id = message.guild.id if message.guild is not None else None
+        if not await is_auto_expand_enabled(guild_id=guild_id, platform=self.SOURCE):
             return
 
         # None until a working reaction is added so _mark_failed only removes an existing mark.

@@ -52,7 +52,10 @@ _ACCOUNT_FLAG_GATES: dict[str, tuple[str, tuple[str, ...]] | None] = {
 # flag. They owe their line the same thing a flag-gated command does, and they cannot be
 # discovered the way a flag can: nothing declares `default_member_permissions`, so there is no
 # column and no decorator to scan, only the `Interaction.permissions` read in the body.
-_PERMISSION_GATED_COMMANDS: dict[str, str] = {"/central_bank call": "server administrators only"}
+_PERMISSION_GATED_COMMANDS: dict[str, str] = {
+    "/central_bank call": "server administrators only",
+    "/settings": "server administrators only",
+}
 # The three ways a slash command description can name an admin across the locales declared
 # here, and the term that says which admin is meant. `economy admin` is what the refusal embed
 # shows, so a member reads one name for the flag wherever they meet it.
