@@ -41,6 +41,7 @@ from tests.helpers.source_tree import REPO_ROOT, env_example_names
 # a keyless deployment passes), so every name under their prefixes goes too, as does a proxy,
 # which would carry a request out through a loopback port `_refuse_remote` lets through.
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+os.environ["DISCORDBOT_LOCAL_CONFIG_DISABLED"] = "1"
 cleared = env_example_names() | {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"}
 for name in list(os.environ):
     if name.upper() in cleared or name.upper().startswith((
@@ -241,6 +242,21 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     # on the next loop anyway, so the rebuild is the correctness rule rather than a test
     # convenience.
     return memories_dir
+
+
+@pytest.fixture(autouse=True)
+def bot_config_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Points local TOML overrides at a throwaway file and clears the cached `BotConfig`.
+
+    Autouse because `load_bot_config()` otherwise merges `./data/config.toml` from a real
+    deployment; each test starts from packaged `src/discordbot/config.toml` defaults and can
+    write overrides to the returned path.
+    """
+    local_config = tmp_path / "config.toml"
+    monkeypatch.delenv(name="DISCORDBOT_LOCAL_CONFIG_DISABLED", raising=False)
+    monkeypatch.setattr("discordbot.typings.config.LOCAL_CONFIG_PATH", local_config)
+    monkeypatch.setattr("discordbot.typings.config._cached_bot_config", None)
+    return local_config
 
 
 @pytest.fixture(autouse=True)

@@ -8,10 +8,10 @@ enumerated here instead of being softened into a `.get()` at the call site.
 
 import re
 from typing import get_args
+from pathlib import Path
 
-import pytest
-
-from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, EmojiConfig, LinkSourceName
+from discordbot.typings.config import EmojiConfig, load_bot_config
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 
@@ -49,12 +49,18 @@ def test_default_emojis_are_unicode_and_link_sources_are_distinct() -> None:
     assert len(set(LINK_SOURCE_EMOJIS.values())) == len(LINK_SOURCE_EMOJIS)
 
 
-def test_emoji_config_reads_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Environment variables override default Unicode emojis with custom app emoji references."""
-    monkeypatch.setenv(name="EMOJI_FACEBOOK", value="<:facebook:1546179601288396810>")
-    monkeypatch.setenv(name="EMOJI_RESEARCH", value="<:dino:1517560319281594570>")
+def test_emoji_config_reads_toml_overrides(bot_config_isolated: Path) -> None:
+    """Local `config.toml` overrides default Unicode emojis with custom app emoji references."""
+    bot_config_isolated.write_text(
+        data=(
+            "[global.emojis]\n"
+            'facebook = "<:facebook:1546179601288396810>"\n'
+            'research = "<:dino:1517560319281594570>"\n'
+        ),
+        encoding="utf-8",
+    )
 
-    config = EmojiConfig()
+    config = load_bot_config().global_config.emojis
 
     assert config.facebook == "<:facebook:1546179601288396810>"
     assert config.research == "<:dino:1517560319281594570>"

@@ -15,6 +15,7 @@ import pytest
 import requests
 
 from discordbot.utils import expansion_cog, model_pricing, sqlite_config, message_cleanup
+from discordbot.typings import config as bot_config
 from discordbot.cogs.games import database as games_database
 from discordbot.cogs.log_msg import cog as log_msg_cog
 from discordbot.services.memory import database as memory_database
@@ -51,6 +52,13 @@ def _assert_cleanup_isolated(tmp_path: Path) -> None:
 def _assert_games_isolated(tmp_path: Path) -> None:
     """Checks `games_history_isolated_db` points `games`'s engine at `tmp_path`."""
     assert games_database._engine.url.database == str(tmp_path / "games_history.db")
+
+
+def _assert_bot_config_isolated(tmp_path: Path) -> None:
+    """Checks `bot_config_isolated` redirects `LOCAL_CONFIG_PATH` into `tmp_path` and clears cache."""
+    assert tmp_path / "config.toml" == bot_config.LOCAL_CONFIG_PATH
+    assert bot_config._cached_bot_config is None
+    assert "DISCORDBOT_LOCAL_CONFIG_DISABLED" not in os.environ
 
 
 def _assert_usage_log_isolated(tmp_path: Path) -> None:
@@ -123,6 +131,7 @@ _AUTOUSE_CHECKS: dict[str, Callable[[Path], None]] = {
     "messages_isolated_db": _assert_messages_isolated,
     "cleanup_store_isolated": _assert_cleanup_isolated,
     "games_history_isolated_db": _assert_games_isolated,
+    "bot_config_isolated": _assert_bot_config_isolated,
     "usage_log_isolated_dir": _assert_usage_log_isolated,
     "model_price_mirror_isolated": _assert_model_price_mirror_isolated,
     "upgraded_sections_reset": _assert_upgraded_sections_reset,

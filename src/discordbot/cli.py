@@ -16,7 +16,7 @@ from nextcord.ext import commands
 from nextcord.errors import ApplicationError
 
 from discordbot import setup_logging
-from discordbot.typings.config import DiscordConfig
+from discordbot.typings.config import DiscordConfig, load_bot_config
 from discordbot.utils.timezone import database_now
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.sqlite_config import ensure_database_upgraded
@@ -40,7 +40,7 @@ class DiscordBot(commands.Bot):
 
         Args:
             activity_name (str | None): Playing-activity label for the bot's presence; defaults
-                to `DiscordConfig.bot_activity`.
+                to `[global.bot].activity` from `config.toml`.
         """
         intents = Intents.all()
         intents.members = False
@@ -48,7 +48,7 @@ class DiscordBot(commands.Bot):
         resolved_activity = (
             activity_name
             if activity_name is not None
-            else DiscordConfig(discord_bot_token="").bot_activity
+            else load_bot_config().global_config.bot.activity
         )
         super().__init__(
             intents=intents,
@@ -263,7 +263,7 @@ def main() -> None:
     """Initialises and runs the Discord bot."""
     setup_logging()
     discord_config = DiscordConfig()
-    bot = DiscordBot(activity_name=discord_config.bot_activity)
+    bot = DiscordBot()
     bot.run(token=discord_config.discord_bot_token)
 
 

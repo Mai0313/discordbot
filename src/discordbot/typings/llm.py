@@ -1,11 +1,13 @@
-"""Runtime LLM configuration: the proxy credentials, the Gemini key, and the kill-switches."""
+"""Runtime LLM configuration: proxy/provider credentials from env and switches from TOML."""
 
-from pydantic import Field, AliasChoices
+from pydantic import Field, BaseModel, AliasChoices, model_validator
 from pydantic_settings import BaseSettings
 
+from discordbot.typings.config import load_bot_config
 
-class LLMConfig(BaseSettings):
-    """Configuration settings for LLM integration, reading from environment variables."""
+
+class LLMCredentials(BaseSettings):
+    """LLM API credentials and endpoint URLs loaded from environment variables."""
 
     # Credentials default to empty for credential-less tests; missing `OPENAI_API_KEY` fails on
     # first client construction, while missing `GEMINI_API_KEY` disables or falls back off
@@ -51,6 +53,36 @@ class LLMConfig(BaseSettings):
         examples=["xai-..."],
         validation_alias=AliasChoices("XAI_API_KEY"),
     )
+
+
+class LLMConfig(BaseModel):
+    """Runtime LLM settings combining env credentials with `[global.reply]` TOML switches."""
+
+    base_url: str = Field(
+        default="",
+        description="The base url for the OpenAI API or a compatible endpoint.",
+        examples=["https://api.openai.com/v1"],
+    )
+    api_key: str = Field(
+        default="",
+        description="The api key from openai for calling models.",
+        examples=["sk-proj-..."],
+    )
+    gemini_api_key: str = Field(
+        default="",
+        description="The Google AI Studio key for every direct-to-Google path.",
+        examples=["AIza..."],
+    )
+    anthropic_api_key: str = Field(
+        default="",
+        description="Reserved Anthropic API key for the scaffolded direct Files API uploader.",
+        examples=["sk-ant-..."],
+    )
+    xai_api_key: str = Field(
+        default="",
+        description="Reserved xAI API key for the scaffolded direct Files API uploader.",
+        examples=["xai-..."],
+    )
     feedback_enabled: bool = Field(
         default=True,
         description=(
@@ -59,7 +91,6 @@ class LLMConfig(BaseSettings):
             "snapshots in `reply.db`; when false replies omit the buttons, skip turn snapshots, "
             "and refuse `🔄` regeneration clicks."
         ),
-        validation_alias=AliasChoices("FEEDBACK_ENABLED"),
     )
     slow_model_blind_test_enabled: bool = Field(
         default=False,
@@ -72,7 +103,6 @@ class LLMConfig(BaseSettings):
             "when false QA uses `slow_model`, allows one regeneration, and shows its real name "
             "and effort."
         ),
-        validation_alias=AliasChoices("SLOW_MODEL_BLIND_TEST_ENABLED"),
     )
     file_api_enabled: bool = Field(
         default=True,
@@ -82,7 +112,6 @@ class LLMConfig(BaseSettings):
             "Provider-agnostic on purpose: the switch answers the same question for every "
             "uploader."
         ),
-        validation_alias=AliasChoices("FILE_API_ENABLED"),
     )
     answer_streaming_enabled: bool = Field(
         default=True,
@@ -91,8 +120,28 @@ class LLMConfig(BaseSettings):
             "Discord; when false they fetch complete non-streaming responses and post them once "
             "finished without live preview edits."
         ),
-        validation_alias=AliasChoices("ANSWER_STREAMING_ENABLED"),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_from_runtime_sources(cls, data: object) -> object:
+        """Fills omitted fields from `LLMCredentials` and `[global.reply]` in `config.toml`."""
+        if not isinstance(data, dict):
+            return data
+        credentials = LLMCredentials()
+        reply = load_bot_config().global_config.reply
+        defaults: dict[str, object] = {
+            "base_url": credentials.base_url,
+            "api_key": credentials.api_key,
+            "gemini_api_key": credentials.gemini_api_key,
+            "anthropic_api_key": credentials.anthropic_api_key,
+            "xai_api_key": credentials.xai_api_key,
+            "feedback_enabled": reply.feedback_enabled,
+            "slow_model_blind_test_enabled": reply.slow_model_blind_test_enabled,
+            "file_api_enabled": reply.file_api_enabled,
+            "answer_streaming_enabled": reply.streaming_enabled,
+        }
+        return {**defaults, **data}
 
     @property
     def gemini_key_configured(self) -> bool:

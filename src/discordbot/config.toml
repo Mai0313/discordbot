@@ -1,0 +1,43 @@
+# Default bot configuration (git-tracked).
+# Place deployment-specific overrides in ./data/config.toml; tables are deep-merged on top.
+
+[global.bot]
+# Playing-activity label shown in the bot's Discord presence.
+activity = "Discord"
+
+[global.emojis]
+# Standard Unicode defaults; override with custom `<:name:id>` Discord Application Emojis.
+facebook = "📘"
+instagram = "📷"
+threads = "🧵"
+twitter = "🐦"
+douyin = "🎵"
+bilibili = "📺"
+done = "✅"
+failed = "❌"
+routing = "🔀"
+image = "🖼️"
+video = "🎬"
+answer = "💬"
+voice = "🗣️"
+youtube = "▶️"
+research = "🔬"
+
+[global.reply]
+# Operator-only AI reply switches (servers cannot override these).
+# When false, attachments inline as base64 and linked-post media is skipped.
+file_api_enabled = true
+# When false, QA and media-persona replies post once finished without live preview edits.
+streaming_enabled = true
+# When false, finalized replies omit 👍/👎/🔄 buttons and skip reply.db turn snapshots.
+feedback_enabled = true
+# When true, QA turns sample from the blind-test candidate pool and mask the model label.
+slow_model_blind_test_enabled = false
+
+[server.auto_expand]
+# Default per-server link auto-expansion (overridable per guild via `/settings`).
+twitter = true
+threads = true
+facebook = true
+instagram = true
+douyin = true
