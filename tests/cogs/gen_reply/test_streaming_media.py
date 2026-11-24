@@ -28,7 +28,7 @@ from discordbot.utils.media_delivery import (
 )
 from discordbot.cogs.gen_reply.markers import MAX_INLINE_IMAGES, InlineMarkers
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer
 from discordbot.cogs.gen_reply.generation import (
     MusicClip,
     VoiceClip,
@@ -1062,10 +1062,7 @@ async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answe
     monkeypatch.setattr(InlineMediaAttacher, "_build_voice_candidate", never_finishes)
 
     answer = await asyncio.wait_for(
-        stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        ),
-        timeout=5,
+        stream_answer(streamer=streamer, open_stream=open_stream), timeout=5
     )
 
     assert answer.startswith("hello from stream")

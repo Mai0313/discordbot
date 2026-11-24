@@ -25,9 +25,6 @@ MUSIC_EMOJI: Final[str] = "🎵"
 TIMEOUT_HINT_EMOJI: Final[str] = "⏱️"
 DROPPED_HINT_EMOJI: Final[str] = "⚠️"
 
-# Shared between the source reaction and the reply's retrying notice.
-RETRY_HINT_EMOJI: Final[str] = "🔁"
-
 # Memory footnote symbols; utils/llm_transcript.py::USAGE_FOOTER_RE matches write and forget too.
 MEMORY_READ_EMOJI: Final[str] = "📖"
 MEMORY_WRITE_EMOJI: Final[str] = "✏️"
@@ -44,7 +41,6 @@ __all__ = [
     "MEMORY_READ_EMOJI",
     "MEMORY_WRITE_EMOJI",
     "MUSIC_EMOJI",
-    "RETRY_HINT_EMOJI",
     "ROUTING_EMOJI",
     "TIMEOUT_HINT_EMOJI",
     "VIDEO_EMOJI",

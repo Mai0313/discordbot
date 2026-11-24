@@ -9,6 +9,7 @@ import httpx2
 import pytest
 from google.genai import types
 from google.genai.errors import APIError
+from google.genai._gaos.lib.compat_errors import APIError as InteractionsAPIError
 
 from discordbot.utils.llm_errors import (
     HIGH_DEMAND_ERROR_NOTICE,
@@ -17,7 +18,7 @@ from discordbot.utils.llm_errors import (
     is_retryable_llm_error,
 )
 from discordbot.cogs.gen_reply.tool_use import AnswerToolUse
-from discordbot.cogs.gen_reply.streaming import stream_answer_with_retry
+from discordbot.cogs.gen_reply.streaming import IncompleteAnswerError, stream_answer
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     adapt_interactions_stream,
@@ -271,11 +272,10 @@ async def _raise_from_error_event(error: object) -> APIError:
 
 
 async def test_adapt_interactions_stream_raises_a_classifiable_error_event() -> None:
-    """An in-band error surfaces as an SDK error the answer retry and the user can both read.
+    """An in-band error surfaces as a classifiable SDK error whose user-facing notice is clean.
 
-    A bare exception here would leave the YouTube answer backend sitting inside
-    `stream_answer_with_retry` while never being retryable, and would show the user this
-    event's repr instead of what the provider actually said.
+    A bare exception here would show the user this event's repr instead of what the provider
+    actually said, and bypass structural status/retryability classification.
     """
     transient = await _raise_from_error_event(
         error=SimpleNamespace(code="503", message="high demand")
@@ -312,17 +312,6 @@ _INTERACTION_CREATED: dict[str, object] = {
     "event_type": "interaction.created",
     "interaction": {"id": "i1", "model": "gemini-3.1-pro-preview", "status": "in_progress"},
 }
-
-_ANSWER_STREAM = _sse(
-    events=[
-        _INTERACTION_CREATED,
-        {"event_type": "step.delta", "index": 0, "delta": {"type": "text", "text": "the answer"}},
-        {
-            "event_type": "interaction.completed",
-            "interaction": {"id": "i1", "model": "gemini-3.1-pro-preview", "status": "completed"},
-        },
-    ]
-)
 
 
 async def _tool_use_of(status: str) -> AnswerToolUse:
@@ -446,13 +435,10 @@ def _dropped_mid_stream(request: httpx2.Request) -> httpx2.Response:
 
 
 class _TextStreamer:
-    """The part of `ResponseStreamer` the answer retry drives: it joins the text deltas."""
+    """The part of `ResponseStreamer` `stream_answer` drives: it joins the text deltas."""
 
     carries_turn_notices = False
     text = ""
-
-    def reset_for_retry(self) -> None:
-        """Nothing to drop: each attempt's text is joined afresh."""
 
     async def consume(self, responses: "AsyncIterator[ResponseStreamEvent]") -> None:
         """Joins the answer's text, letting whatever the stream raises propagate."""
@@ -463,15 +449,15 @@ class _TextStreamer:
         ])
 
     async def finalize_reply(self) -> str:
-        """Hands back the text the last attempt joined."""
+        """Hands back the text the stream joined."""
         return self.text
 
 
 class _YouTubeAnswerTurn:
-    """A YouTube answer turn on a real Gemini client whose first attempt meets `first_attempt`.
+    """A YouTube answer turn on a real Gemini client whose request meets `first_attempt`.
 
-    Every request made while the first attempt is open gets that failure, however often the
-    SDK re-sends it; every later attempt streams a complete answer.
+    Every request made while the turn is open gets that response, however often the SDK re-sends
+    it.
     """
 
     def __init__(self, first_attempt: "Callable[[httpx2.Request], httpx2.Response]") -> None:
@@ -489,11 +475,7 @@ class _YouTubeAnswerTurn:
         )
 
     def _respond(self, request: httpx2.Request) -> httpx2.Response:
-        if self.opened == 1:
-            return self.first_attempt(request)
-        return httpx2.Response(
-            status_code=200, headers={"content-type": "text/event-stream"}, content=_ANSWER_STREAM
-        )
+        return self.first_attempt(request)
 
     async def _open_stream(self) -> "AsyncIterator[ResponseStreamEvent]":
         self.opened += 1
@@ -507,25 +489,16 @@ class _YouTubeAnswerTurn:
         )
 
     async def answer(self, streamer: "ResponseStreamer | None" = None) -> str:
-        """Runs the turn through the answer retry and returns the reply text.
+        """Runs the turn through `stream_answer` and returns the reply text.
 
         The text is joined by a bare `_TextStreamer` unless `streamer` is given.
         """
-        return await stream_answer_with_retry(
+        return await stream_answer(
             streamer=streamer or cast("ResponseStreamer", _TextStreamer()),
             open_stream=self._open_stream,
-            message_id=1,
         )
 
 
-@pytest.fixture
-def sleepless_answer_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Zeroes both halves of the wait between answer attempts (interval and jitter)."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.ANSWER_RETRY_INTERVAL_SECONDS", 0.0)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.ANSWER_RETRY_JITTER_SECONDS", 0.0)
-
-
-@pytest.mark.usefixtures("sleepless_answer_retry")
 @pytest.mark.parametrize(
     "first_attempt",
     [
@@ -535,18 +508,15 @@ def sleepless_answer_retry(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.param(_dropped_mid_stream, id="dropped-mid-stream"),
     ],
 )
-async def test_a_transient_interactions_failure_reopens_the_youtube_answer(
+async def test_a_transient_interactions_failure_surfaces_without_bot_retry(
     first_attempt: "Callable[[httpx2.Request], httpx2.Response]",
 ) -> None:
-    """A transient failure on the Interactions backend is retried like one on Responses.
-
-    The client is real because what the retry reads is the exception class the SDK raises on
-    this surface, which no hand-built error stands in for.
-    """
+    """Transient Interactions failures surface after SDK handling without bot-side re-opens."""
     turn = _YouTubeAnswerTurn(first_attempt=first_attempt)
 
-    assert await turn.answer() == "the answer"
-    assert turn.opened == 2
+    with pytest.raises(InteractionsAPIError):
+        await turn.answer()
+    assert turn.opened == 1
 
 
 _ANSWER_START: list[dict[str, object]] = [
@@ -568,12 +538,11 @@ _CUT_SHORT = {
 }
 
 
-@pytest.mark.usefixtures("sleepless_answer_retry")
 @pytest.mark.parametrize("reason", ["failed", "no_terminal_event"])
-async def test_an_interactions_answer_that_ends_short_is_asked_again(
+async def test_an_interactions_answer_that_ends_short_raises_incomplete_and_logs_reason(
     monkeypatch: pytest.MonkeyPatch, reason: str
 ) -> None:
-    """A YouTube answer cut short is re-issued as a Responses one is, its status logged as why.
+    """A YouTube answer cut short fails directly with `IncompleteAnswerError` and logs why.
 
     The Interactions payload carries no finish reason, so the status the interaction ended in is
     the only reason there is to log.
@@ -587,10 +556,11 @@ async def test_an_interactions_answer_that_ends_short_is_asked_again(
         )
     )
 
-    reply = await turn.answer(streamer=_streamer(message=FakeMessage(), backend="interactions"))
+    with pytest.raises(IncompleteAnswerError) as raised:
+        await turn.answer(streamer=_streamer(message=FakeMessage(), backend="interactions"))
 
-    assert turn.opened == 2
-    assert reply.startswith("the answer")
+    assert turn.opened == 1
+    assert raised.value.reason == reason
     assert [
         (fields["backend"], fields["reason"])
         for text, fields in logged
@@ -598,7 +568,6 @@ async def test_an_interactions_answer_that_ends_short_is_asked_again(
     ] == [("interactions", reason)]
 
 
-@pytest.mark.usefixtures("sleepless_answer_retry")
 async def test_an_interactions_refusal_is_not_retried() -> None:
     """A 400 is the provider refusing the request itself, so the turn fails on its first try."""
     turn = _YouTubeAnswerTurn(first_attempt=_http_status(status=400))

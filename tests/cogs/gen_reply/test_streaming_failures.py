@@ -1,4 +1,4 @@
-"""Tests for retrying a failed answer stream and landing its failure."""
+"""Tests for answer-stream delivery windows, stream errors, and failure landing."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import pytest
 from nextcord import Embed
 
 from discordbot.cogs.gen_reply import streaming as streaming_module
-from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import (
     HIGH_DEMAND_ERROR_NOTICE,
     llm_status_code,
@@ -25,9 +24,9 @@ from discordbot.cogs.gen_reply.streaming import (
     ResponseStreamer,
     AnswerStreamError,
     IncompleteAnswerError,
-    stream_answer_with_retry,
+    stream_answer,
 )
-from discordbot.cogs.gen_reply.status_marks import ANSWER_EMOJI, RETRY_HINT_EMOJI
+from discordbot.cogs.gen_reply.status_marks import ANSWER_EMOJI
 
 from tests.helpers.casting import as_message, make_not_found
 from tests.helpers.reply_fakes import (
@@ -42,7 +41,6 @@ from tests.helpers.reply_fakes import (
     _completed_event,
     _expiring_surface,
     _incomplete_event,
-    _no_retry_backoff,
     _stream_events_from,
     _mid_stream_unavailable,
     _stream_events_then_raise,
@@ -73,7 +71,7 @@ def _paced_stream_events(
 async def test_an_answer_stream_outliving_the_ask_window_says_so_while_it_can() -> None:
     """A stalled `/ask` answer gives up inside the margin, so the error embed still lands (#628).
 
-    Past the token the answer and the notice both 404, so retrying on would only trade the
+    Past the token the answer and the notice both 404, so waiting on would only trade the
     reported failure for a thinking state that never resolves.
     """
     message = FakeMessage()
@@ -90,10 +88,7 @@ async def test_an_answer_stream_outliving_the_ask_window_says_so_while_it_can() 
 
     with pytest.raises(TimeoutError) as raised:
         await asyncio.wait_for(
-            stream_answer_with_retry(
-                streamer=streamer, open_stream=open_stream, message_id=message.id
-            ),
-            timeout=5,
+            stream_answer(streamer=streamer, open_stream=open_stream), timeout=5
         )
 
     assert str(raised.value) == WINDOW_EXPIRED_NOTICE
@@ -113,9 +108,7 @@ async def test_an_answer_streams_own_timeout_is_not_blamed_on_the_ask_window() -
         raise TimeoutError
 
     with pytest.raises(TimeoutError) as raised:
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
     assert str(raised.value) != WINDOW_EXPIRED_NOTICE
 
@@ -136,210 +129,34 @@ async def test_a_media_persona_reply_may_write_into_the_ask_margin() -> None:
         await asyncio.sleep(0.05)
         return _stream_events()
 
-    reply = await stream_answer_with_retry(
-        streamer=streamer, open_stream=open_stream, message_id=message.id
-    )
+    reply = await stream_answer(streamer=streamer, open_stream=open_stream)
 
     assert reply
 
 
-async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previewing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A 503 mid-answer re-opens the stream onto the same message without doubling the text.
-
-    Both halves matter. The dead attempt's partial text must not survive into the finished
-    reply, and the preview editor must live through the reset -- `consume`'s finally stops it by
-    SETTING an event that `_preview_editor` reads before its first tick, so without clearing it
-    the retry streams blind and the stale preview sits frozen until the final write.
-    """
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    message = FakeMessage()
-    streamer = _streamer(message=message, preview_interval_seconds=0.01)
-    opened = 0
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        nonlocal opened
-        opened += 1
-        if opened == 1:
-            return _stream_events_then_raise(
-                events=[_text_event(delta="half a sentence")], error=_mid_stream_unavailable()
-            )
-        # Paced so the editor gets at least one tick to write on the SECOND attempt.
-        return _paced_stream_events(
-            events=[
-                _text_event(delta="the whole answer"),
-                _completed_event(input_tokens=1, output_tokens=2),
-            ],
-            pause=0.05,
-        )
-
-    reply = await stream_answer_with_retry(
-        streamer=streamer, open_stream=open_stream, message_id=message.id
-    )
-
-    assert opened == 2
-    assert streamer.attempts == 2
-    assert reply.startswith("the whole answer")
-    assert "half a sentence" not in reply
-    # One Discord message rather than a second one beside the dead attempt's text, and it was
-    # created by a PREVIEW write and edited afterwards. An empty `edits` would mean the final
-    # write created it, i.e. the retry streamed with a dead editor while the user watched a
-    # frozen message the whole way through.
-    assert len(message.replies) == 1
-    assert message.replies[0].edits
-
-
-async def test_a_non_retryable_answer_failure_never_re_opens_the_stream() -> None:
-    """A refusal is the provider answering, so it surfaces on the first attempt."""
-    message = FakeMessage()
-    streamer = _streamer(message=message)
-    opened = 0
+async def test_a_provider_stream_error_propagates_without_retrying() -> None:
+    """Both transient 5xx and 400 refusals surface directly on the single attempt."""
     request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
     refusal = BadRequestError(
         "blocked", response=httpx2.Response(status_code=400, request=request, json={}), body=None
     )
+    for error, expected_type in (
+        (_mid_stream_unavailable(), APIError),
+        (refusal, BadRequestError),
+    ):
+        message = FakeMessage()
+        streamer = _streamer(message=message)
+        opened = 0
 
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        nonlocal opened
-        opened += 1
-        return _stream_events_then_raise(events=[], error=refusal)
+        async def open_stream(err: Exception = error) -> AsyncIterator[ResponseStreamEvent]:
+            nonlocal opened
+            opened += 1
+            return _stream_events_then_raise(events=[], error=err)
 
-    with pytest.raises(BadRequestError):
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        with pytest.raises(expected_type):
+            await stream_answer(streamer=streamer, open_stream=open_stream)
 
-    assert opened == 1
-    assert streamer.attempts == 1
-
-
-async def test_an_exhausted_answer_retry_raises_the_provider_error_itself(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`reraise` keeps the outer error path showing the provider failure, not a retry wrapper."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    message = FakeMessage()
-    streamer = _streamer(message=message)
-    opened = 0
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        nonlocal opened
-        opened += 1
-        return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
-
-    with pytest.raises(APIError, match="MidStreamFallbackError"):
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
-
-    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
-    assert streamer.attempts == ANSWER_STREAM_MAX_ATTEMPTS
-
-
-async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A silent retry is indistinguishable from a model that is just thinking slowly.
-
-    The reaction is the half that always lands; the notice only takes over a reply that is
-    already on screen, where what it replaces is the dead attempt's half-sentence.
-    """
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    message = FakeMessage()
-    streamer = _streamer(message=message, reply=as_message(fake=FakeReply()))
-    opened = 0
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        nonlocal opened
-        opened += 1
-        if opened == 1:
-            return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
-        return _stream_events_from(
-            events=[_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=2)]
-        )
-
-    await stream_answer_with_retry(
-        streamer=streamer, open_stream=open_stream, message_id=message.id
-    )
-
-    assert RETRY_HINT_EMOJI in message.added_reactions
-    reply = cast("FakeReply", streamer.reply)
-    assert RETRY_HINT_EMOJI in reply.edits[0]
-    # And the notice is transient: the finished answer takes the message back.
-    assert (reply.content or "").startswith("done")
-
-
-async def test_a_spent_retry_takes_its_own_notice_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`Retrying...` promises another attempt; with none left it must not outlive the turn.
-
-    Otherwise the turn ends with one message saying work is in flight beside the error embed
-    saying it is not.
-    """
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    message = FakeMessage()
-    reply = FakeReply()
-    streamer = _streamer(message=message, reply=as_message(fake=reply))
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
-
-    with pytest.raises(APIError):
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
-
-    assert reply.deleted is True
-    assert streamer.reply is None
-    # And with the notice gone there is nothing left to land the failure on, so the pipeline's
-    # error path is told to post it fresh.
-    assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
-
-
-async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Only a message that is still nothing but the notice goes; real text is the better residue."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    message = FakeMessage()
-    reply = FakeReply()
-    streamer = _streamer(
-        message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
-    )
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        # Paints text, gives the editor a tick, then dies -- on every attempt.
-        return _stream_events_then_raise(
-            events=[_text_event(delta="partial answer")],
-            error=_mid_stream_unavailable(),
-            pause=0.05,
-        )
-
-    with pytest.raises(APIError):
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
-
-    assert reply.deleted is False
-    assert "partial answer" in (reply.edits[-1] if reply.edits else "")
-
-
-async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Creating a reply just to say "Retrying" would orphan it on the turns that then fail."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    message = FakeMessage()
-    streamer = _streamer(message=message)
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
-
-    with pytest.raises(APIError):
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
-
-    assert RETRY_HINT_EMOJI in message.added_reactions
-    assert message.replies == []
+        assert opened == 1
 
 
 async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_into(
@@ -352,14 +169,14 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
     stubbed down to the one answer stream, and everything between the publish and the edit is
     the production code.
     """
-    _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="<@999> explain", author=FakeAuthor(user_id=1))
     reply = FakeReply()
+    opened = 0
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        # Paced so the preview editor gets a tick in: text nobody ever saw is a withdrawn
-        # retry notice, which is the other case entirely.
+        nonlocal opened
+        opened += 1
         return _stream_events_then_raise(
             events=[_text_event(delta="half a sentence")],
             error=_mid_stream_unavailable(),
@@ -367,18 +184,17 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
         )
 
     async def failing_answer(self: object, **kwargs: object) -> None:
-        """Streams half an answer onto a reply already on screen, then fails every attempt."""
+        """Streams half an answer onto a reply already on screen, then fails."""
         del kwargs
         streamer = _streamer(
             message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
         )
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
     monkeypatch.setattr(ReplyPipeline, "run", failing_answer)
     await cog.on_message(message=as_message(fake=message))
 
+    assert opened == 1
     # No second message beside the half-written one...
     assert message.replies == []
     # ...which keeps what the model managed to say, with the embed under it saying it is
@@ -461,9 +277,7 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
         return cast("AsyncIterator[ResponseStreamEvent]", events())
 
-    await stream_answer_with_retry(
-        streamer=streamer, open_stream=open_stream, message_id=message.id
-    )
+    await stream_answer(streamer=streamer, open_stream=open_stream)
 
     assert published == [streamer]
     assert streaming_module.current_answer_streamer.get() is None
@@ -487,43 +301,9 @@ def _proxy_response(status: str, usage: dict[str, int], **fields: object) -> dic
     }
 
 
-async def test_a_filtered_answer_is_asked_again_and_both_attempts_are_billed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The proxy ends a filtered answer with `response.incomplete`, which is re-issued, not posted.
-
-    Driven through the real `openai` client over the proxy's framing, since what has to hold is
-    that the SDK hands this event over at all and where the reason sits on it. The filtered
-    attempt was billed, so its tokens stay in the footer the retry ends on.
-    """
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    attempts = [
-        _proxy_sse(
-            events=[
-                {"type": "response.output_text.delta", "delta": "half a sentence"},
-                {
-                    "type": "response.incomplete",
-                    "response": _proxy_response(
-                        status="incomplete",
-                        usage={"input_tokens": 100, "output_tokens": 55},
-                        incomplete_details={"reason": "content_filter"},
-                    ),
-                },
-            ]
-        ),
-        _proxy_sse(
-            events=[
-                {"type": "response.output_text.delta", "delta": "the whole answer"},
-                {
-                    "type": "response.completed",
-                    "response": _proxy_response(
-                        status="completed", usage={"input_tokens": 120, "output_tokens": 30}
-                    ),
-                },
-            ]
-        ),
-    ]
-    client = AsyncOpenAI(
+def _proxy_sse_client(streams: list[bytes]) -> AsyncOpenAI:
+    """Builds an `AsyncOpenAI` client whose `/v1/responses` calls replay `streams` in order."""
+    return AsyncOpenAI(
         api_key="test",
         base_url="http://proxy.test/v1",
         max_retries=0,
@@ -532,35 +312,60 @@ async def test_a_filtered_answer_is_asked_again_and_both_attempts_are_billed(
                 handler=lambda request: httpx2.Response(
                     status_code=200,
                     headers={"content-type": "text/event-stream"},
-                    content=attempts.pop(0),
+                    content=streams.pop(0),
                 )
             )
         ),
     )
+
+
+async def test_a_filtered_answer_raises_incomplete_without_retrying() -> None:
+    """A proxy `response.incomplete` (`content_filter`) raises directly and records its usage.
+
+    Driven through the real `openai` client over the proxy's framing, since what has to hold is
+    that the SDK hands this event over at all and where the reason sits on it.
+    """
+    client = _proxy_sse_client(
+        streams=[
+            _proxy_sse(
+                events=[
+                    {"type": "response.output_text.delta", "delta": "half a sentence"},
+                    {
+                        "type": "response.incomplete",
+                        "response": _proxy_response(
+                            status="incomplete",
+                            usage={"input_tokens": 100, "output_tokens": 55},
+                            incomplete_details={"reason": "content_filter"},
+                        ),
+                    },
+                ]
+            )
+        ]
+    )
     message = FakeMessage()
     streamer = _streamer(message=message)
+    opened = 0
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
         return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
 
-    reply = await stream_answer_with_retry(
-        streamer=streamer, open_stream=open_stream, message_id=message.id
-    )
+    with pytest.raises(IncompleteAnswerError, match="content filter") as raised:
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
-    assert attempts == []
-    assert reply.startswith("the whole answer")
-    assert "half a sentence" not in reply
-    assert (streamer.input_tokens, streamer.output_tokens) == (220, 85)
+    assert opened == 1
+    assert raised.value.reason == "content_filter"
+    assert (streamer.input_tokens, streamer.output_tokens) == (100, 55)
 
 
-async def test_an_answer_that_spent_its_output_budget_is_not_asked_again(
+async def test_an_answer_that_spent_its_output_budget_logs_and_raises_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same request would think the same minutes away again, so the first attempt is the last.
+    """An answer that exhausted `max_output_tokens` logs the reason and raises directly.
 
-    Its one log record is what the rate of cut-off answers is read back from in `data/logs`.
+    Its log record is what the rate of cut-off answers is read back from in `data/logs`.
     """
-    _no_retry_backoff(monkeypatch=monkeypatch)
     logged = capture_logs(monkeypatch=monkeypatch, level="warn")
     message = FakeMessage()
     streamer = _streamer(message=message)
@@ -574,9 +379,7 @@ async def test_an_answer_that_spent_its_output_budget_is_not_asked_again(
         )
 
     with pytest.raises(IncompleteAnswerError, match="output budget"):
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
     assert opened == 1
     assert [fields for text, fields in logged if text == "gen_reply answer stream incomplete"] == [
@@ -585,18 +388,14 @@ async def test_an_answer_that_spent_its_output_budget_is_not_asked_again(
             "model": TEST_LLM_MODEL,
             "backend": "responses",
             "reason": "max_output_tokens",
-            "attempt": 1,
             "reply_chars": len("half"),
             "reasoning_chars": 0,
         }
     ]
 
 
-async def test_a_stream_that_just_stops_is_asked_again_until_the_attempts_run_out(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stream with no terminal event at all is no answer either, and nothing says why."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
+async def test_a_stream_that_just_stops_raises_incomplete_without_retrying() -> None:
+    """A stream with no terminal event at all raises `IncompleteAnswerError` on the first try."""
     message = FakeMessage()
     streamer = _streamer(message=message)
     opened = 0
@@ -607,29 +406,26 @@ async def test_a_stream_that_just_stops_is_asked_again_until_the_attempts_run_ou
         return _stream_events_from(events=[_text_event(delta="cut")])
 
     with pytest.raises(IncompleteAnswerError) as raised:
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
-    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
+    assert opened == 1
     assert raised.value.reason == "no_terminal_event"
 
 
 async def test_a_cut_off_answer_says_why_under_the_text_it_managed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Filtered on every attempt, the reply keeps its half-sentence with the reason under it.
+    """A filtered reply keeps its half-sentence with the reason embed under it.
 
     What this replaced was the half-sentence over a usage footer, which reads as an answer that
     simply stopped.
     """
-    _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="<@999> explain", author=FakeAuthor(user_id=1))
     reply = FakeReply()
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        # Paced so the preview editor writes the half-sentence before each attempt ends.
+        # Paced so the preview editor writes the half-sentence before the stream ends.
         return _paced_stream_events(
             events=[
                 _text_event(delta="half a sentence"),
@@ -639,14 +435,12 @@ async def test_a_cut_off_answer_says_why_under_the_text_it_managed(
         )
 
     async def cut_off_answer(self: object, **kwargs: object) -> None:
-        """Streams a half-sentence onto a reply already on screen, filtered on every attempt."""
+        """Streams a half-sentence onto a reply already on screen, then stops on content_filter."""
         del kwargs
         streamer = _streamer(
             message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
         )
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
     monkeypatch.setattr(ReplyPipeline, "run", cut_off_answer)
     await cog.on_message(message=as_message(fake=message))
@@ -658,29 +452,10 @@ async def test_a_cut_off_answer_says_why_under_the_text_it_managed(
     assert "content filter" in (reply.embed.description or "")
 
 
-def _proxy_sse_client(attempts: list[bytes]) -> AsyncOpenAI:
-    """Builds an `AsyncOpenAI` client whose `/v1/responses` calls replay `attempts` in order."""
-    return AsyncOpenAI(
-        api_key="test",
-        base_url="http://proxy.test/v1",
-        max_retries=0,
-        http_client=httpx2.AsyncClient(
-            transport=httpx2.MockTransport(
-                handler=lambda request: httpx2.Response(
-                    status_code=200,
-                    headers={"content-type": "text/event-stream"},
-                    content=attempts.pop(0),
-                )
-            )
-        ),
-    )
-
-
-async def test_response_failed_server_error_retries_and_surfaces_friendly_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A LiteLLM `response.failed` `server_error` retries, then surfaces the unwrapped message."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
+async def test_response_failed_server_error_fails_without_retrying_and_surfaces_friendly_message() -> (
+    None
+):
+    """A LiteLLM `response.failed` `server_error` fails directly and surfaces the masked notice."""
     high_demand = (
         "This model is currently experiencing high demand. Spikes in demand are usually "
         "temporary. Please try again later."
@@ -703,7 +478,7 @@ async def test_response_failed_server_error_retries_and_surfaces_friendly_messag
             }
         ]
     )
-    client = _proxy_sse_client(attempts=[failed_sse] * ANSWER_STREAM_MAX_ATTEMPTS)
+    client = _proxy_sse_client(streams=[failed_sse])
     message = FakeMessage()
     streamer = _streamer(message=message)
     opened = 0
@@ -714,88 +489,27 @@ async def test_response_failed_server_error_retries_and_surfaces_friendly_messag
         return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
 
     with pytest.raises(AnswerStreamError) as raised:
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
-    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
-    assert streamer.attempts == ANSWER_STREAM_MAX_ATTEMPTS
+    assert opened == 1
     assert raised.value.code == "server_error"
     assert raised.value.status_code == 500
     assert llm_status_code(exc=raised.value) == 500
-    assert raised.value.is_retryable is True
     assert extract_friendly_error(exc=raised.value) == HIGH_DEMAND_ERROR_NOTICE
     assert streamer.model_name == TEST_LLM_MODEL
-    assert streamer.input_tokens == 11 * ANSWER_STREAM_MAX_ATTEMPTS
-
-
-@pytest.mark.parametrize(
-    ("code", "expected_status"),
-    [
-        ("server_error", 500),
-        ("rate_limit_exceeded", 429),
-        ("request_timeout", 408),
-        ("503", 503),
-        ("429", 429),
-        ("408", 408),
-        ("409", 409),
-    ],
-)
-async def test_response_failed_retryable_codes_retry_and_recover(
-    monkeypatch: pytest.MonkeyPatch, code: str, expected_status: int
-) -> None:
-    """Retryable `response.failed` codes re-open the stream and succeed on the next attempt."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    client = _proxy_sse_client(
-        attempts=[
-            _proxy_sse(
-                events=[
-                    {
-                        "type": "response.failed",
-                        "sequence_number": 1,
-                        "response": _proxy_response(
-                            status="failed",
-                            usage={"input_tokens": 20, "output_tokens": 5},
-                            error={"code": code, "message": "temporary failure"},
-                        ),
-                    }
-                ]
-            ),
-            _proxy_sse(
-                events=[
-                    {"type": "response.output_text.delta", "delta": "recovered"},
-                    {
-                        "type": "response.completed",
-                        "response": _proxy_response(
-                            status="completed", usage={"input_tokens": 30, "output_tokens": 10}
-                        ),
-                    },
-                ]
-            ),
-        ]
-    )
-    message = FakeMessage()
-    streamer = _streamer(message=message)
-
-    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
-
-    err = AnswerStreamError(message="temporary failure", code=code)
-    assert err.status_code == expected_status
-    assert err.is_retryable is True
-
-    reply = await stream_answer_with_retry(
-        streamer=streamer, open_stream=open_stream, message_id=message.id
-    )
-
-    assert streamer.attempts == 2
-    assert reply.startswith("recovered")
-    assert (streamer.input_tokens, streamer.output_tokens) == (50, 15)
+    assert streamer.input_tokens == 11
 
 
 @pytest.mark.parametrize(
     ("code", "expected_status", "upstream_message", "expected_friendly"),
     [
+        ("server_error", 500, "temporary failure", HIGH_DEMAND_ERROR_NOTICE),
+        ("rate_limit_exceeded", 429, "temporary failure", HIGH_DEMAND_ERROR_NOTICE),
+        ("request_timeout", 408, "Request timed out", "Request timed out"),
+        ("503", 503, "temporary failure", HIGH_DEMAND_ERROR_NOTICE),
+        ("429", 429, "temporary failure", HIGH_DEMAND_ERROR_NOTICE),
+        ("408", 408, "Request timed out", "Request timed out"),
+        ("409", 409, "Conflict", "Conflict"),
         ("invalid_request_error", 400, "Unsupported parameter", "Unsupported parameter"),
         ("invalid_prompt", 400, "Invalid prompt", "Invalid prompt"),
         ("insufficient_quota", 402, "You exceeded your current quota", HIGH_DEMAND_ERROR_NOTICE),
@@ -807,17 +521,12 @@ async def test_response_failed_retryable_codes_retry_and_recover(
         ("bio_policy", None, "Policy violation", "Policy violation"),
     ],
 )
-async def test_response_failed_non_retryable_codes_fail_fast(
-    monkeypatch: pytest.MonkeyPatch,
-    code: str | None,
-    expected_status: int | None,
-    upstream_message: str,
-    expected_friendly: str,
+async def test_response_failed_codes_map_status_and_fail_without_retrying(
+    code: str | None, expected_status: int | None, upstream_message: str, expected_friendly: str
 ) -> None:
-    """Non-retryable `response.failed` codes fail on the first attempt, masking operator/quota notices."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
+    """`response.failed` maps error codes to HTTP statuses and fails directly without retrying."""
     client = _proxy_sse_client(
-        attempts=[
+        streams=[
             _proxy_sse(
                 events=[
                     {
@@ -843,15 +552,11 @@ async def test_response_failed_non_retryable_codes_fail_fast(
         return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
 
     with pytest.raises(AnswerStreamError) as raised:
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
     assert opened == 1
-    assert streamer.attempts == 1
     assert raised.value.code == code
     assert raised.value.status_code == expected_status
-    assert raised.value.is_retryable is False
     assert extract_friendly_error(exc=raised.value) == expected_friendly
 
 
@@ -904,19 +609,18 @@ def test_answer_stream_error_masks_overload_and_quota_payloads() -> None:
 
 
 @pytest.mark.parametrize(
-    ("code", "expected_attempts", "expected_retryable"),
+    ("code", "expected_status"),
     [
-        ("rate_limit_exceeded", ANSWER_STREAM_MAX_ATTEMPTS, True),
-        ("503", ANSWER_STREAM_MAX_ATTEMPTS, True),
-        ("insufficient_quota", 1, False),
-        ("invalid_request_error", 1, False),
+        ("rate_limit_exceeded", 429),
+        ("503", 503),
+        ("insufficient_quota", 402),
+        ("invalid_request_error", 400),
     ],
 )
-async def test_response_error_event_raises_answer_stream_error_and_respects_retryability(
-    monkeypatch: pytest.MonkeyPatch, code: str, expected_attempts: int, expected_retryable: bool
+async def test_response_error_event_raises_answer_stream_error_without_retrying(
+    code: str, expected_status: int
 ) -> None:
-    """`ResponseErrorEvent` (`type="error"`) surfaces as `AnswerStreamError` and follows retry rules."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
+    """`ResponseErrorEvent` (`type="error"`) surfaces as `AnswerStreamError` on a single attempt."""
     error_sse = _proxy_sse(
         events=[
             {
@@ -928,7 +632,7 @@ async def test_response_error_event_raises_answer_stream_error_and_respects_retr
             }
         ]
     )
-    client = _proxy_sse_client(attempts=[error_sse] * expected_attempts)
+    client = _proxy_sse_client(streams=[error_sse])
     message = FakeMessage()
     streamer = _streamer(message=message)
     opened = 0
@@ -939,14 +643,11 @@ async def test_response_error_event_raises_answer_stream_error_and_respects_retr
         return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
 
     with pytest.raises(AnswerStreamError) as raised:
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
-    assert opened == expected_attempts
-    assert streamer.attempts == expected_attempts
+    assert opened == 1
     assert raised.value.code == code
-    assert raised.value.is_retryable is expected_retryable
+    assert raised.value.status_code == expected_status
     assert str(raised.value) == f"upstream {code}"
 
 
@@ -971,18 +672,14 @@ async def test_response_failed_consume_finally_stamps_duration_and_stops_editor(
         await streamer.consume(responses=cast("AsyncIterator[ResponseStreamEvent]", _events()))
 
     assert raised.value.code is None
-    assert raised.value.is_retryable is False
     assert streamer.model_name == "captured-model"
     assert streamer.answer_seconds > 0
     assert streamer._editor is not None
     assert streamer._editor._task is None
 
 
-async def test_empty_stream_without_terminal_event_still_raises_no_terminal_event(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A genuine empty stream with no terminal event still raises `IncompleteAnswerError`."""
-    _no_retry_backoff(monkeypatch=monkeypatch)
+async def test_empty_stream_without_terminal_event_still_raises_no_terminal_event() -> None:
+    """A genuine empty stream with no terminal event raises `IncompleteAnswerError` directly."""
     message = FakeMessage()
     streamer = _streamer(message=message)
     opened = 0
@@ -993,9 +690,7 @@ async def test_empty_stream_without_terminal_event_still_raises_no_terminal_even
         return _stream_events_from(events=[])
 
     with pytest.raises(IncompleteAnswerError) as raised:
-        await stream_answer_with_retry(
-            streamer=streamer, open_stream=open_stream, message_id=message.id
-        )
+        await stream_answer(streamer=streamer, open_stream=open_stream)
 
-    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
+    assert opened == 1
     assert raised.value.reason == "no_terminal_event"

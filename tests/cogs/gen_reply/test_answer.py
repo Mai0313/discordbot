@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
 
+from openai import APIError
 import pytest
 from nextcord.enums import InteractionContextType
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -15,7 +16,6 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
-from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
@@ -46,9 +46,7 @@ from tests.helpers.reply_fakes import (
     _run_pipeline,
     _incomplete_event,
     _install_streamer,
-    _no_retry_backoff,
     _stream_events_from,
-    _default_turn_events,
     _mid_stream_unavailable,
     _assert_runtime_time_context,
 )
@@ -292,29 +290,17 @@ async def test_youtube_qa_falls_back_to_responses(
     assert dispatch["backend"] == "responses"
 
 
-async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pins the wiring, not the helper: the QA answer path must go through the retry.
-
-    Both the helper's own tests and this one would stay green if `AnswerTurn.stream_answer` were
-    quietly put back on a bare `streamer.consume(...)`, except for the second `create` this
-    asserts on.
-    """
-    _no_retry_backoff(monkeypatch=monkeypatch)
+async def test_the_answer_turn_propagates_a_stream_failure_without_retrying() -> None:
+    """The QA answer path runs a single attempt and lets provider stream errors propagate."""
     cog = _cog()
     message = FakeMessage(content="hi")
-    _recorded(cog).responses.stream_queue = [
-        _mid_stream_unavailable(),
-        list(_default_turn_events()),
-    ]
+    _recorded(cog).responses.stream_queue = [_mid_stream_unavailable()]
 
-    await _run_pipeline(cog=cog, message=message)
+    with pytest.raises(APIError, match="MidStreamFallbackError"):
+        await _run_pipeline(cog=cog, message=message)
 
-    # Two streaming dispatches for one answer, and the reply still landed.
-    assert _recorded(cog).responses.create_streams.count(True) == 2
-    assert message.replies
-    assert (message.replies[0].content or "").startswith("done")
+    assert _recorded(cog).responses.create_streams.count(True) == 1
+    assert message.replies == []
 
 
 async def test_a_cut_off_answer_acts_on_none_of_its_markers(
@@ -322,10 +308,9 @@ async def test_a_cut_off_answer_acts_on_none_of_its_markers(
 ) -> None:
     """A note or a picture asked for in an answer that never finished is not the answer's word.
 
-    Every attempt is filtered after the markers have streamed, so all that keeps them from
-    running is the turn failing before the reply is finalized.
+    The stream is filtered after the markers have streamed, so all that keeps them from running
+    is the turn failing before the reply is finalized.
     """
-    _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     cog.config = _config_stub(inline_image_enabled=True)
     scheduled: list[dict[str, object]] = []
@@ -336,12 +321,12 @@ async def test_a_cut_off_answer_acts_on_none_of_its_markers(
     partial = "<write-memory>likes cats</write-memory><generate-image>a cat</generate-image>half"
     _recorded(cog).responses.stream_queue = [
         [_text_event(delta=partial), _incomplete_event(reason="content_filter")]
-        for _ in range(ANSWER_STREAM_MAX_ATTEMPTS)
     ]
 
     with pytest.raises(IncompleteAnswerError):
         await _run_pipeline(cog=cog, message=FakeMessage(content="<@999> hi"))
 
+    assert _recorded(cog).responses.create_streams.count(True) == 1
     assert scheduled == []
     assert _recorded(cog).images.generate_calls == 0
 

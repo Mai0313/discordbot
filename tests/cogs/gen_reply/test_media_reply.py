@@ -14,7 +14,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.media import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME, LoadedMedia
 from discordbot.cogs.gen_reply import streaming as streaming_module
-from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
@@ -23,7 +22,6 @@ from discordbot.typings.context_budgets import (
     MEDIA_REFINE_HISTORY_LIMIT,
     MEDIA_REFINE_CONTEXT_MAX_CHARS,
 )
-from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.feedback_store import ReplyTurnRow, open_session
 
 from tests.helpers.casting import (
@@ -47,9 +45,7 @@ from tests.helpers.reply_fakes import (
     _recorded_video,
     _expiring_surface,
     _install_streamer,
-    _no_retry_backoff,
     _ready_context_task,
-    _default_turn_events,
     _mid_stream_unavailable,
 )
 from tests.helpers.link_sources import hosting_planner
@@ -62,29 +58,24 @@ if TYPE_CHECKING:
     from aiohttp import ClientResponse
 
 
-async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_path() -> None:
     """The IMAGE route's streamer renders onto the delivered image, so it publishes nothing.
 
     Its own failure is swallowed, but a later one in the same turn reaches `on_message`, and
     the picture the user was handed must not be the message that gets an error embed written
     over it.
     """
-    _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
-    _recorded(cog).responses.stream_queue = [
-        _mid_stream_unavailable()
-    ] * ANSWER_STREAM_MAX_ATTEMPTS
+    _recorded(cog).responses.stream_queue = [_mid_stream_unavailable()]
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
         user_prompt="a cat", context_task=_ready_context_task()
     )
 
-    # The image was delivered and every persona attempt then died on it.
+    # The image was delivered and the single persona attempt then died on it.
     assert message.replies[-1].file is not None
-    assert _recorded(cog).responses.create_streams.count(True) == ANSWER_STREAM_MAX_ATTEMPTS
+    assert _recorded(cog).responses.create_streams.count(True) == 1
     assert streaming_module.current_answer_streamer.get() is None
 
 
@@ -201,37 +192,6 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
     assert "TONE_MARKER" in contents
     assert contents.index("USER_MEM_MARKER") < contents.index("TONE_MARKER")
     assert "SERVER_MEM_MARKER" not in contents
-
-
-async def test_handle_image_reply_retries_the_persona_stream_without_captioning_the_image(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The persona streamer renders onto the DELIVERED image, which is not a status surface.
-
-    A retry notice there captions a finished image with a promise of more to come, and on the
-    path where every attempt is spent the failure is swallowed, so nothing would ever take it
-    back. This route is silent to the user by design; only the retry itself belongs to it.
-    """
-    _no_retry_backoff(monkeypatch=monkeypatch)
-    cog = _cog()
-    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
-    _recorded(cog).responses.stream_queue = [
-        _mid_stream_unavailable(),
-        list(_default_turn_events()),
-    ]
-
-    await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=_ready_context_task()
-    )
-
-    # The retry happened (two streaming dispatches) and the persona reply still landed.
-    assert _recorded(cog).responses.create_streams.count(True) == 2
-    delivered = message.replies[0]
-    assert (delivered.content or "").startswith("done")
-    # But nothing announced it: not on the image, and not on the user's message.
-    written = [delivered.content or "", *delivered.edits]
-    assert all(RETRY_HINT_EMOJI not in text for text in written)
-    assert RETRY_HINT_EMOJI not in message.added_reactions
 
 
 async def test_handle_image_reply_best_effort_when_reply_fails(
