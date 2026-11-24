@@ -90,4 +90,6 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 
 - **`README.md` is the canonical user-facing README**; `README.zh-CN.md` / `README.zh-TW.md` mirror its structure.
 - **The reply pipeline's visual companion is `assets/artifacts/reply-pipeline.html`**, never the behavioral source of truth over `src/`; a change to the pipeline's SHAPE (a route, a trigger condition, an endpoint or SDK a feature dispatches on, a model tier, a kill-switch) updates it in the same change.
+- **The bot's Discord UI preview catalog is `assets/artifacts/ui-showcase.html`**, never the behavioral source of truth over `src/`; any change to a user-visible Discord surface (embed, view, button, modal, expansion card, or PNG board) updates it in the same change.
+- **Every HTML artifact under `assets/artifacts/` opens with the source-file comment** (`<!-- This file is the source for the published artifact page (not the behavioral source of truth over src/): edit it, republish it over its published page when you can, and never copy that page back over it. Published at <url> -->`, recording `Published at <url>` once published).
 - **`README.md`'s "How a reply happens" mermaid, mirrored into both translated READMEs, is a condensed copy**: those three and the artifact move together or not at all.

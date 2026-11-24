@@ -1,0 +1,2487 @@
+<!-- This file is the source for the published artifact page (not the behavioral source of truth over src/): edit it, republish it over its published page when you can, and never copy that page back over it. Not yet published — publish when the Artifact tool is available and record "Published at <url>" here. -->
+<title>破貓 Discord UI 預覽手冊</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Theme tokens: shell chrome + Discord-faithful Dark / Light.
+   ───────────────────────────────────────────────────────────── */
+:root,
+:root[data-theme="dark"] {
+  --shell-bg: #18191C;
+  --shell-sidebar: #1E1F22;
+  --shell-surface: #232428;
+  --shell-border: #32343A;
+  --shell-ink: #F2F3F5;
+  --shell-muted: #949BA4;
+  --shell-accent: #5865F2;
+  --shell-accent-soft: rgba(88, 101, 242, 0.16);
+
+  /* Discord Dark */
+  --dc-canvas: #313338;
+  --dc-ephemeral-bg: rgba(88, 101, 242, 0.08);
+  --dc-ephemeral-bar: #5865F2;
+  --dc-embed: #2B2D31;
+  --dc-embed-border: #1E1F22;
+  --dc-code-bg: #1E1F22;
+  --dc-text: #DBDEE1;
+  --dc-strong: #F2F3F5;
+  --dc-muted: #949BA4;
+  --dc-link: #00A8FC;
+  --dc-mention-bg: rgba(88, 101, 242, 0.30);
+  --dc-mention-fg: #C9CDFB;
+  --dc-pill-bg: #2B2D31;
+  --dc-pill-border: #3F4147;
+  --dc-btn-sec: #4E5058;
+  --dc-btn-sec-hover: #6D6F78;
+  --dc-btn-sec-fg: #FFFFFF;
+  --dc-select-bg: #1E1F22;
+  --dc-select-border: #1E1F22;
+  --dc-modal-bg: #313338;
+  --dc-modal-footer: #2B2D31;
+  --dc-input-bg: #1E1F22;
+  --dc-attach-bg: #2B2D31;
+  --dc-attach-border: #3F4147;
+
+  --dc-blurple: #5865F2;
+  --dc-blurple-hover: #4752C4;
+  --dc-green: #248046;
+  --dc-green-hover: #1A6334;
+  --dc-red: #DA373C;
+  --dc-red-hover: #A12828;
+
+  --f-display: "Archivo", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --f-body: "IBM Plex Sans", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --f-mono: "IBM Plex Mono", "Noto Sans TC", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root[data-theme="light"] {
+  --shell-bg: #EEF0F4;
+  --shell-sidebar: #F7F8FA;
+  --shell-surface: #FFFFFF;
+  --shell-border: #D9DDE3;
+  --shell-ink: #111418;
+  --shell-muted: #5C6470;
+  --shell-accent: #5865F2;
+  --shell-accent-soft: rgba(88, 101, 242, 0.12);
+
+  /* Discord Light */
+  --dc-canvas: #FFFFFF;
+  --dc-ephemeral-bg: rgba(88, 101, 242, 0.08);
+  --dc-ephemeral-bar: #5865F2;
+  --dc-embed: #F2F3F5;
+  --dc-embed-border: #E3E5E8;
+  --dc-code-bg: #E3E5E8;
+  --dc-text: #313338;
+  --dc-strong: #060607;
+  --dc-muted: #5C5E66;
+  --dc-link: #006CE7;
+  --dc-mention-bg: rgba(88, 101, 242, 0.15);
+  --dc-mention-fg: #5865F2;
+  --dc-pill-bg: #F2F3F5;
+  --dc-pill-border: #D9DDE3;
+  --dc-btn-sec: #6D6F78;
+  --dc-btn-sec-hover: #5C5E66;
+  --dc-btn-sec-fg: #FFFFFF;
+  --dc-select-bg: #F2F3F5;
+  --dc-select-border: #D4D7DC;
+  --dc-modal-bg: #FFFFFF;
+  --dc-modal-footer: #F2F3F5;
+  --dc-input-bg: #E3E5E8;
+  --dc-attach-bg: #F2F3F5;
+  --dc-attach-border: #D4D7DC;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--shell-bg);
+  color: var(--shell-ink);
+  font-family: var(--f-body);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────── */
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--shell-sidebar);
+  border-right: 1px solid var(--shell-border);
+  padding: 20px 14px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px;
+}
+.brand-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #5865F2, #EB459E);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.brand h1 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 15px;
+  line-height: 1.25;
+}
+.brand p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--shell-muted);
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.theme-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-border);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 3px;
+}
+.theme-toggle button {
+  border: 0;
+  background: transparent;
+  color: var(--shell-muted);
+  font: 600 12px/1 var(--f-body);
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.theme-toggle button.active {
+  background: var(--shell-accent);
+  color: #fff;
+}
+
+.filter-box {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--shell-border);
+  background: var(--shell-bg);
+  color: var(--shell-ink);
+  font: 12.5px var(--f-body);
+  outline: none;
+}
+.filter-box:focus { border-color: var(--shell-accent); }
+
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-list a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: var(--shell-muted);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-list a:hover {
+  background: var(--shell-accent-soft);
+  color: var(--shell-ink);
+}
+.nav-num {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  opacity: 0.7;
+}
+.nav-meta {
+  margin-top: auto;
+  padding: 10px 8px 0;
+  border-top: 1px solid var(--shell-border);
+  font-size: 11.5px;
+  color: var(--shell-muted);
+}
+.nav-meta code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+}
+
+/* ── Main Content ──────────────────────────────────────────── */
+.main {
+  padding: 28px 36px 64px;
+  max-width: 1040px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.hero {
+  background: var(--shell-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: 12px;
+  padding: 22px 24px;
+  margin-bottom: 24px;
+}
+.hero h2 {
+  margin: 0 0 6px;
+  font-family: var(--f-display);
+  font-size: 22px;
+}
+.hero p {
+  margin: 0;
+  color: var(--shell-muted);
+  font-size: 13.5px;
+}
+.palette-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--shell-border);
+  background: var(--shell-bg);
+  font-size: 11.5px;
+}
+.swatch-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.swatch code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--shell-muted);
+}
+
+/* ── Section ───────────────────────────────────────────────── */
+.section {
+  margin-top: 34px;
+  scroll-margin-top: 20px;
+}
+.section.hidden { display: none; }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--shell-border);
+  padding-bottom: 8px;
+}
+.section-num {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--shell-accent);
+  background: var(--shell-accent-soft);
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+.section-head h3 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 18px;
+}
+.section-src {
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--shell-muted);
+}
+.section-desc {
+  margin: 0 0 14px;
+  color: var(--shell-muted);
+  font-size: 13px;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.tab-btn {
+  border: 1px solid var(--shell-border);
+  background: var(--shell-surface);
+  color: var(--shell-muted);
+  font: 500 12.5px/1 var(--f-body);
+  padding: 7px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.tab-btn:hover {
+  border-color: var(--shell-accent);
+  color: var(--shell-ink);
+}
+.tab-btn.active {
+  background: var(--shell-accent);
+  border-color: var(--shell-accent);
+  color: #fff;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Preview Stage (Discord Channel Surface) ───────────────── */
+.stage {
+  background: var(--dc-canvas);
+  border: 1px solid var(--shell-border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  color: var(--dc-text);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: background 0.15s, color 0.15s;
+}
+.stage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+}
+.stage-label {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--dc-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--dc-pill-border);
+}
+.badge-tag {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--dc-pill-bg);
+  border: 1px solid var(--dc-pill-border);
+  color: var(--dc-muted);
+}
+
+/* ── Discord Message Chrome ────────────────────────────────── */
+.dc-msg {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+}
+.dc-msg.ephemeral {
+  background: var(--dc-ephemeral-bg);
+  border-left: 2px solid var(--dc-ephemeral-bar);
+  border-radius: 0 6px 6px 0;
+  padding: 10px 12px 10px 10px;
+  margin: -4px -6px;
+}
+.dc-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #5865F2, #EB459E);
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  user-select: none;
+}
+.dc-avatar.user {
+  background: linear-gradient(135deg, #1ABC9C, #3498DB);
+}
+.dc-msg-body { min-width: 0; }
+.dc-reply-ref {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dc-muted);
+  margin-bottom: -6px;
+  padding-left: 18px;
+}
+.dc-reply-ref::before {
+  content: "";
+  width: 24px;
+  height: 10px;
+  border-left: 2px solid var(--dc-muted);
+  border-top: 2px solid var(--dc-muted);
+  border-top-left-radius: 6px;
+  opacity: 0.6;
+  margin-top: 6px;
+}
+.dc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+}
+.dc-name {
+  font-weight: 600;
+  color: var(--dc-strong);
+  font-size: 14.5px;
+}
+.dc-app {
+  background: var(--dc-blurple);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+}
+.dc-ts {
+  font-size: 11.5px;
+  color: var(--dc-muted);
+}
+.dc-text {
+  font-size: 14px;
+  color: var(--dc-text);
+  word-break: break-word;
+}
+.dc-text p { margin: 0 0 6px; }
+.dc-text p:last-child { margin-bottom: 0; }
+.dc-subtext {
+  font-size: 12px;
+  color: var(--dc-muted);
+  margin-top: 4px;
+  display: block;
+}
+.dc-mention {
+  background: var(--dc-mention-bg);
+  color: var(--dc-mention-fg);
+  padding: 0 3px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.dc-code {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  background: var(--dc-code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--dc-strong);
+}
+.dc-pre {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--dc-code-bg);
+  border: 1px solid var(--dc-embed-border);
+  padding: 8px 10px;
+  border-radius: 5px;
+  overflow-x: auto;
+  margin: 6px 0;
+  white-space: pre;
+  color: var(--dc-text);
+}
+.dc-quote {
+  border-left: 3px solid var(--dc-muted);
+  padding-left: 10px;
+  margin: 6px 0;
+  color: var(--dc-text);
+}
+.dc-link {
+  color: var(--dc-link);
+  text-decoration: none;
+}
+.dc-link:hover { text-decoration: underline; }
+
+/* ── Discord Embed ─────────────────────────────────────────── */
+.dc-embeds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  max-width: 520px;
+}
+.dc-embed {
+  position: relative;
+  background: var(--dc-embed);
+  border-left: 4px solid var(--embed-color, #5865F2);
+  border-radius: 4px;
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+}
+.dc-embed-main { min-width: 0; }
+.dc-embed-author {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dc-strong);
+  margin-bottom: 5px;
+}
+.dc-embed-author-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #5865F2, #1ABC9C);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.dc-embed-title {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--dc-strong);
+  margin-bottom: 6px;
+}
+.dc-embed-desc {
+  font-size: 13.5px;
+  color: var(--dc-text);
+  line-height: 1.48;
+}
+.dc-embed-desc .md-h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--dc-strong);
+  margin: 4px 0;
+  letter-spacing: 0.04em;
+}
+.dc-embed-desc .md-h2 {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--dc-strong);
+  margin: 4px 0;
+}
+.dc-embed-desc .md-h3 {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--dc-strong);
+  margin: 4px 0;
+}
+.dc-embed-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #3498DB, #5865F2);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.dc-fields {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+.dc-field { grid-column: span 12; }
+.dc-field.inline-2 { grid-column: span 6; }
+.dc-field.inline-3 { grid-column: span 4; }
+.dc-field-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--dc-strong);
+  margin-bottom: 2px;
+}
+.dc-field-val {
+  font-size: 13px;
+  color: var(--dc-text);
+  line-height: 1.45;
+}
+.dc-embed-footer {
+  grid-column: 1 / -1;
+  font-size: 11.5px;
+  color: var(--dc-muted);
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dc-embed-media {
+  margin-top: 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--dc-attach-border);
+}
+.dc-gallery {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin-top: 8px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.dc-media-placeholder {
+  background: linear-gradient(135deg, rgba(88,101,242,0.22), rgba(235,69,158,0.18));
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--dc-muted);
+  font-family: var(--f-mono);
+}
+
+/* ── Reactions, Components, Attachments, Modals ────────────── */
+.dc-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.dc-react {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--dc-pill-bg);
+  border: 1px solid var(--dc-pill-border);
+  font-size: 12.5px;
+  color: var(--dc-text);
+}
+.dc-react.me {
+  border-color: var(--dc-blurple);
+  background: rgba(88, 101, 242, 0.18);
+}
+
+.dc-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+  max-width: 520px;
+}
+.dc-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.dc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 13px;
+  font: 500 13px/1.2 var(--f-body);
+  cursor: pointer;
+  color: #fff;
+  transition: filter 0.12s, opacity 0.12s, background 0.12s;
+}
+.dc-btn.primary { background: var(--dc-blurple); }
+.dc-btn.primary:hover:not(:disabled) { background: var(--dc-blurple-hover); }
+.dc-btn.secondary { background: var(--dc-btn-sec); color: var(--dc-btn-sec-fg); }
+.dc-btn.secondary:hover:not(:disabled) { background: var(--dc-btn-sec-hover); }
+.dc-btn.success { background: var(--dc-green); }
+.dc-btn.success:hover:not(:disabled) { background: var(--dc-green-hover); }
+.dc-btn.danger { background: var(--dc-red); }
+.dc-btn.danger:hover:not(:disabled) { background: var(--dc-red-hover); }
+.dc-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dc-select {
+  width: 100%;
+  max-width: 340px;
+  background: var(--dc-select-bg);
+  border: 1px solid var(--dc-select-border);
+  border-radius: 4px;
+  color: var(--dc-text);
+  padding: 8px 10px;
+  font: 13px var(--f-body);
+  cursor: pointer;
+}
+
+.dc-ephemeral-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--dc-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dc-attach {
+  margin-top: 8px;
+  max-width: 420px;
+  background: var(--dc-attach-bg);
+  border: 1px solid var(--dc-attach-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dc-attach-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.dc-attach-name {
+  color: var(--dc-link);
+  font-weight: 600;
+  font-size: 13px;
+}
+.dc-attach-size {
+  font-size: 11.5px;
+  color: var(--dc-muted);
+}
+
+/* PIL Ranking Board Replica (matches cogs/economy/boards.py exact RGBs) */
+.pil-board {
+  background: rgb(28, 31, 36);
+  border-radius: 8px;
+  padding: 14px 16px;
+  color: rgb(234, 237, 242);
+  font-family: var(--f-body);
+  margin-top: 8px;
+}
+.pil-board-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+.pil-board-sub {
+  font-size: 11px;
+  color: rgb(169, 177, 190);
+  margin-bottom: 10px;
+}
+.pil-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.pil-table th {
+  text-align: left;
+  font-size: 11px;
+  color: rgb(169, 177, 190);
+  padding: 5px 8px;
+  background: rgb(38, 42, 49);
+  border-bottom: 1px solid rgb(70, 76, 88);
+}
+.pil-table th:last-child,
+.pil-table td:last-child { text-align: right; font-family: var(--f-mono); }
+.pil-table td {
+  padding: 6px 8px;
+  background: rgb(38, 42, 49);
+  border-bottom: 1px solid rgba(70, 76, 88, 0.5);
+}
+.pil-table tr:nth-child(even) td { background: rgb(33, 37, 43); }
+
+/* Discord Modal Preview */
+.dc-modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.dc-modal-backdrop.open { display: flex; }
+.dc-modal {
+  width: 100%;
+  max-width: 440px;
+  background: var(--dc-modal-bg);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  color: var(--dc-text);
+}
+.dc-modal-head {
+  padding: 16px 18px 8px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--dc-strong);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dc-modal-body {
+  padding: 8px 18px 18px;
+}
+.dc-modal-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--dc-muted);
+  margin-bottom: 6px;
+}
+.dc-modal-label .req { color: #DA373C; }
+.dc-modal-input,
+.dc-modal-textarea {
+  width: 100%;
+  background: var(--dc-input-bg);
+  border: 1px solid var(--dc-embed-border);
+  border-radius: 4px;
+  padding: 9px 10px;
+  color: var(--dc-strong);
+  font: 13.5px var(--f-body);
+}
+.dc-modal-textarea { min-height: 92px; resize: vertical; }
+.dc-modal-foot {
+  background: var(--dc-modal-footer);
+  padding: 12px 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.inline-note {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: var(--shell-surface);
+  border: 1px solid var(--shell-border);
+  font-size: 12.5px;
+  color: var(--shell-muted);
+}
+.inline-note code {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--shell-ink);
+}
+
+.page-footer {
+  margin-top: 44px;
+  padding-top: 16px;
+  border-top: 1px solid var(--shell-border);
+  font-size: 12px;
+  color: var(--shell-muted);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--shell-border);
+  }
+  .main { padding: 20px 16px 48px; }
+  .stage-grid { grid-template-columns: 1fr; }
+}
+</style>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-avatar">破</div>
+      <div>
+        <h1>破貓 UI 預覽手冊</h1>
+        <p>所有 Discord 回覆與元件樣式</p>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="theme-toggle" role="group" aria-label="Discord Theme">
+        <button id="theme-dark" class="active" type="button">🌙 Dark</button>
+        <button id="theme-light" type="button">☀️ Light</button>
+      </div>
+      <input id="filter-input" class="filter-box" type="search" placeholder="篩選指令、cog 或元件…" aria-label="篩選區塊">
+    </div>
+
+    <ul class="nav-list">
+      <li><a href="#s1"><span>AI 回覆與回饋</span><span class="nav-num">01</span></a></li>
+      <li><a href="#s2"><span>深度研究討論串</span><span class="nav-num">02</span></a></li>
+      <li><a href="#s3"><span>社群連結展開卡片</span><span class="nav-num">03</span></a></li>
+      <li><a href="#s4"><span>伺服器設定 /settings</span><span class="nav-num">04</span></a></li>
+      <li><a href="#s5"><span>長期記憶 /memory</span><span class="nav-num">05</span></a></li>
+      <li><a href="#s6"><span>經濟與借貸系統</span><span class="nav-num">06</span></a></li>
+      <li><a href="#s7"><span>賭場遊戲牌桌</span><span class="nav-num">07</span></a></li>
+      <li><a href="#s8"><span>工具與其他指令</span><span class="nav-num">08</span></a></li>
+    </ul>
+
+    <div class="nav-meta">
+      來源：<code>assets/artifacts/ui-showcase.html</code><br>
+      任何 Discord 介面改動同步更新本頁，實際行為仍以 <code>src/discordbot/</code> 為準。
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="hero">
+      <h2>破貓 Discord UI 預覽與設計目錄</h2>
+      <p>收錄全 bot 所有會呈現在 Discord 上的回覆格式、Embed 卡片、按鈕 View、下拉選單、彈出視窗 Modal 與 PIL 排行榜圖表。支援 Dark / Light 雙主題與互動狀態切換，方便設計對照與樣式檢查。</p>
+      <div class="palette-strip">
+        <span class="swatch"><span class="swatch-dot" style="background:#5865F2"></span>NEUTRAL_BLUE <code>#5865F2</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#57F287"></span>DISCORD_GREEN <code>#57F287</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#FEE75C"></span>DISCORD_YELLOW <code>#FEE75C</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#ED4245"></span>DISCORD_RED <code>#ED4245</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#1ABC9C"></span>CENTRAL_BANK <code>#1ABC9C</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#F1C40F"></span>VIP / BORROW <code>#F1C40F</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#E67E22"></span>LOSS_BOARD <code>#E67E22</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#EB459E"></span>CASINO <code>#EB459E</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#3498DB"></span>ADMIN <code>#3498DB</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#1DA1F2"></span>Twitter <code>#1DA1F2</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#1877F2"></span>Facebook <code>#1877F2</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#E4405F"></span>Instagram <code>#E4405F</code></span>
+        <span class="swatch"><span class="swatch-dot" style="background:#FE2C55"></span>Douyin <code>#FE2C55</code></span>
+      </div>
+    </header>
+
+    <!-- ═══════════════════════════════════════════════════ 01 -->
+    <section id="s1" class="section" data-keywords="gen_reply ai qa streaming feedback upvote downvote reason modal regen blind test ask error">
+      <div class="section-head">
+        <span class="section-num">01</span>
+        <h3>AI 回覆與回饋互動</h3>
+        <span class="section-src">cogs/gen_reply/</span>
+      </div>
+      <p class="section-desc">涵蓋串流思考預覽、一般 / 盲測完稿回覆、用量與記憶頁尾、常駐評分按鈕（可實際點擊體驗 👍 / 👎 / 原因選單 / 彈出 Modal），以及 `/ask` 與錯誤 Embed。</p>
+
+      <div class="tab-bar" data-tabs="s1">
+        <button class="tab-btn active" data-target="s1-qa">QA 完稿 + 互動評分</button>
+        <button class="tab-btn" data-target="s1-thinking">串流思考預覽</button>
+        <button class="tab-btn" data-target="s1-blind">盲測遮蔽模式</button>
+        <button class="tab-btn" data-target="s1-ask">/ask 回覆</button>
+        <button class="tab-btn" data-target="s1-error">錯誤 Embed</button>
+      </div>
+
+      <div id="s1-qa" class="tab-panel active">
+        <div class="stage">
+          <div class="stage-label"><span>公開回覆（Guild / DM）· 可點擊下方 👍 / 👎 / 🔄 試玩回饋流程</span><span class="badge-tag">ReplyFeedbackView</span></div>
+          <div class="dc-msg">
+            <div class="dc-reply-ref"><span class="dc-mention">@Wei</span> 破貓幫我查一下 TOML 跟 YAML 差在哪</div>
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:15</span></div>
+              <div class="dc-text">
+                <p>簡單講，TOML 語法死板但不會踩縮排地雷，Python 3.11+ 還直接內建 <span class="dc-code">tomllib</span> 不用多裝套件；YAML 寫起來自由，但縮排差一格或 <span class="dc-code">NO</span> 被吃成布林值就會讓你 debug 到天亮。</p>
+                <span class="dc-subtext">📖 讀了 Wei 的記憶</span>
+                <span class="dc-subtext">✏️ 記下了：設定檔偏好使用 TOML 並避免多餘依賴</span>
+                <span class="dc-subtext">gemini-4-neon (medium) · ⬆ 3,240 ⬇ 198 · $0.0042</span>
+                <span class="dc-subtext">評分將用於架構改進，請依實際體驗選擇，惡意刷評將禁止使用</span>
+              </div>
+              <div class="dc-reactions">
+                <span class="dc-react me">✅ 1</span>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row">
+                  <button class="dc-btn secondary" type="button" id="demo-vote-up">👍</button>
+                  <button class="dc-btn secondary" type="button" id="demo-vote-down">👎</button>
+                  <button class="dc-btn secondary" type="button" id="demo-vote-regen">🔄</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="demo-feedback-drawer" class="dc-msg ephemeral" style="display:none;">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">剛剛</span></div>
+              <div class="dc-text" id="demo-feedback-text"></div>
+              <div class="dc-rows" id="demo-feedback-buttons"></div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息 · 關閉訊息</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s1-thinking" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>streaming.py · 第一個思考 delta 抵達後建立，每秒由 CadencePreviewEditor 更新</span><span class="badge-tag">stream_answer</span></div>
+          <div class="dc-msg">
+            <div class="dc-reply-ref"><span class="dc-mention">@Wei</span> 幫我比對這兩段程式碼的效能差異</div>
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:16</span></div>
+              <div class="dc-text">
+                <span class="dc-subtext">💬 正在思考⋯</span>
+                <span class="dc-subtext">比對兩段迴圈的時間複雜度與記憶體配置，先確認 SQLite 連線池是否每次重開，再整理基準數據差異⋯</span>
+              </div>
+              <div class="dc-reactions">
+                <span class="dc-react me">💬 1</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s1-blind" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>[global.reply].slow_model_blind_test_enabled = true · 頁尾遮蔽真實模型與強度</span><span class="badge-tag">blind-test</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:18</span></div>
+              <div class="dc-text">
+                <p>這題直接把設定放到 <span class="dc-code">./data/config.toml</span> 就好，容器重啟會直接吃到新設定，不用重 build image。</p>
+                <span class="dc-subtext">blind-test-model · ⬆ 2,810 ⬇ 144 · $0.0036</span>
+                <span class="dc-subtext">評分將用於架構改進，請依實際體驗選擇，惡意刷評將禁止使用</span>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row">
+                  <button class="dc-btn secondary" type="button">👍</button>
+                  <button class="dc-btn secondary" type="button">👎</button>
+                  <button class="dc-btn secondary" type="button">🔄</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s1-ask" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>/ask · 無來源訊息反應、無 🔄 按鈕；若有附帶媒體逾時改寫成文末 ⏱️ 小字</span><span class="badge-tag">Interaction</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:20</span></div>
+              <div class="dc-text">
+                <p>在還沒把我拉進去的群組裡，用 <span class="dc-code">/ask</span> 一樣可以跟我聊天，而且我會記住這個頻道裡我們彼此講過的話。</p>
+                <span class="dc-subtext">⏱️ 語音生成超時，已略過</span>
+                <span class="dc-subtext">gemini-4-neon (low) · ⬆ 1,920 ⬇ 110 · $0.0021</span>
+                <span class="dc-subtext">評分將用於架構改進，請依實際體驗選擇，惡意刷評將禁止使用</span>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row">
+                  <button class="dc-btn secondary" type="button">👍</button>
+                  <button class="dc-btn secondary" type="button">👎</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s1-error" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>cogs/gen_reply/cog.py · 內部錯誤一律經 extract_friendly_error 遮蔽後呈現在紅框</span><span class="badge-tag">#ED4245</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:22</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#ED4245">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">Something went wrong</div>
+                    <div class="dc-embed-desc"><div class="dc-pre">目前模型服務負載較高或暫時異常，請稍後再試。</div></div>
+                    <div class="dc-embed-footer">APIStatusError</div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-reactions">
+                <span class="dc-react me">❌ 1</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 02 -->
+    <section id="s2" class="section" data-keywords="research deep_research thread report attachment markdown png">
+      <div class="section-head">
+        <span class="section-num">02</span>
+        <h3>深度研究討論串</h3>
+        <span class="section-src">cogs/research/</span>
+      </div>
+      <p class="section-desc">由 `/deep_research` 或 `@mention` 觸發：開啟專屬討論串並掛上 🔬 反應，串流即時進度後以章節分段交付，最後一則附帶 `research.md`、`research.png`（若有）、發起人 ping 與用量頁尾。</p>
+
+      <div class="stage-grid">
+        <div class="stage">
+          <div class="stage-label"><span>討論串完稿交付</span><span class="badge-tag">delivery.py</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:25</span></div>
+              <div class="dc-text">
+                <p><strong>結論摘要</strong>：2026 年主流輕量設定格式在 Python 生態中以 TOML 維護成本最低⋯⋯（報告分段正文）</p>
+                <p><span class="dc-mention">@Wei</span></p>
+                <span class="dc-subtext">antigravity-preview-09-2026 · ⬆ 48,120 ⬇ 6,430 · $0.1420</span>
+              </div>
+              <div class="dc-attach">
+                <div class="dc-attach-icon">📄</div>
+                <div>
+                  <div class="dc-attach-name">research.md</div>
+                  <div class="dc-attach-size">24.6 KB</div>
+                </div>
+              </div>
+              <div class="dc-attach">
+                <div class="dc-attach-icon">📊</div>
+                <div>
+                  <div class="dc-attach-name">research.png</div>
+                  <div class="dc-attach-size">184.2 KB</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div class="stage-label"><span>深度研究失敗 Embed</span><span class="badge-tag">#ED4245</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:26</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#ED4245">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">深度研究失敗</div>
+                    <div class="dc-embed-desc"><div class="dc-pre">目前模型服務負載較高或暫時異常，請稍後再試。</div></div>
+                    <div class="dc-embed-footer">APIError</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 03 -->
+    <section id="s3" class="section" data-keywords="parse_twitter parse_threads parse_facebook parse_instagram parse_douyin expansion card auto expand">
+      <div class="section-head">
+        <span class="section-num">03</span>
+        <h3>社群連結自動展開卡片</h3>
+        <span class="section-src">utils/expansion_cog.py + cogs/parse_*/</span>
+      </div>
+      <p class="section-desc">五個平台共用同一套展開生命週期（先佔回覆位 → 掛平台標記＋狀態反應 → 上傳卡片圖片並隱藏原連結預覽）。下方可切換五個平台與反應狀態鏈。</p>
+
+      <div class="tab-bar" data-tabs="s3">
+        <button class="tab-btn active" data-target="s3-twitter">🐦 Twitter / X</button>
+        <button class="tab-btn" data-target="s3-threads">🧵 Threads</button>
+        <button class="tab-btn" data-target="s3-facebook">📘 Facebook</button>
+        <button class="tab-btn" data-target="s3-instagram">📷 Instagram</button>
+        <button class="tab-btn" data-target="s3-douyin">🎵 Douyin</button>
+      </div>
+
+      <div id="s3-twitter" class="tab-panel active">
+        <div class="stage">
+          <div class="stage-label"><span>TwitterCogs · 祖先串（灰 #65686C）+ 主貼文（#1DA1F2）+ 引用貼文（灰 #65686C）</span><span class="badge-tag">#1DA1F2</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar user">W</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">Wei</span><span class="dc-ts">今天 03:30</span></div>
+              <div class="dc-text"><a class="dc-link" href="#s3">https://x.com/demo/status/1987654321</a></div>
+              <div class="dc-reactions">
+                <span class="dc-react me">🐦 1</span>
+                <span class="dc-react me">✅ 1</span>
+              </div>
+            </div>
+          </div>
+          <div class="dc-msg">
+            <div class="dc-reply-ref"><span class="dc-mention">@Wei</span> https://x.com/demo/status/1987654321</div>
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:30</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#65686C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">O</span>@orig_author</div>
+                    <div class="dc-embed-desc"><strong>↩️ 回覆的貼文</strong><br>先拋磚引玉問一下，大家 bot 設定都怎麼拆機密跟一般預設？</div>
+                  </div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#1DA1F2">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">D</span>@demo</div>
+                    <div class="dc-embed-desc">機密留 <span class="dc-code">.env</span>，預設放進 git 的 <span class="dc-code">config.toml</span>，部署覆蓋放掛載卷 <span class="dc-code">./data/config.toml</span>，免重 build 就能改設定！</div>
+                    <div class="dc-gallery">
+                      <div class="dc-media-placeholder">attachment://card_image_0.jpg</div>
+                      <div class="dc-media-placeholder">attachment://card_image_1.jpg</div>
+                    </div>
+                    <div class="dc-embed-footer">♥ 1,284 · 💬 96 · 今天 03:12</div>
+                  </div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#65686C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">Q</span>@quoted_dev</div>
+                    <div class="dc-embed-desc"><strong>💬 引用的貼文</strong><br>Python 3.12 內建 tomllib 真的省掉很多依賴。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s3-threads" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>ThreadsCogs · 串文灰階漸層（0x40 → 0xC0）+ 引用貼文 Blurple（#5865F2）</span><span class="badge-tag">chain + quote</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:31</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#787878">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">A</span>@alice</div>
+                    <div class="dc-embed-desc">昨天去試了一家深夜拉麵，湯頭濃到可以直接拌飯吃。</div>
+                    <div class="dc-embed-footer">📝 另有 1 篇未展開</div>
+                  </div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#C0C0C0">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">A</span>@alice</div>
+                    <div class="dc-embed-desc">補上菜單跟排隊攻略，十點過後不用等太久！</div>
+                    <div class="dc-embed-media"><div class="dc-media-placeholder">attachment://card_image_0.jpg</div></div>
+                    <div class="dc-embed-footer">🖼️ 另有 2 張</div>
+                  </div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#5865F2">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">B</span>@bob</div>
+                    <div class="dc-embed-desc">這家叉燒飯才是本體。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s3-facebook" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>FacebookCogs · 主貼文（#1877F2）+ 網址指定留言（灰 #65686C）</span><span class="badge-tag">#1877F2</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:32</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#1877F2">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">F</span>台北美食情報站</div>
+                    <div class="dc-embed-desc">本週末快閃市集清單整理好了，總共 28 攤甜點與手沖咖啡。<br><br>🎬 <a class="dc-link" href="#s3">點此觀看影片</a></div>
+                    <div class="dc-embed-footer">美食交流社團 · 👍 2,410 · 💬 318 · ↗️ 504</div>
+                  </div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#65686C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">C</span>陳小明</div>
+                    <div class="dc-embed-desc"><strong>💬 指定的留言</strong><br>週六下午三點後有現場烘豆試喝，推薦提早去！</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s3-instagram" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>InstagramCogs · 主貼文 / Reel（#E4405F）+ 互動數字</span><span class="badge-tag">#E4405F</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:33</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#E4405F">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">I</span>攝影日常 (@photo_daily)</div>
+                    <div class="dc-embed-desc">清晨五點半的象山薄霧，剛好趕上第一道金色晨光 🌅</div>
+                    <div class="dc-embed-media"><div class="dc-media-placeholder">attachment://card_image_0.jpg</div></div>
+                    <div class="dc-embed-footer">❤️ 8,920 · 💬 142 · 🖼️ 另有 3 張</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s3-douyin" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>DouyinCogs · 標題卡（#FE2C55）+ 原生影片附件（超限時降級託管連結）</span><span class="badge-tag">#FE2C55</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:34</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#FE2C55">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">抖</span>深夜廚房阿強</div>
+                    <div class="dc-embed-desc">三分鐘搞定脆皮蛋餅，不用揉麵直接調粉漿就能下鍋！</div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-attach">
+                <div class="dc-attach-icon">🎬</div>
+                <div>
+                  <div class="dc-attach-name">douyin_7428193012.mp4</div>
+                  <div class="dc-attach-size">8.4 MB · 1080p</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="inline-note">
+        共用狀態反應鏈：<code>🔗</code> 讀取中 → <code>✅</code> 展開完成 / <code>⏱️</code> 暫時限流或逾時 / <code>⚠️</code> 貼文不存在或私密 / <code>❌</code> bot 內部錯誤（來源訊息旁常駐對應平台標記）。
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 04 -->
+    <section id="s4" class="section" data-keywords="settings server admin auto_expand toggle reset ephemeral">
+      <div class="section-head">
+        <span class="section-num">04</span>
+        <h3>伺服器設定面板 /settings</h3>
+        <span class="section-src">cogs/settings/</span>
+      </div>
+      <p class="section-desc">僅限伺服器管理員（Discord Administrator 權限）於 bot 所在伺服器使用；全程 Ephemeral 不洗頻道，點擊按鈕即時寫入 `settings.db` 並刷新狀態（以下面板可直接互動測試）。</p>
+
+      <div class="tab-bar" data-tabs="s4">
+        <button class="tab-btn active" data-target="s4-panel">⚙️ 管理員互動面板</button>
+        <button class="tab-btn" data-target="s4-no-perm">🚫 權限不足</button>
+        <button class="tab-btn" data-target="s4-dm">💬 私訊 / 未加入伺服器</button>
+      </div>
+
+      <div id="s4-panel" class="tab-panel active">
+        <div class="stage">
+          <div class="stage-label"><span>ServerSettingsView · 可點擊下方按鈕實際切換開啟 / 關閉與恢復預設</span><span class="badge-tag">Ephemeral · 180s</span></div>
+          <div class="dc-msg ephemeral">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:35</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#5865F2">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">⚙️ 伺服器設定 — 連結自動展開</div>
+                    <div class="dc-embed-desc" id="settings-embed-lines"></div>
+                    <div class="dc-embed-footer">破貓測試群 · 點擊下方按鈕即時切換 · 未自訂項目會跟著預設設定走</div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row" id="settings-toggle-row"></div>
+                <div class="dc-row">
+                  <button class="dc-btn secondary" type="button" id="settings-reset-btn">↺ 恢復預設</button>
+                </div>
+              </div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息 · 關閉訊息</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s4-no-perm" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>非管理員執行 /settings 或按鈕重驗權限失敗</span><span class="badge-tag">#ED4245</span></div>
+          <div class="dc-msg ephemeral">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:36</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#ED4245">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">權限不足</div>
+                    <div class="dc-embed-desc">只有伺服器管理員（Administrator）才能修改這個伺服器的設定。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息 · 關閉訊息</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s4-dm" class="tab-panel">
+        <div class="stage-grid">
+          <div class="stage">
+            <div class="stage-label"><span>私訊觸發 /settings</span><span class="badge-tag">#FEE75C</span></div>
+            <div class="dc-msg ephemeral">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:36</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#FEE75C">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-title">⚙️ 伺服器設定 — 連結自動展開</div>
+                      <div class="dc-embed-desc"><span class="dc-code">/settings</span> 只適用於伺服器，私訊對話一律使用預設設定。</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <div class="stage-label"><span>User-installed 未加入伺服器</span><span class="badge-tag">#FEE75C</span></div>
+            <div class="dc-msg ephemeral">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:36</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#FEE75C">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-title">⚙️ 伺服器設定 — 連結自動展開</div>
+                      <div class="dc-embed-desc">我沒有被加進這個伺服器，這個指令只能在我所在的伺服器裡使用。</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 05 -->
+    <section id="s5" class="section" data-keywords="memory show server catchup clear regenerate pagination">
+      <div class="section-head">
+        <span class="section-num">05</span>
+        <h3>長期記憶 /memory</h3>
+        <span class="section-src">cogs/memory/</span>
+      </div>
+      <p class="section-desc">個人記憶檢視與清除全程 Ephemeral，`/memory server catchup` 則公開貼出並把標題連結綁在最後讀取的訊息作為下次檢查點。</p>
+
+      <div class="tab-bar" data-tabs="s5">
+        <button class="tab-btn active" data-target="s5-show">/memory show 分頁</button>
+        <button class="tab-btn" data-target="s5-clear">/memory clear 確認</button>
+        <button class="tab-btn" data-target="s5-catchup">/memory server catchup</button>
+        <button class="tab-btn" data-target="s5-regen">/memory regenerate</button>
+      </div>
+
+      <div id="s5-show" class="tab-panel active">
+        <div class="stage">
+          <div class="stage-label"><span>MemoryPagesView · 可點 ◀ 上一頁 / 下一頁 ▶ 切換分頁</span><span class="badge-tag">#5865F2 · 180s</span></div>
+          <div class="dc-msg ephemeral">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:38</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#5865F2">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">🧠 我對你的記憶</div>
+                    <div class="dc-embed-desc" id="mem-page-body"></div>
+                    <div class="dc-embed-footer" id="mem-page-footer"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row">
+                  <button class="dc-btn secondary" type="button" id="mem-prev">◀ 上一頁</button>
+                  <button class="dc-btn secondary" type="button" id="mem-next">下一頁 ▶</button>
+                </div>
+              </div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s5-clear" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>MemoryClearConfirmView · 點擊按鈕可預覽確認清除與取消狀態</span><span class="badge-tag">#FEE75C → #57F287</span></div>
+          <div class="dc-msg ephemeral">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:39</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" id="mem-clear-embed" style="--embed-color:#FEE75C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">🧠 清除記憶</div>
+                    <div class="dc-embed-desc" id="mem-clear-desc">這會刪掉我對你的所有長期記憶：整理好的記憶、還沒整理的觀察、觀察記錄，還有語氣偏好，而且沒辦法復原。<br>伺服器記憶不受影響。清掉之後我會從下一次聊天重新開始認識你。<br>想先看看我記得什麼，可以先取消，用 <span class="dc-code">/memory show</span> 看過再回來。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-rows" id="mem-clear-btns">
+                <div class="dc-row">
+                  <button class="dc-btn danger" type="button" id="mem-clear-confirm">確認清除</button>
+                  <button class="dc-btn secondary" type="button" id="mem-clear-cancel">取消</button>
+                  <button class="dc-btn secondary" type="button" id="mem-clear-reset" style="display:none;">重播確認畫面</button>
+                </div>
+              </div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s5-catchup" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>公開貼出 · 標題連結指向最新訊息作為下次 checkpoint</span><span class="badge-tag">#57F287</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:40</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#57F287">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title"><a class="dc-link" href="#s5">📚 跟上進度</a></div>
+                    <div class="dc-embed-desc">讀了上次跟上進度之後的 24 則新對話，✏️ 已記入小本本：<br>- 群內週五晚上九點固定打 21 點跟射龍門<br>- 大家決定把這個群的 Twitter 自動展開先保留開啟</div>
+                    <div class="dc-embed-footer">由 Wei 發起 · 記下的內容會在背景併入伺服器記憶，過程中可能被合併或捨棄</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s5-regen" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>/memory regenerate · 背景重建排程回應</span><span class="badge-tag">#57F287</span></div>
+          <div class="dc-msg ephemeral">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:41</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#57F287">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">🔄 記憶重建</div>
+                    <div class="dc-embed-desc">已排程重建記憶，整理完成後可以用 <span class="dc-code">/memory show</span> 查看。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 06 -->
+    <section id="s6" class="section" data-keywords="economy balance vip give leaderboard loss_leaderboard casino pocat credit central_bank admin loan">
+      <div class="section-head">
+        <span class="section-num">06</span>
+        <h3>經濟與借貸系統</h3>
+        <span class="section-src">cogs/economy/</span>
+      </div>
+      <p class="section-desc">涵蓋財務總覽、VIP、轉帳、PIL 排行榜圖表（`economy_leaderboard.png` / `economy_loss_leaderboard.png`）、賭場與破貓錢包、個人信貸與中央銀行互動申請按鈕，以及管理員調帳。</p>
+
+      <div class="tab-bar" data-tabs="s6">
+        <button class="tab-btn active" data-target="s6-wallet">💰 財務 / VIP</button>
+        <button class="tab-btn" data-target="s6-boards">🏆 轉帳 / 排行榜</button>
+        <button class="tab-btn" data-target="s6-casino">🎰 賭場 / 破貓</button>
+        <button class="tab-btn" data-target="s6-loans">🏛️ 信貸 / 央行按鈕</button>
+        <button class="tab-btn" data-target="s6-admin">🛠️ /admin 調帳</button>
+      </div>
+
+      <div id="s6-wallet" class="tab-panel active">
+        <div class="stage-grid">
+          <div class="stage">
+            <div class="stage-label"><span>/balance（Ephemeral）</span><span class="badge-tag">#57F287</span></div>
+            <div class="dc-msg ephemeral">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:42</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#57F287">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author"><span class="dc-embed-author-icon">W</span>Wei 的財務總覽</div>
+                      <div class="dc-embed-title">💰 財務總覽</div>
+                      <div class="dc-embed-desc"><div class="md-h2">Wei</div>淨資產 <strong>125.4K 虛擬歡樂豆</strong></div>
+                      <div class="dc-fields">
+                        <div class="dc-field inline-2"><div class="dc-field-name">現金</div><div class="dc-field-val"><span class="dc-code">140.4K</span></div></div>
+                        <div class="dc-field inline-2"><div class="dc-field-name">債務</div><div class="dc-field-val">本金 <span class="dc-code">15K</span><br>利息 <span class="dc-code">0</span></div></div>
+                        <div class="dc-field"><div class="dc-field-name">會員狀態</div><div class="dc-field-val">👑 VIP<br>Blackjack 贏局例 <span class="dc-code">+10K</span> → <span class="dc-code">+11K</span></div></div>
+                      </div>
+                      <div class="dc-embed-footer">帳號 1,420 天 · 👑 VIP</div>
+                    </div>
+                    <div class="dc-embed-thumb">W</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <div class="stage-label"><span>/vip 升級成功</span><span class="badge-tag">#F1C40F</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:42</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#F1C40F">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author"><span class="dc-embed-author-icon">W</span>Wei</div>
+                      <div class="dc-embed-title">👑 升級 VIP 成功</div>
+                      <div class="dc-embed-desc"><div class="md-h3">-50K 虛擬歡樂豆 扣款</div>Blackjack 贏局加成已生效</div>
+                      <div class="dc-fields">
+                        <div class="dc-field"><div class="dc-field-name">👑 VIP加成</div><div class="dc-field-val">Blackjack 贏局例 <span class="dc-code">+10K</span> → <span class="dc-code">+11K</span></div></div>
+                        <div class="dc-field"><div class="dc-field-name">目前餘額</div><div class="dc-field-val"><span class="dc-code">90.4K</span></div></div>
+                      </div>
+                    </div>
+                    <div class="dc-embed-thumb">W</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s6-boards" class="tab-panel">
+        <div class="stage-grid">
+          <div class="stage">
+            <div class="stage-label"><span>/give 轉帳完成（5% 轉帳稅）</span><span class="badge-tag">#5865F2</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:43</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#5865F2">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author"><span class="dc-embed-author-icon">W</span>Wei</div>
+                      <div class="dc-embed-title">💸 轉帳完成</div>
+                      <div class="dc-embed-desc">
+                        <div class="md-h3">10K 虛擬歡樂豆</div>
+                        <span class="dc-mention">@Wei</span> → <span class="dc-mention">@Alice</span><br>
+                        實收 9.5K 虛擬歡樂豆（已扣稅 500 虛擬歡樂豆）
+                      </div>
+                      <div class="dc-fields">
+                        <div class="dc-field"><div class="dc-field-name">轉帳後餘額</div><div class="dc-field-val"><strong>Wei</strong> <span class="dc-code">130.4K</span><br><strong>Alice</strong> <span class="dc-code">42.1K</span></div></div>
+                      </div>
+                    </div>
+                    <div class="dc-embed-thumb">A</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <div class="stage-label"><span>/leaderboard（內嵌 Pillow PNG 排行表）</span><span class="badge-tag">#FEE75C + PNG</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:44</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#FEE75C">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author"><span class="dc-embed-author-icon">W</span>目前第一名</div>
+                      <div class="dc-embed-title">🏆 虛擬歡樂豆 Top 10</div>
+                      <div class="dc-embed-desc"><div class="md-h3">公開排行榜</div>依可用餘額排序。</div>
+                      <div class="pil-board">
+                        <div class="pil-board-title" style="color:rgb(254,231,92);">虛擬歡樂豆 排行榜</div>
+                        <div class="pil-board-sub">Top 10 public balances · attachment://economy_leaderboard.png</div>
+                        <table class="pil-table">
+                          <thead><tr><th>#</th><th>玩家</th><th>餘額</th></tr></thead>
+                          <tbody>
+                            <tr><td style="color:rgb(254,231,92);font-weight:700;">1</td><td>Wei</td><td>140.4K</td></tr>
+                            <tr><td>2</td><td>Alice</td><td>98.2K</td></tr>
+                            <tr><td>3</td><td>Bob</td><td>64.5K</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s6-casino" class="tab-panel">
+        <div class="stage-grid">
+          <div class="stage">
+            <div class="stage-label"><span>/casino 賭場系統損益</span><span class="badge-tag">#57F287 / #ED4245 / #EB459E</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:45</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#57F287">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author">賭場系統</div>
+                      <div class="dc-embed-title">🎰 賭場戰績</div>
+                      <div class="dc-embed-desc"><div class="md-h2">+ <strong>482.5K 虛擬歡樂豆</strong></div></div>
+                      <div class="dc-fields">
+                        <div class="dc-field"><div class="dc-field-name">流水</div><div class="dc-field-val">贏到 <span class="dc-code">1.92M</span><br>賠出 <span class="dc-code">1.44M</span></div></div>
+                      </div>
+                      <div class="dc-embed-footer">跨伺服器累積 | 賭場資金無上限</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <div class="stage-label"><span>/pocat 破貓玩家錢包</span><span class="badge-tag">#57F287</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:45</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#57F287">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author"><span class="dc-embed-author-icon">破</span>破貓</div>
+                      <div class="dc-embed-title">🐱 破貓戰績</div>
+                      <div class="dc-embed-desc"><div class="md-h2"><strong>85.2K 虛擬歡樂豆</strong></div></div>
+                      <div class="dc-fields">
+                        <div class="dc-field"><div class="dc-field-name">流水</div><div class="dc-field-val">贏到 <span class="dc-code">210K</span><br>賠出 <span class="dc-code">124.8K</span></div></div>
+                      </div>
+                      <div class="dc-embed-footer">bot 玩家錢包</div>
+                    </div>
+                    <div class="dc-embed-thumb">破</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s6-loans" class="tab-panel">
+        <div class="stage-grid">
+          <div class="stage">
+            <div class="stage-label"><span>/central_bank borrow · 可點下方按鈕體驗核准 / 拒絕</span><span class="badge-tag">#1ABC9C · 180s</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:46</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" id="loan-embed" style="--embed-color:#1ABC9C">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-author"><span class="dc-embed-author-icon">B</span>Bob</div>
+                      <div class="dc-embed-title" id="loan-title">🏛️ 央行借款申請已建立</div>
+                      <div class="dc-embed-desc" id="loan-desc"><div class="md-h3"><span class="dc-mention">@Bob</span></div>20K 虛擬歡樂豆</div>
+                      <div class="dc-fields" id="loan-fields">
+                        <div class="dc-field"><div class="dc-field-name">條款</div><div class="dc-field-val">本金 <span class="dc-code">20K</span><br>利率 <span class="dc-code">每月 5%</span><br>利息採單利，依經過天數按比例計算<br>還款會先抵利息，再抵本金；貸方可催收</div></div>
+                      </div>
+                      <div class="dc-embed-footer" id="loan-footer">伺服器管理員可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="dc-rows">
+                  <div class="dc-row">
+                    <button class="dc-btn success" type="button" id="loan-approve">✅ 批准</button>
+                    <button class="dc-btn danger" type="button" id="loan-reject">✖️ 拒絕</button>
+                    <button class="dc-btn secondary" type="button" id="loan-cancel">🚫 取消</button>
+                    <button class="dc-btn secondary" type="button" id="loan-reset" style="display:none;">重播申請</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <div class="stage-label"><span>/central_bank status</span><span class="badge-tag">#1ABC9C</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:46</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#1ABC9C">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-title">🏛️ 中央銀行狀態</div>
+                      <div class="dc-embed-desc"><div class="md-h2">可放貸 <strong>320K 虛擬歡樂豆</strong></div></div>
+                      <div class="dc-fields">
+                        <div class="dc-field"><div class="dc-field-name">本伺服器擔保</div><div class="dc-field-val">參與者 18 人<br>參與者正餘額 <span class="dc-code">640K</span></div></div>
+                        <div class="dc-field"><div class="dc-field-name">全行未還本金</div><div class="dc-field-val"><span class="dc-code">85K</span></div></div>
+                        <div class="dc-field"><div class="dc-field-name">央行本錢</div><div class="dc-field-val">起始資本 <span class="dc-code">500K</span><br>累計利息 <span class="dc-code">14.2K</span></div></div>
+                      </div>
+                      <div class="dc-embed-footer">實際可借還會受你個人的信用上限限制</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s6-admin" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>/admin collect_tax（限 economy admin；扣到 0 為止）</span><span class="badge-tag">#3498DB</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:47</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#3498DB">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author"><span class="dc-embed-author-icon">W</span>Wei</div>
+                    <div class="dc-embed-title">管理員收稅</div>
+                    <div class="dc-embed-desc"><div class="md-h3"><span class="dc-mention">@Bob</span></div>-1.2K 虛擬歡樂豆</div>
+                    <div class="dc-fields">
+                      <div class="dc-field"><div class="dc-field-name">操作結果</div><div class="dc-field-val">申請 <span class="dc-code">-5K</span><br>實際 <span class="dc-code">-1.2K</span><br>餘額 <span class="dc-code">0</span></div></div>
+                    </div>
+                    <div class="dc-embed-footer">收稅最多扣到餘額 0</div>
+                  </div>
+                  <div class="dc-embed-thumb">B</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 07 -->
+    <section id="s7" class="section" data-keywords="games blackjack dragon_gate lobby modal history casino table">
+      <div class="section-head">
+        <span class="section-num">07</span>
+        <h3>賭場遊戲牌桌與大廳</h3>
+        <span class="section-src">cogs/games/</span>
+      </div>
+      <p class="section-desc">包含多人二十一點（開桌大廳、雙卡進行中牌桌、保險按鈕、結算與歷史紀錄）與射龍門（開桌大廳、進行中彩金池牌桌、下拉選單下注與自訂金額 Modal）。</p>
+
+      <div class="tab-bar" data-tabs="s7">
+        <button class="tab-btn active" data-target="s7-bj-table">♠️ 21 點進行中</button>
+        <button class="tab-btn" data-target="s7-bj-lobby">♠️ 21 點大廳 / 紀錄</button>
+        <button class="tab-btn" data-target="s7-dg-table">♦️ 射龍門進行中 + Modal</button>
+        <button class="tab-btn" data-target="s7-dg-final">♦️ 射龍門結算</button>
+      </div>
+
+      <div id="s7-bj-table" class="tab-panel active">
+        <div class="stage">
+          <div class="stage-label"><span>BlackjackView · 莊家卡 + 玩家座位卡（藍=輪到 / 綠=贏 / 紅=輸 / 黃=待輪或和）</span><span class="badge-tag">PressBoundView</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:50</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#FEE75C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author">賭場系統</div>
+                    <div class="dc-embed-title">♠️ 莊家</div>
+                    <div class="dc-embed-desc">
+                      <div class="md-h1">🂠  K♥</div>
+                      <span class="dc-subtext">莊家暗牌待揭示</span>
+                    </div>
+                    <div class="dc-embed-footer">莊家規則: &lt;=16 必補, soft 17 補, hard 17+ 停</div>
+                  </div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#5865F2">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author">Wei</div>
+                    <div class="dc-embed-desc">
+                      <div class="md-h1">A♠  8♦</div>
+                      <span class="dc-subtext">軟 19 · 下注 10K · 輪到你</span>
+                    </div>
+                    <div class="dc-embed-footer">進行中 · 不操作 180 秒會自動 stand</div>
+                  </div>
+                  <div class="dc-embed-thumb">W</div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#57F287">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-author">破貓</div>
+                    <div class="dc-embed-desc">
+                      <div class="md-h1">A♣  J♠</div>
+                      <strong>✨ 天生 Blackjack！</strong>
+                      <span class="dc-subtext">本局 +15K · 餘額 100.2K</span>
+                    </div>
+                    <div class="dc-embed-footer">已結算</div>
+                  </div>
+                  <div class="dc-embed-thumb">破</div>
+                </div>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row">
+                  <button class="dc-btn primary" type="button">🃏 再要一張</button>
+                  <button class="dc-btn secondary" type="button">✋ 停手</button>
+                </div>
+                <div class="dc-row">
+                  <button class="dc-btn success" type="button">💰 加倍</button>
+                  <button class="dc-btn success" type="button" disabled>🪓 分牌</button>
+                  <button class="dc-btn danger" type="button">🏳️ 投降</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="inline-note">保險階段（莊家明牌 A）Row 1 改顯示：<code>🛡️ 保險 ½</code>（綠）與 <code>❌ 不保險</code>（灰）。</div>
+        </div>
+      </div>
+
+      <div id="s7-bj-lobby" class="tab-panel">
+        <div class="stage-grid">
+          <div class="stage">
+            <div class="stage-label"><span>BlackjackLobbyView</span><span class="badge-tag">#FEE75C</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:49</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#FEE75C">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-title">♠️ 二十一點 · 開桌準備</div>
+                      <div class="dc-fields">
+                        <div class="dc-field"><div class="dc-field-name">👥 桌上玩家 (2/5)</div><div class="dc-field-val"><strong>1. Wei</strong> · 下注 <span class="dc-code">10K</span><br><strong>2. 破貓</strong> · 下注 <span class="dc-code">10K</span></div></div>
+                      </div>
+                      <div class="dc-embed-footer">基本下注 10K 虛擬歡樂豆</div>
+                    </div>
+                    <div class="dc-embed-thumb">W</div>
+                  </div>
+                </div>
+                <div class="dc-rows">
+                  <div class="dc-row">
+                    <button class="dc-btn success" type="button">✅ 加入</button>
+                    <button class="dc-btn secondary" type="button">🚪 離開</button>
+                    <button class="dc-btn primary" type="button">▶️ 開始</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <div class="stage-label"><span>/games blackjack_history</span><span class="badge-tag">history_text.py</span></div>
+            <div class="dc-msg">
+              <div class="dc-avatar">破</div>
+              <div class="dc-msg-body">
+                <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:51</span></div>
+                <div class="dc-embeds">
+                  <div class="dc-embed" style="--embed-color:#57F287">
+                    <div class="dc-embed-main">
+                      <div class="dc-embed-title">🃏 Wei 的二十一點紀錄</div>
+                      <div class="dc-embed-desc">
+                        近 3 場 · 2 勝 1 敗 0 和 · 淨損益 +16,000
+                        <div class="dc-pre">11/25 03:50  A♠ 8♦ (19)  K♥ 8♣ (18)  10,000  +11,000 WIN
+11/25 03:45  Q♦ 9♠ (19)  9♣ 7♦ 6♠ (22)  5,000   +5,500 WIN
+11/25 03:40  7♥ 8♠ 9♣ (24)  K♠ 7♣ (17)  500     -500 BUST</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s7-dg-table" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>DragonGateView · 選「✏️ 自訂」可開啟真實樣式下注 Modal</span><span class="badge-tag">Select + Modal</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:52</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#FEE75C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">♦️ 射龍門 · 第 3 手</div>
+                    <div class="dc-embed-desc">
+                      <div class="md-h2">💰 彩金池 84.5K</div>
+                      <div class="md-h1">3♠  ──  ?  ──  Q♥</div>
+                      <div class="md-h2">🎯 輪到 Wei</div>
+                    </div>
+                    <div class="dc-embed-footer">180 秒無互動會結束牌桌</div>
+                  </div>
+                  <div class="dc-embed-thumb">W</div>
+                </div>
+                <div class="dc-embed" style="--embed-color:#FEE75C">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-desc">
+                      <strong>紀錄:</strong>
+                      <div class="dc-pre">#1 Alice  4♣-J♦ → 8♠  +5K
+#2 Bob    5♥-9♠ → 5♦  -10K (撞柱)
+
+Wei    +0
+Alice  +5K
+Bob    -10K</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="dc-rows">
+                <div class="dc-row">
+                  <select class="dc-select" id="dg-bet-select" aria-label="選擇下注金額">
+                    <option value="">🪙 選擇下注金額</option>
+                    <option value="min">🪙 底注 1K</option>
+                    <option value="max">💰 全池 84.5K</option>
+                    <option value="custom">✏️ 自訂（彈出視窗輸入精確金額）</option>
+                  </select>
+                </div>
+                <div class="dc-row">
+                  <button class="dc-btn danger" type="button">🚪 離桌</button>
+                  <button class="dc-btn secondary" type="button" disabled>⬆️ 同點猜大</button>
+                  <button class="dc-btn secondary" type="button" disabled>⬇️ 同點猜小</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s7-dg-final" class="tab-panel">
+        <div class="stage">
+          <div class="stage-label"><span>build_dragon_gate_final_embed</span><span class="badge-tag">#57F287</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:54</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#57F287">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">♦️ 射龍門 · 2 贏 1 輸 · 淨 +12K</div>
+                    <div class="dc-embed-desc">
+                      <div class="md-h3">🏁 結束原因</div>所有玩家已離桌<br>
+                      <div class="md-h2">💰 彩金池 62.5K</div>
+                      <div class="md-h3">⏮️ 最後一手</div>Wei · 3♠ ── 7♦ ── Q♥ · 進球 +20K<br>
+                      <div class="md-h3">結算</div>
+                      <strong>Wei</strong><br>🎉 <strong>+20K</strong><span class="dc-subtext">餘額 160.4K · 已離桌</span><br>
+                      <strong>Bob</strong><br>😢 <strong>-8K</strong><span class="dc-subtext">餘額 56.5K · 已離桌</span>
+                    </div>
+                  </div>
+                  <div class="dc-embed-thumb">W</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════ 08 -->
+    <section id="s8" class="section" data-keywords="video download_video clean_threads_url ping template reaction">
+      <div class="section-head">
+        <span class="section-num">08</span>
+        <h3>工具與其他指令</h3>
+        <span class="section-src">cogs/video/ · cogs/parse_threads/ · cogs/template/</span>
+      </div>
+      <p class="section-desc">影片下載、Threads 連結清理與延遲測試指令的回覆樣式。</p>
+
+      <div class="stage-grid">
+        <div class="stage">
+          <div class="stage-label"><span>/download_video 交付</span><span class="badge-tag">cogs/video/cog.py</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:55</span></div>
+              <div class="dc-text"><span class="dc-subtext">影片大小 6.2 MB · <a class="dc-link" href="#s8">原始連結</a></span></div>
+              <div class="dc-attach">
+                <div class="dc-attach-icon">🎬</div>
+                <div>
+                  <div class="dc-attach-name">video_clip.mp4</div>
+                  <div class="dc-attach-size">6.2 MB</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div class="stage-label"><span>/ping 延遲測試</span><span class="badge-tag">#57F287</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:56</span></div>
+              <div class="dc-embeds">
+                <div class="dc-embed" style="--embed-color:#57F287">
+                  <div class="dc-embed-main">
+                    <div class="dc-embed-title">🏓 Pong!</div>
+                    <div class="dc-fields">
+                      <div class="dc-field"><div class="dc-field-name">Bot Latency</div><div class="dc-field-val"><span class="dc-code">34.2ms</span></div></div>
+                    </div>
+                    <div class="dc-embed-footer">Requested by Wei · 今天 03:56</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div class="stage-label"><span>/clean_threads_url（Ephemeral）</span><span class="badge-tag">cogs/parse_threads/</span></div>
+          <div class="dc-msg ephemeral">
+            <div class="dc-avatar">破</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">破貓</span><span class="dc-app">APP</span><span class="dc-ts">今天 03:56</span></div>
+              <div class="dc-text"><a class="dc-link" href="#s8">https://www.threads.com/@alice/post/ABC123xyz</a></div>
+              <div class="dc-ephemeral-note">👁️ 只有你看得到這些訊息 · 已移除分享追蹤參數</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div class="stage-label"><span>template 關鍵字反應</span><span class="badge-tag">on_message</span></div>
+          <div class="dc-msg">
+            <div class="dc-avatar user">W</div>
+            <div class="dc-msg-body">
+              <div class="dc-header"><span class="dc-name">Wei</span><span class="dc-ts">今天 03:57</span></div>
+              <div class="dc-text">可愛捏</div>
+              <div class="dc-reactions">
+                <span class="dc-react me">↖️ 1</span>
+              </div>
+              <span class="dc-subtext">另一觸發詞：<code>debug</code> → 🤬</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="page-footer">
+      <div>破貓 UI 預覽手冊 · 對應 <code>src/discordbot/</code> 全介面元件</div>
+      <div>視覺預覽參考用；實際文案與行為以原始碼為唯一基準。</div>
+    </footer>
+  </main>
+</div>
+
+<!-- Reusable Discord Modal Dialog (DownvoteReasonModal / DragonGateBetModal) -->
+<div class="dc-modal-backdrop" id="demo-modal-backdrop" role="dialog" aria-modal="true">
+  <div class="dc-modal">
+    <div class="dc-modal-head">
+      <span id="demo-modal-title">Modal</span>
+      <button class="dc-btn secondary" type="button" id="demo-modal-close" style="padding:4px 9px;">✕</button>
+    </div>
+    <div class="dc-modal-body" id="demo-modal-body"></div>
+    <div class="dc-modal-foot">
+      <button class="dc-btn secondary" type="button" id="demo-modal-cancel">取消</button>
+      <button class="dc-btn primary" type="button" id="demo-modal-submit">提交</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Theme switcher
+  const root = document.documentElement;
+  const darkBtn = document.getElementById("theme-dark");
+  const lightBtn = document.getElementById("theme-light");
+  function setTheme(theme) {
+    root.setAttribute("data-theme", theme);
+    darkBtn.classList.toggle("active", theme === "dark");
+    lightBtn.classList.toggle("active", theme === "light");
+  }
+  darkBtn.addEventListener("click", () => setTheme("dark"));
+  lightBtn.addEventListener("click", () => setTheme("light"));
+
+  // Section search filter
+  const filterInput = document.getElementById("filter-input");
+  const sections = Array.from(document.querySelectorAll(".section"));
+  filterInput.addEventListener("input", () => {
+    const q = filterInput.value.trim().toLowerCase();
+    sections.forEach((sec) => {
+      if (!q) { sec.classList.remove("hidden"); return; }
+      const hay = (sec.dataset.keywords + " " + sec.textContent).toLowerCase();
+      sec.classList.toggle("hidden", !hay.includes(q));
+    });
+  });
+
+  // Generic tab groups
+  document.querySelectorAll(".tab-bar").forEach((bar) => {
+    const buttons = Array.from(bar.querySelectorAll(".tab-btn"));
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        buttons.forEach((b) => {
+          b.classList.toggle("active", b === btn);
+          const panel = document.getElementById(b.dataset.target);
+          if (panel) panel.classList.toggle("active", b === btn);
+        });
+      });
+    });
+  });
+
+  // Reusable modal
+  const backdrop = document.getElementById("demo-modal-backdrop");
+  const modalTitle = document.getElementById("demo-modal-title");
+  const modalBody = document.getElementById("demo-modal-body");
+  let onModalSubmit = null;
+
+  function openModal(title, bodyHtml, submitHandler) {
+    modalTitle.textContent = title;
+    modalBody.innerHTML = bodyHtml;
+    onModalSubmit = submitHandler;
+    backdrop.classList.add("open");
+  }
+  function closeModal() {
+    backdrop.classList.remove("open");
+    onModalSubmit = null;
+  }
+  document.getElementById("demo-modal-close").addEventListener("click", closeModal);
+  document.getElementById("demo-modal-cancel").addEventListener("click", closeModal);
+  document.getElementById("demo-modal-submit").addEventListener("click", () => {
+    if (onModalSubmit) onModalSubmit();
+    closeModal();
+  });
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeModal(); });
+
+  // Section 01: Interactive feedback buttons (ReplyFeedbackView / DownvoteReasonView / Modal)
+  const drawer = document.getElementById("demo-feedback-drawer");
+  const fbText = document.getElementById("demo-feedback-text");
+  const fbBtns = document.getElementById("demo-feedback-buttons");
+  const policy = '<span class="dc-subtext">評分將用於架構改進，請依實際體驗選擇，惡意刷評將禁止使用</span>';
+  const reasons = [
+    ["off_topic", "答非所問"],
+    ["inaccurate", "資訊錯誤"],
+    ["tone", "語氣怪"],
+    ["verbose", "太囉嗦"],
+    ["other", "其他"]
+  ];
+  let fbState = { vote: null, reasonTag: null, reasonText: "" };
+
+  function renderFeedbackDrawer() {
+    if (!fbState.vote) { drawer.style.display = "none"; return; }
+    drawer.style.display = "grid";
+    fbBtns.innerHTML = "";
+    if (fbState.vote === "up") {
+      fbText.innerHTML = "<p>已記錄 👍</p>" + policy;
+      const row = document.createElement("div");
+      row.className = "dc-row";
+      const cancel = document.createElement("button");
+      cancel.className = "dc-btn secondary";
+      cancel.textContent = "取消評分";
+      cancel.addEventListener("click", () => {
+        fbState = { vote: null, reasonTag: null, reasonText: "" };
+        fbText.innerHTML = "<p>已取消評分</p>";
+        fbBtns.innerHTML = "";
+      });
+      row.appendChild(cancel);
+      fbBtns.appendChild(row);
+      return;
+    }
+    let headline = "已記錄 👎，想順手點個原因嗎?（選填）";
+    if (fbState.reasonTag === "other" && fbState.reasonText) {
+      headline = "已記錄 👎（其他：" + escapeHtml(fbState.reasonText) + "）";
+    } else if (fbState.reasonTag) {
+      const found = reasons.find(([k]) => k === fbState.reasonTag);
+      if (found) headline = "已記錄 👎（" + found[1] + "）";
+    }
+    fbText.innerHTML = "<p>" + headline + "</p>" + policy;
+    const row0 = document.createElement("div");
+    row0.className = "dc-row";
+    reasons.forEach(([tag, label]) => {
+      const b = document.createElement("button");
+      b.className = "dc-btn " + (fbState.reasonTag === tag ? "primary" : "secondary");
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        if (tag === "other") {
+          openModal(
+            "補充倒讚原因",
+            '<label class="dc-modal-label">哪裡覺得不好? <span class="req">*</span></label>' +
+              '<textarea id="modal-reason-input" class="dc-modal-textarea" maxlength="300" placeholder="例如：忘記前面的記憶、程式碼有錯、沒有看我附的圖...">' +
+              escapeHtml(fbState.reasonText || "") + "</textarea>",
+            () => {
+              const val = (document.getElementById("modal-reason-input").value || "").trim();
+              if (val) { fbState.reasonTag = "other"; fbState.reasonText = val; renderFeedbackDrawer(); }
+            }
+          );
+        } else {
+          fbState.reasonTag = tag;
+          fbState.reasonText = "";
+          renderFeedbackDrawer();
+        }
+      });
+      row0.appendChild(b);
+    });
+    const row1 = document.createElement("div");
+    row1.className = "dc-row";
+    const cancel = document.createElement("button");
+    cancel.className = "dc-btn secondary";
+    cancel.textContent = "取消評分";
+    cancel.addEventListener("click", () => {
+      fbState = { vote: null, reasonTag: null, reasonText: "" };
+      fbText.innerHTML = "<p>已取消評分</p>";
+      fbBtns.innerHTML = "";
+    });
+    row1.appendChild(cancel);
+    fbBtns.appendChild(row0);
+    fbBtns.appendChild(row1);
+  }
+
+  document.getElementById("demo-vote-up").addEventListener("click", () => {
+    fbState = { vote: "up", reasonTag: null, reasonText: "" };
+    renderFeedbackDrawer();
+  });
+  document.getElementById("demo-vote-down").addEventListener("click", () => {
+    fbState = { vote: "down", reasonTag: null, reasonText: "" };
+    renderFeedbackDrawer();
+  });
+  document.getElementById("demo-vote-regen").addEventListener("click", () => {
+    drawer.style.display = "grid";
+    fbText.innerHTML = "<p>🔄 已觸發原發問者就地重新生成（完成後舊回覆會被替換並自動記錄隱含倒讚）。</p>";
+    fbBtns.innerHTML = "";
+  });
+
+  // Section 04: Interactive /settings panel
+  const platforms = [
+    { key: "twitter", label: "Twitter / X", btn: "Twitter", emoji: "🐦", def: true },
+    { key: "threads", label: "Threads", btn: "Threads", emoji: "🧵", def: true },
+    { key: "facebook", label: "Facebook", btn: "Facebook", emoji: "📘", def: true },
+    { key: "instagram", label: "Instagram", btn: "Instagram", emoji: "📷", def: true },
+    { key: "douyin", label: "Douyin", btn: "Douyin", emoji: "🎵", def: true }
+  ];
+  const overrides = { twitter: false };
+  const settingsLines = document.getElementById("settings-embed-lines");
+  const settingsRow = document.getElementById("settings-toggle-row");
+  const settingsReset = document.getElementById("settings-reset-btn");
+
+  function renderSettings() {
+    settingsLines.innerHTML = platforms.map((p) => {
+      const hasOvr = Object.prototype.hasOwnProperty.call(overrides, p.key);
+      const eff = hasOvr ? overrides[p.key] : p.def;
+      return p.emoji + " <strong>" + p.label + "</strong> — " + (eff ? "開啟" : "關閉") + "（" + (hasOvr ? "已自訂" : "預設") + "）";
+    }).join("<br>");
+
+    settingsRow.innerHTML = "";
+    platforms.forEach((p) => {
+      const hasOvr = Object.prototype.hasOwnProperty.call(overrides, p.key);
+      const eff = hasOvr ? overrides[p.key] : p.def;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "dc-btn " + (eff ? "success" : "secondary");
+      b.textContent = p.emoji + " " + p.btn;
+      b.addEventListener("click", () => {
+        const next = !eff;
+        if (next === p.def) delete overrides[p.key];
+        else overrides[p.key] = next;
+        renderSettings();
+      });
+      settingsRow.appendChild(b);
+    });
+    settingsReset.disabled = Object.keys(overrides).length === 0;
+  }
+  settingsReset.addEventListener("click", () => {
+    Object.keys(overrides).forEach((k) => delete overrides[k]);
+    renderSettings();
+  });
+  renderSettings();
+
+  // Section 05: Memory pagination & clear demo
+  const memPages = [
+    '<div class="md-h1">全部聊天都看得到</div>- 慣用繁體中文交流，偏好直接給結論<br>- 負責維護破貓 Discord Bot（Python / uv / SQLite）',
+    '<div class="md-h1">只有 破貓測試群 看得到</div>- 週五晚上常開 21 點跟射龍門牌桌<br>- 喜歡比較不同 LLM 在盲測裡的回覆風格'
+  ];
+  let memIdx = 0;
+  const memBody = document.getElementById("mem-page-body");
+  const memFoot = document.getElementById("mem-page-footer");
+  const memPrev = document.getElementById("mem-prev");
+  const memNext = document.getElementById("mem-next");
+  function renderMemPage() {
+    memBody.innerHTML = memPages[memIdx];
+    memFoot.textContent = "第 " + (memIdx + 1) + "/" + memPages.length + " 頁 | 記憶會在你與我對話後於背景慢慢更新";
+    memPrev.disabled = memIdx === 0;
+    memNext.disabled = memIdx === memPages.length - 1;
+  }
+  memPrev.addEventListener("click", () => { if (memIdx > 0) { memIdx--; renderMemPage(); } });
+  memNext.addEventListener("click", () => { if (memIdx < memPages.length - 1) { memIdx++; renderMemPage(); } });
+  renderMemPage();
+
+  const clearEmbed = document.getElementById("mem-clear-embed");
+  const clearDesc = document.getElementById("mem-clear-desc");
+  const clearOrigDesc = clearDesc.innerHTML;
+  const clearConfirm = document.getElementById("mem-clear-confirm");
+  const clearCancel = document.getElementById("mem-clear-cancel");
+  const clearReset = document.getElementById("mem-clear-reset");
+  function setClearResult(color, text) {
+    clearEmbed.style.setProperty("--embed-color", color);
+    clearDesc.textContent = text;
+    clearConfirm.style.display = "none";
+    clearCancel.style.display = "none";
+    clearReset.style.display = "inline-flex";
+  }
+  clearConfirm.addEventListener("click", () => setClearResult("#57F287", "已經把我對你的記憶都清掉了，從下一次聊天開始重新認識你。"));
+  clearCancel.addEventListener("click", () => setClearResult("#5865F2", "已取消，沒有清掉任何東西。"));
+  clearReset.addEventListener("click", () => {
+    clearEmbed.style.setProperty("--embed-color", "#FEE75C");
+    clearDesc.innerHTML = clearOrigDesc;
+    clearConfirm.style.display = "inline-flex";
+    clearCancel.style.display = "inline-flex";
+    clearReset.style.display = "none";
+  });
+
+  // Section 06: Central bank loan decision buttons
+  const loanEmbed = document.getElementById("loan-embed");
+  const loanTitle = document.getElementById("loan-title");
+  const loanDesc = document.getElementById("loan-desc");
+  const loanFields = document.getElementById("loan-fields");
+  const loanFooter = document.getElementById("loan-footer");
+  const loanOrig = { title: loanTitle.textContent, desc: loanDesc.innerHTML, fields: loanFields.innerHTML, footer: loanFooter.textContent };
+  const loanBtns = ["loan-approve", "loan-reject", "loan-cancel"].map((id) => document.getElementById(id));
+  const loanReset = document.getElementById("loan-reset");
+  function settleLoan(color, title, desc, fieldsHtml) {
+    loanEmbed.style.setProperty("--embed-color", color);
+    loanTitle.textContent = title;
+    loanDesc.innerHTML = desc;
+    loanFields.innerHTML = fieldsHtml;
+    loanFooter.textContent = "";
+    loanBtns.forEach((b) => { b.style.display = "none"; });
+    loanReset.style.display = "inline-flex";
+  }
+  document.getElementById("loan-approve").addEventListener("click", () => settleLoan(
+    "#1ABC9C",
+    "🏛️ 央行借款已批准",
+    '<div class="md-h3">20K 虛擬歡樂豆 已入帳</div>',
+    '<div class="dc-field inline-2"><div class="dc-field-name">批准者</div><div class="dc-field-val"><span class="dc-mention">@Wei</span></div></div>' +
+    '<div class="dc-field inline-2"><div class="dc-field-name">央行剩餘額度</div><div class="dc-field-val"><span class="dc-code">300K</span></div></div>'
+  ));
+  document.getElementById("loan-reject").addEventListener("click", () => settleLoan(
+    "#ED4245",
+    "🏛️ 央行借款已拒絕",
+    '<div class="md-h3">申請已由伺服器管理員拒絕</div>',
+    ""
+  ));
+  document.getElementById("loan-cancel").addEventListener("click", () => settleLoan(
+    "#FEE75C",
+    "🏛️ 央行借款已取消",
+    '<div class="md-h3">發起者已自行取消申請</div>',
+    ""
+  ));
+  loanReset.addEventListener("click", () => {
+    loanEmbed.style.setProperty("--embed-color", "#1ABC9C");
+    loanTitle.textContent = loanOrig.title;
+    loanDesc.innerHTML = loanOrig.desc;
+    loanFields.innerHTML = loanOrig.fields;
+    loanFooter.textContent = loanOrig.footer;
+    loanBtns.forEach((b) => { b.style.display = "inline-flex"; });
+    loanReset.style.display = "none";
+  });
+
+  // Section 07: Dragon Gate custom bet modal
+  const dgSelect = document.getElementById("dg-bet-select");
+  dgSelect.addEventListener("change", () => {
+    if (dgSelect.value === "custom") {
+      openModal(
+        "自訂下注",
+        '<label class="dc-modal-label">下注金額 <span class="req">*</span></label>' +
+          '<input type="text" class="dc-modal-input" placeholder="1,000 到 84,500" value="15,000">',
+        () => {}
+      );
+      dgSelect.value = "";
+    }
+  });
+})();
+</script>
