@@ -108,16 +108,6 @@ def _needs_files_api(config: LLMConfig) -> bool:
     return config.file_api_enabled and config.gemini_key_configured
 
 
-def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
-    """Returns whether Douyin media download and Files API upload are enabled."""
-    return config.douyin_video_enabled and _needs_files_api(config=config)
-
-
-def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
-    """Returns whether Bilibili media download and Files API upload are enabled."""
-    return config.bilibili_video_enabled and _needs_files_api(config=config)
-
-
 # Sources with `search_replied_to_message=True` fetch comments/replies omitted by auto-expansion.
 LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
@@ -157,13 +147,13 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         post_link=DOUYIN_POST_LINK,
         build=_build_douyin_link_context,
         timeout_notice=DOUYIN_TIMEOUT_NOTICE,
-        media_ingest_allowed=_douyin_media_ingest_allowed,
+        media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="bilibili",
         post_link=BILIBILI_POST_LINK,
         build=_build_bilibili_link_context,
         timeout_notice=BILIBILI_TIMEOUT_NOTICE,
-        media_ingest_allowed=_bilibili_media_ingest_allowed,
+        media_ingest_allowed=_needs_files_api,
     ),
 )

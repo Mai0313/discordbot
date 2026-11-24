@@ -209,16 +209,11 @@ class MediaReplyRoutes(BaseModel):
                     model=toolkit.runtime_models.image_model.name,
                     has_source_images=bool(image_bytes_list),
                 )
-                conversation_context = (
-                    await self._load_refine_context()
-                    if self.answer.config.image_refine_prompt_enabled
-                    else None
-                )
+                conversation_context = await self._load_refine_context()
                 refined_prompt = await toolkit.prompt_generator.refine(
                     user_prompt=user_prompt,
                     instructions=IMAGE_PROMPT,
                     end_user_id=message.author.name,
-                    enabled=self.answer.config.image_refine_prompt_enabled,
                     image_bytes_list=image_bytes_list or None,
                     conversation_context=conversation_context,
                 )
@@ -298,16 +293,11 @@ class MediaReplyRoutes(BaseModel):
                             message=message, replied_to=replied_to
                         )
                     )[:MAX_VIDEO_REFERENCE_IMAGES]
-                    conversation_context = (
-                        await self._load_refine_context()
-                        if self.answer.config.video_refine_prompt_enabled
-                        else None
-                    )
+                    conversation_context = await self._load_refine_context()
                     refined_prompt = await toolkit.prompt_generator.refine(
                         user_prompt=user_prompt,
                         instructions=VIDEO_PROMPT,
                         end_user_id=message.author.name,
-                        enabled=self.answer.config.video_refine_prompt_enabled,
                         image_bytes_list=[loaded.data for loaded in images] or None,
                         conversation_context=conversation_context,
                     )

@@ -146,7 +146,7 @@ async def test_the_route_reads_neither_memory_block_without_candidates(
 
     responses = _recorded(cog).responses
     assert responses.parse_text_formats == [RouteClassification]
-    assert responses.parse_instructions == [route_prompt(inline_image_enabled=True)]
+    assert responses.parse_instructions == [route_prompt()]
     assert responses.parse_inputs == [[*_ROUTE_REFERENCE, *_ROUTE_CURRENT]]
     assert type(route) is RouteClassification
     assert route.effort == "low"
@@ -189,10 +189,7 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last(
 
     responses = _recorded(cog).responses
     assert responses.parse_text_formats == [RecallRouteClassification] * 2
-    assert (
-        responses.parse_instructions
-        == [route_prompt(inline_image_enabled=True) + ROUTE_RECALL_SECTION] * 2
-    )
+    assert responses.parse_instructions == [route_prompt() + ROUTE_RECALL_SECTION] * 2
     candidate_block = render_callable_users_block(allowed=candidates)
     assert responses.parse_inputs == [
         [_ROUTE_SERVER_MEMORY, *_ROUTE_REFERENCE, *_ROUTE_CURRENT, candidate_block],

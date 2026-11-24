@@ -26,49 +26,37 @@ from tests.helpers.reply_fakes import (
 )
 
 
-def test_the_route_prompt_says_qa_draws_inline_only_while_it_can() -> None:
-    """With inline images on, the route is told QA can draw inline; with it off, not."""
-    on = route_prompt(inline_image_enabled=True)
-    off = route_prompt(inline_image_enabled=False)
+def test_the_route_prompt_says_qa_draws_inline() -> None:
+    """The route prompt tells the classifier that QA can draw illustrations inline."""
+    prompt = route_prompt()
 
-    assert "inline" in on
-    assert "only possible on this route" not in on
-    assert "inline" not in off
+    assert "inline" in prompt
+    assert "only possible on this route" not in prompt
 
 
 def test_the_route_prompt_names_the_link_sources_as_measured() -> None:
     """Every registered link source is named in the route prompt."""
-    prompt = route_prompt(inline_image_enabled=True)
+    prompt = route_prompt()
 
     for source in LINK_CONTEXT_SOURCES:
         assert f"`{source.name}`" in prompt
 
 
-@pytest.mark.parametrize("inline_image_enabled", [True, False])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_the_route_is_told_qa_draws_inline_only_while_the_answer_can(
-    inline_image_enabled: bool,
-) -> None:
-    """A turn's route call reads the prompt for the deployment's inline-image switch."""
+async def test_the_route_call_uses_route_prompt() -> None:
+    """A turn's route call sends `route_prompt()` as its instructions."""
     cog = _cog()
-    cog.config.inline_image_enabled = inline_image_enabled
 
     await _run_pipeline(
         cog=cog, message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     )
 
-    assert _recorded(cog).responses.parse_instructions == [
-        route_prompt(inline_image_enabled=inline_image_enabled)
-    ]
+    assert _recorded(cog).responses.parse_instructions == [route_prompt()]
 
 
-@pytest.mark.parametrize("inline_image_enabled", [True, False])
-async def test_a_recall_turn_appends_its_section_to_either_route_prompt(
-    inline_image_enabled: bool,
-) -> None:
-    """The recall section follows the route prompt whether or not QA can draw."""
+async def test_a_recall_turn_appends_its_section_to_route_prompt() -> None:
+    """The recall section follows the route prompt when recall candidates exist."""
     cog = _cog()
-    cog.config.inline_image_enabled = inline_image_enabled
 
     await _classifier(cog=cog, message=as_message(fake=FakeMessage())).classify(
         reference_messages=_ROUTE_REFERENCE,
@@ -77,14 +65,12 @@ async def test_a_recall_turn_appends_its_section_to_either_route_prompt(
         server_memory_block=None,
     )
 
-    assert _recorded(cog).responses.parse_instructions == [
-        route_prompt(inline_image_enabled=inline_image_enabled) + ROUTE_RECALL_SECTION
-    ]
+    assert _recorded(cog).responses.parse_instructions == [route_prompt() + ROUTE_RECALL_SECTION]
 
 
 def test_route_prompt_marks_bare_youtube_links_as_watch_video() -> None:
     """A bare YouTube link (or short nudge) addressed to the bot asks the bot to watch it."""
-    prompt = route_prompt(inline_image_enabled=True)
+    prompt = route_prompt()
 
     assert "contains ONLY a YouTube link" in prompt
     assert "set `watch_video` to `true`" in prompt
@@ -99,7 +85,7 @@ def test_media_refine_prompts_scope_recent_conversation_to_references(prompt_tex
 
 def test_the_route_prompt_defines_all_three_effort_grades() -> None:
     """The route prompt names only the three grades (`low`, `medium`, `high`)."""
-    prompt = route_prompt(inline_image_enabled=True)
+    prompt = route_prompt()
     for grade in ("`low`", "`medium`", "`high`"):
         assert grade in prompt
     assert "three grades" in prompt

@@ -150,10 +150,8 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
-    # A deployment where every route can run: VIDEO needs a Gemini key, while the QA video
-    # marker's switch is off to show it gates only the marker, never the route.
+    # A deployment where every route can run (VIDEO requires a Gemini key).
     cog.config.gemini_api_key = "test-key"
-    cog.config.inline_video_enabled = False
     # Distinctive non-fallback grade so the effort reaching the answer model is checked to
     # be the graded value, not the "high" default a failed parse would also produce.
     _recorded(cog).responses.output_parsed = RouteClassification(decision=route, effort="low")
@@ -355,12 +353,7 @@ async def test_on_message_answers_a_keyless_video_route_as_qa(
 
 def _link_config(gemini_api_key: str) -> LLMConfig:
     """The config fields a QA reply carrying a linked post actually reads."""
-    return _config_stub(
-        douyin_video_enabled=True,
-        bilibili_video_enabled=True,
-        file_api_enabled=True,
-        gemini_api_key=gemini_api_key,
-    )
+    return _config_stub(file_api_enabled=True, gemini_api_key=gemini_api_key)
 
 
 class _LinkCase(BaseModel):
@@ -413,14 +406,14 @@ _LINK_CASES: dict[str, _LinkCase] = {
         non_post_url="https://www.douyin.com/user/MS4wLjABAAAAxyz",
         emoji=DOUYIN_EMOJI,
         reads_replied_to=False,
-        media_switch="douyin_video_enabled",
+        media_switch="file_api_enabled",
     ),
     "bilibili": _LinkCase(
         builder="build_bilibili_context_messages",
         non_post_url="https://live.bilibili.com/12345",
         emoji=BILIBILI_EMOJI,
         reads_replied_to=False,
-        media_switch="bilibili_video_enabled",
+        media_switch="file_api_enabled",
     ),
 }
 

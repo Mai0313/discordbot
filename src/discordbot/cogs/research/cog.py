@@ -186,7 +186,7 @@ class ResearchCogs(commands.Cog):
             brief (str): Research brief extracted from the marker.
             anchor (Message | None): Message to attach the thread to; defaults to `message`.
         """
-        if not self.config.deep_research_available:
+        if not self.config.gemini_key_configured:
             return
         outcome, thread_id = await self._start_for(
             owner_id=message.author.id, brief=brief, anchor=anchor or message
@@ -253,7 +253,7 @@ class ResearchCogs(commands.Cog):
             interaction (Interaction[commands.Bot]): The slash command interaction.
             topic (str): The research topic or brief.
         """
-        if not self.config.deep_research_available:
+        if not self.config.gemini_key_configured:
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
         # Check channel eligibility and bot permissions before spending a title call or anchor.
@@ -593,7 +593,7 @@ class ResearchCogs(commands.Cog):
         sessions = await db.list_resumable(created_before=self._started_at)
         if not sessions:
             return
-        if not self.config.deep_research_available:
+        if not self.config.gemini_key_configured:
             logfire.info(
                 "deep research is unavailable; left in-flight sessions for a later start",
                 count=len(sessions),

@@ -544,7 +544,7 @@ footer.end{
           <a class="n" href="#s5"><rect class="box" x="40" y="512" width="280" height="56" rx="6"/><rect class="pill" x="42" y="520" width="3" height="40" rx="1.5"/><text class="t" x="58" y="536">抽出內嵌標記</text><text class="d" x="58" y="555">語音 · 圖 · 音樂 · 影片 · 研究 · 記憶</text></a>
 
           <!-- IMAGE -->
-          <a class="n px" href="#s6"><rect class="box" x="360" y="352" width="280" height="56" rx="6"/><rect class="pill" x="362" y="360" width="3" height="40" rx="1.5"/><text class="t" x="378" y="376">導演擴寫提示</text><text class="d" x="378" y="395">可關閉，失敗就用原句</text></a>
+          <a class="n px" href="#s6"><rect class="box" x="360" y="352" width="280" height="56" rx="6"/><rect class="pill" x="362" y="360" width="3" height="40" rx="1.5"/><text class="t" x="378" y="376">導演擴寫提示</text><text class="d" x="378" y="395">失敗就用原句</text></a>
           <a class="n px" href="#s6"><rect class="box" x="360" y="432" width="280" height="56" rx="6"/><rect class="pill" x="362" y="440" width="3" height="40" rx="1.5"/><text class="t" x="378" y="456">生成或編輯圖片</text><text class="d" x="378" y="475">有來源圖就走編輯</text></a>
           <a class="n px" href="#s6"><rect class="box" x="360" y="512" width="280" height="56" rx="6"/><rect class="pill" x="362" y="520" width="3" height="40" rx="1.5"/><text class="t" x="378" y="536">送出圖片，再用人格回話</text><text class="d" x="378" y="555">回話失敗也不出聲</text></a>
 
@@ -763,7 +763,7 @@ footer.end{
 
     <h3>送進答案模型的東西，順序是固定的</h3>
     <ol class="flow">
-      <li><span class="st">能力說明文件</span><span class="sd">放最前面。同一個部署的每則回覆它都完全一樣，擺前面對前綴快取最划算。它照部署的開關與金鑰改寫：關掉的語音、音樂、影片，看不了的 YouTube、抖音、Bilibili，以及停用的深度研究，都不會被寫成做得到；全部開著又有金鑰時就是原文。這份英文文件是唯一描述「這隻 bot 會什麼」的地方，取代了被刪掉的 <code>/help</code>。只有 QA 帶它——交付一張生成圖時不是在回答「你會什麼」。</span></li>
+      <li><span class="st">能力說明文件</span><span class="sd">放最前面。同一個部署的每則回覆它都完全一樣，擺前面對前綴快取最划算。它照部署的開關與金鑰改寫：沒有直連金鑰時省略音樂、影片、YouTube、深度研究，關閉 <code>FILE_API_ENABLED</code> 或缺金鑰時改寫抖音與 Bilibili 為純文字，關閉 <code>FEEDBACK_ENABLED</code> 時拿掉回饋按鈕說明；全部就緒時就是原文。這份英文文件是唯一描述「這隻 bot 會什麼」的地方，取代了被刪掉的 <code>/help</code>。只有 QA 帶它——交付一張生成圖時不是在回答「你會什麼」。</span></li>
       <li><span class="st">頻道歷史</span><span class="sd">三個軸同時限制，誰先撞到算誰：最多 50 則、4000 字、每則額外算 40 字的開銷。從最新往回留，切在訊息邊界上。附件另有第三軸，最多 5 個真實檔案，超出的訊息退回純標記——一旦有一則被拒，比它更舊的全部一起拒，模型看到的檔案永遠是一段連到現在為止不中斷的區間。附件以內嵌送出時再多一道位元組預算（約 24 MB），超過的較舊訊息同樣退回標記；單一附件超過 20 MiB 則在模態閘就不內嵌。</span></li>
       <li><span class="st">伺服器記憶</span><span class="sd">每個公會一份，直接讀檔沒有選取階段。私訊和 <code>/ask</code> 沒有。</span></li>
       <li><span class="st">使用者記憶</span><span class="sd">程式端固定解析：發話者、被回覆訊息的作者、當前訊息裡明確提及的人，再加上公開頻道裡分類挑中的第三人。目標 8 人：程式端確定的人不受限，挑中的人只補剩下的名額。</span></li>
@@ -836,7 +836,7 @@ footer.end{
 
     <div class="kv">
       <dt>時機</dt><dd>全部在文字上畫面之後才跑，所以對文字的延遲是零。所有附件用<strong>一次</strong>編輯掛上去（Discord 的編輯會整組取代附件清單）。</dd>
-      <dt>沒開的功能</dt><dd>提示詞裡<strong>不會提到</strong>那個標記，語音也一樣（它的說明寫在共用提示詞裡，關掉時會被剪掉），能力文件也不會寫成做得到。否則模型會照寫，然後標記被剝掉、什麼也沒產出，需求就這樣默默消失。</dd>
+      <dt>不可用的直連功能</dt><dd>未設定 <code>GEMINI_API_KEY</code> 時（或研究頻道不支援時），提示詞裡<strong>不會提到</strong>對應標記（音樂、影片、深度研究），能力文件也不會寫成做得到。否則模型會照寫，然後標記被剝掉、什麼也沒產出，需求就這樣默默消失。</dd>
       <dt>失敗</dt><dd>語音、圖、音樂、影片任一失敗，主要交付物照留，只在來源訊息加一個 ⏱️（語音逾時）或 ⚠️（其他，含圖、音樂、影片逾時）。<code>/ask</code> 上四種共用 token 剩下的時間：到點前做好的照樣掛上，還在算的放掉並留 ⏱️。</dd>
       <dt>太大</dt><dd>先試著上傳到外部靜態站變成連結貼出來；連這個都做不到才丟棄加 ⚠️。</dd>
       <dt>記憶標記的歸屬</dt><dd>由<strong>訊息的作者與公會</strong>決定，標記內容永遠沒有發言權。這是隔間邊界能維持結構性的關鍵。</dd>
@@ -850,7 +850,7 @@ footer.end{
 
     <ol class="flow">
       <li><span class="st">載入來源像素</span><span class="sd">當前訊息 ＋ 被回覆訊息的圖片，直接下載原始 bytes（不是 Files API handle，因為編輯要真的餵像素進去），先縮到長邊 3072。</span></li>
-      <li class="px"><span class="st">提示詞導演</span><span class="sd"><code>gemini-4-hydrogen</code> 開著搜尋工具，把一句話的請求擴寫成一段完整、能獨立成立的生成提示。它是<strong>忠實翻譯不是美術指導</strong>：只釐清「畫什麼」，不發明沒被要求的場景、風格、光線。命名的角色或作品會實際去搜尋確認外觀。來源圖也會一起送進去當接地依據。<br>失敗、逾時、或開關關掉，都直接用原始請求，不會中斷。上限 120 秒。</span></li>
+      <li class="px"><span class="st">提示詞導演</span><span class="sd"><code>gemini-4-hydrogen</code> 開著搜尋工具，把一句話的請求擴寫成一段完整、能獨立成立的生成提示。它是<strong>忠實翻譯不是美術指導</strong>：只釐清「畫什麼」，不發明沒被要求的場景、風格、光線。命名的角色或作品會實際去搜尋確認外觀。來源圖也會一起送進去當接地依據。<br>失敗或逾時就直接用原始請求，不會中斷。上限 120 秒。</span></li>
       <li class="px"><span class="st">圖像模型渲染</span><span class="sd"><code>gemini-nano-banana-2.1</code>。有來源像素就走編輯端點，沒有就走生成端點。回傳空結果會自動重試一次才報錯。</span></li>
       <li><span class="st">送出</span><span class="sd">太大就改成託管連結另發一則，人格回話也另開一則，不會蓋掉那個連結。生成到這裡為止都在硬失敗路徑上——圖是交付物，失敗要讓使用者知道。</span></li>
       <li class="px"><span class="st">人格化回話（盡力而為）</span><span class="sd"><code>gemini-4-hydrogen</code>，不帶任何工具，把剛做好的圖以 base64 內嵌當焦點，串流到<strong>同一則訊息</strong>上。帶歷史與使用者記憶，<strong>不帶</strong>伺服器記憶，也不帶能力說明。這一步失敗完全靜音，圖留著。</span></li>
@@ -891,7 +891,7 @@ footer.end{
             <li><span class="a">都找不到 →</span> <span class="out">照常回答</span>，只留一行日誌</li>
           </ul>
         </li>
-        <li><span class="q">答案模型是 Gemini 嗎？總開關開著嗎？有直連金鑰嗎？</span>
+        <li><span class="q">答案模型是 Gemini 嗎？有直連金鑰嗎？</span>
           <ul><li><span class="a">任一為否 →</span> <span class="out">退回 Responses</span>，對使用者完全無感，只在日誌記下是哪一道閘擋的</li></ul>
         </li>
       </ul>
@@ -948,7 +948,7 @@ footer.end{
 
     <div class="note">
       <span class="tag">重啟之後</span>
-      <p>互動是掛在 Google 那邊跑的，所以重啟後會照著資料庫重新接上串流。但如果總開關是關的，這個掃描會<strong>直接跳過而不是標記失敗</strong>——那一輪不管怎樣都已經在對面計費了，標成失敗只是把一份已經做完的報告丟掉。</p>
+      <p>互動是掛在 Google 那邊跑的，所以重啟後會照著資料庫重新接上串流。但如果未設定 <code>GEMINI_API_KEY</code>，這個掃描會<strong>直接跳過而不是標記失敗</strong>——那一輪不管怎樣都已經在對面計費了，標成失敗只是把一份已經做完的報告丟掉。</p>
       <p>另外，只要這個 cog 還在寫這條討論串，QA 就不會在裡面回話，免得蓋掉即時狀態；報告一落地就解除。</p>
     </div>
   </section>
@@ -967,43 +967,43 @@ footer.end{
     </ol>
 
     <div class="tw"><table>
-      <thead><tr><th>來源</th><th>連結可以在哪裡</th><th>抓什麼</th><th>媒體開關</th></tr></thead>
+      <thead><tr><th>來源</th><th>連結可以在哪裡</th><th>抓什麼</th><th>媒體門檻</th></tr></thead>
       <tbody>
         <tr>
           <td class="nowrap"><b>Threads</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>整串對話（祖先鏈、目標貼文、它引用的貼文、底下的留言），但只吃<strong>目標貼文</strong>和<strong>被引用貼文</strong>的媒體。鏈與留言各有獨立上限，互不排擠</td>
-          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+          <td>共用 <code>FILE_API_ENABLED</code> 與直連金鑰</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Facebook</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>公開貼文的全文、圖片、互動數字，加上<strong>頁面預先載入的那幾則留言</strong>（不是整個留言區）。網址帶 <code>comment_id</code> 時會標出被指名的那一則。影片拿不到檔案，只帶連結</td>
-          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+          <td>同上</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Instagram</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>公開貼文的內文、輪播原圖、互動數字，加上<strong>頁面給的留言</strong>——登出狀態下一般貼文就是全部（實測 11 則報 11 則），這是它比 Facebook 多的地方；熱門貼文只有第一頁，最多帶 20 則。網址帶 <code>/c/&lt;id&gt;/</code> 時會標出被指名的那一則。Reel 只帶連結，不上傳影片</td>
-          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+          <td>同上</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Twitter</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>貼文本身與它引用的那一則走官方嵌入端點；<strong>它上面的整串</strong>（最多 6 篇）和<strong>底下最熱門的回覆</strong>（第一頁，最多 30 則，回覆的回覆接在它回的那則後面）另外向第三方的 FxTwitter 要；長文與它引用的那一則的全文也向它要，因為官方端點在約 275 字處截斷，而且引用的那一則截了也不標記。FxTwitter 讀不到時退回官方端點附的上一層與截斷的文字，並明說留言這次讀不到。只吃目標貼文的圖，影片只帶連結，不下載</td>
-          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+          <td>同上</td>
         </tr>
         <tr>
           <td class="nowrap"><b>抖音</b></td>
           <td>只在當前訊息</td>
           <td>影片或圖集，以 <code>low</code> 畫質下載（刻意低於給人看的展開品質）</td>
-          <td>有，且需要 Files API 開著與金鑰</td>
+          <td>同上</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Bilibili</b></td>
           <td>只在當前訊息</td>
           <td>標題、簡介與影片，同樣 <code>low</code> 畫質</td>
-          <td>有，同上</td>
+          <td>同上</td>
         </tr>
       </tbody>
     </table></div>
@@ -1139,23 +1139,13 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 14 -->
   <section id="s14">
     <div class="s-head"><span class="s-num">14</span><h2>總開關與它們關掉之後的行為</h2></div>
-    <p class="lede">共通規則：關掉之後標記<strong>還是會被剝掉</strong>，只是不產出東西——所以提示詞裡也不會再提到那個標記，能力文件也不會再把它寫成做得到。改這些設定需要重啟。</p>
+    <p class="lede">直連 Google 的功能（音樂、內嵌影片、YouTube 觀看、深度研究）只以是否設定 <code>GEMINI_API_KEY</code> 為閘，不再各自留環境變數開關；下列為僅存的四個營運／實驗總開關，修改後需要重啟。</p>
 
     <div class="tw"><table>
-      <thead><tr><th>開關</th><th>關掉會怎樣</th><th>需要直連金鑰</th></tr></thead>
+      <thead><tr><th>開關</th><th>關掉（或開啟）會怎樣</th><th>需要直連金鑰</th></tr></thead>
       <tbody>
-        <tr><td class="m">INLINE_VOICE_ENABLED</td><td>不合成語音，答案提示詞也不再提供語音標記，回覆照常</td><td>否</td></tr>
-        <tr><td class="m">INLINE_IMAGE_ENABLED</td><td>QA 回覆不再內嵌生成圖，router 也不再被告知 QA 能自己附圖（IMAGE 路線本身不受影響）</td><td>否</td></tr>
-        <tr><td class="m">INLINE_MUSIC_ENABLED</td><td>不生音樂</td><td><b>是</b></td></tr>
-        <tr><td class="m">INLINE_VIDEO_ENABLED</td><td>QA 回覆不再內嵌生成片（VIDEO 路線不受影響）</td><td><b>是</b></td></tr>
-        <tr><td class="m">YOUTUBE_VIDEO_ENABLED</td><td>退回一般 Responses，也就是看不到影片</td><td><b>是</b></td></tr>
-        <tr><td class="m">DOUYIN_VIDEO_ENABLED</td><td>貼文說明文字照樣當上下文，但會明白告訴模型它沒看到影片</td><td><b>是</b></td></tr>
-        <tr><td class="m">BILIBILI_VIDEO_ENABLED</td><td>標題與簡介照樣帶，同樣明說沒看過片</td><td><b>是</b></td></tr>
-        <tr><td class="m">DEEP_RESEARCH_ENABLED</td><td>不提供標記也不能用指令；重啟時<strong>不接回</strong>進行中的研究，那些列留著等下次</td><td><b>是</b></td></tr>
         <tr><td class="m">FEEDBACK_ENABLED</td><td>完成的回覆不再附帶 👍 / 👎 / 🔄 按鈕與評分小字，也不寫入 <code>reply.db</code> 回合快照，並停用 🔄 重新生成</td><td>否</td></tr>
         <tr><td class="m">SLOW_MODEL_BLIND_TEST_ENABLED</td><td>預設關閉。開啟時 QA 從候選模型均勻抽樣、在提示詞與頁尾改以 <code>blind-test-model</code> 遮蔽模型與強度，並允許多輪不重複模型重抽</td><td>否</td></tr>
-        <tr><td class="m">IMAGE_REFINE_PROMPT_ENABLED</td><td>IMAGE 路線跳過導演，原始請求直接送給圖像模型</td><td>否</td></tr>
-        <tr><td class="m">VIDEO_REFINE_PROMPT_ENABLED</td><td>同上，對 VIDEO 路線</td><td>否</td></tr>
         <tr><td class="m">FILE_API_ENABLED</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
         <tr><td class="m">ANSWER_STREAMING_ENABLED</td><td>QA 回覆（含 YouTube Interactions）與 IMAGE / VIDEO 人格化回話改走非串流（<code>stream=False</code>），等完整結果回來後一次貼出，不做即時預覽編輯</td><td>否</td></tr>
       </tbody>

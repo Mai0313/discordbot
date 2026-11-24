@@ -37,7 +37,6 @@ from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import (
     MUSIC_INSTRUCTION,
     VIDEO_INSTRUCTION,
-    VOICE_INSTRUCTION,
     INLINE_IMAGE_INSTRUCTION,
     DEEP_RESEARCH_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
@@ -491,8 +490,6 @@ class AnswerTurn(BaseModel):
         """Returns why the Interactions YouTube backend cannot run for `slow_model`, or None."""
         if not slow_model.is_gemini:
             return "model"
-        if not self.config.youtube_video_enabled:
-            return "kill-switch"
         if not self.config.gemini_key_configured:
             return "no-gemini-key"
         return None
@@ -572,9 +569,9 @@ class AnswerTurn(BaseModel):
     ) -> int | None:
         """Streams the QA answer from `context`, launches any research brief, and schedules memory updates.
 
-        Offers each inline media or `<deep-research>` marker only when its generator and config
-        switch are active, and swaps the answer request onto the Gemini Interactions API when
-        `yt_url` is set and the Gemini video gates pass.
+        Offers direct-to-Google inline markers (`<generate-music>`, `<generate-video>`, and
+        `<deep-research>`) only when `GEMINI_API_KEY` is configured, and swaps the answer request
+        onto the Gemini Interactions API when `yt_url` is set and the Gemini video gates pass.
 
         Args:
             system_prompt (str): Base QA system prompt before marker instructions are applied.
@@ -589,22 +586,20 @@ class AnswerTurn(BaseModel):
             int | None: Discord message id of the final landed reply chunk, or None if not sent.
         """
         toolkit = self.toolkit
-        voice_generator = toolkit.voice_generator if self.config.inline_voice_enabled else None
-        image_generator = toolkit.image_generator if self.config.inline_image_enabled else None
-        music_generator = toolkit.music_generator if self.config.music_available else None
-        video_generator = toolkit.video_generator if self.config.video_available else None
-        research_offered = allow_research and self.config.deep_research_available
+        voice_generator = toolkit.voice_generator
+        image_generator = toolkit.image_generator
+        music_generator = toolkit.music_generator if self.config.gemini_key_configured else None
+        video_generator = toolkit.video_generator if self.config.gemini_key_configured else None
+        research_offered = allow_research and self.config.gemini_key_configured
         offered_markers = (
-            ("voice", None, voice_generator is not None),
-            ("image", INLINE_IMAGE_INSTRUCTION, image_generator is not None),
+            ("voice", None, True),
+            ("image", INLINE_IMAGE_INSTRUCTION, True),
             ("music", MUSIC_INSTRUCTION, music_generator is not None),
             ("video", VIDEO_INSTRUCTION, video_generator is not None),
             ("research", DEEP_RESEARCH_INSTRUCTION, research_offered),
         )
-        # Disabled renderers still strip tags silently; voice is removed from the base prompt
-        # while optional media instructions are appended.
-        if voice_generator is None:
-            system_prompt = system_prompt.replace(VOICE_INSTRUCTION, "")
+        # Disabled renderers still strip tags silently; optional media instructions are appended
+        # only when their backend is configured.
         for _name, instruction, offered in offered_markers:
             if offered and instruction is not None:
                 system_prompt = f"{system_prompt}\n{instruction}"

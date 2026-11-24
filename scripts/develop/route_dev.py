@@ -27,7 +27,7 @@ def use_oai_responses_parse(user_prompt: str) -> None:
     start = time.time()
     responses = client.responses.parse(
         model=TRIAGE_MODEL.name,
-        instructions=route_prompt(inline_image_enabled=config.inline_image_enabled),
+        instructions=route_prompt(),
         input=[{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}],
         text_format=RouteClassification,
         reasoning=TRIAGE_MODEL.reasoning,
