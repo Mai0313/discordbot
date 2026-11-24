@@ -167,6 +167,15 @@ class LLMConfig(BaseSettings):
         ),
         validation_alias=AliasChoices("FILE_API_ENABLED"),
     )
+    answer_streaming_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether QA replies and media-persona follow-ups stream live preview edits onto "
+            "Discord; when false they fetch complete non-streaming responses and post them once "
+            "finished without live preview edits."
+        ),
+        validation_alias=AliasChoices("ANSWER_STREAMING_ENABLED"),
+    )
 
     @property
     def gemini_key_configured(self) -> bool:

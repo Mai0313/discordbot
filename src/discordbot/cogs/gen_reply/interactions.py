@@ -6,8 +6,8 @@ appended, calls Gemini directly via `genai.Client`, and adapts Interactions SSE 
 """
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Literal, cast
-from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Literal, Protocol, cast
+from collections.abc import Sequence, AsyncIterator
 
 from google import genai
 import logfire
@@ -16,6 +16,7 @@ from openai.types.responses import ResponseStreamEvent
 from google.genai.interactions import (
     Step,
     StepParam,
+    Annotation,
     URLContext,
     ContentParam,
     GoogleSearch,
@@ -152,6 +153,78 @@ def to_interactions_input(answer_input: ResponseInputParam, youtube_url: str) ->
     return steps
 
 
+class _InteractionFailure(Protocol):
+    """Minimal structural view of an Interactions error entry."""
+
+    @property
+    def code(self) -> str | None: ...
+
+    @property
+    def message(self) -> str | None: ...
+
+
+def interactions_api_error(failure: _InteractionFailure | None, fallback_message: str) -> APIError:
+    """Builds a classifiable `APIError` from an Interactions error entry.
+
+    SDK `Error.code` is a URI rather than an HTTP status, so only ASCII decimal codes map to an
+    HTTP status; everything else stays `code=0` (unretried).
+
+    Args:
+        failure (_InteractionFailure | None): Error payload from an SSE event or interaction.
+        fallback_message (str): Message used when `failure` carries none.
+    """
+    code = failure.code if failure is not None else None
+    return APIError(
+        code=int(code) if code is not None and code.isascii() and code.isdecimal() else 0,
+        response_json={
+            "error": {
+                "message": (failure.message if failure is not None else None) or fallback_message,
+                "code": code,
+            }
+        },
+    )
+
+
+def interactions_answer_options(
+    effort: ReasoningEffort,
+) -> tuple[EnvironmentParam, GenerationConfigParam, list[URLContext | GoogleSearch]]:
+    """Returns shared `(environment, generation_config, tools)` for YouTube QA Interactions calls.
+
+    Args:
+        effort (ReasoningEffort): Reasoning effort grade (`"low"`, `"medium"`, or `"high"`).
+    """
+    # Ad-hoc remote sandbox (a bare "remote" string is treated as an environment ID); "*"
+    # allows server-side tools and YouTube fetches to reach any domain.
+    environment = EnvironmentParam(
+        type="remote",
+        network=EnvironmentNetworkEgressAllowlistParam(
+            allowlist=[AllowlistEntryParam(domain="*")]
+        ),
+    )
+    generation_config = GenerationConfigParam(
+        # Direct to Google refuses unsupported thinking_level values; effort must stay within
+        # slow_model's supported set.
+        thinking_level=cast("ThinkingLevel", effort),
+        thinking_summaries="auto",
+    )
+    tools: list[URLContext | GoogleSearch] = [
+        URLContext(type="url_context"),
+        GoogleSearch(search_types=["web_search"], type="google_search"),
+    ]
+    return environment, generation_config, tools
+
+
+def _note_url_citations(
+    annotations: Sequence[Annotation] | None, citations: list[tuple[str, str]]
+) -> None:
+    """Appends `(url, title)` pairs for every `url_citation` annotation in `annotations`."""
+    citations.extend(
+        (annotation.url or "", annotation.title or "")
+        for annotation in annotations or []
+        if annotation.type == "url_citation"
+    )
+
+
 def _note_tool_use(
     part: Step | StepDeltaData, queries: set[str], urls: set[str], citations: list[tuple[str, str]]
 ) -> None:
@@ -161,11 +234,28 @@ def _note_tool_use(
     elif part.type == "url_context_call":
         urls.update(part.arguments.urls or [])
     elif part.type == "text_annotation_delta":
-        citations.extend(
-            (annotation.url or "", annotation.title or "")
-            for annotation in part.annotations or []
-            if annotation.type == "url_citation"
-        )
+        _note_url_citations(annotations=part.annotations, citations=citations)
+
+
+def record_interactions_tool_use(steps: Sequence[Step], tool_use: AnswerToolUse) -> None:
+    """Records search queries, URL fetches, and citations from completed Interactions `steps`.
+
+    Args:
+        steps (Sequence[Step]): Steps returned on a completed non-streaming `Interaction`.
+        tool_use (AnswerToolUse): The streamer's record of the answer's tool use.
+    """
+    queries: set[str] = set()
+    urls: set[str] = set()
+    citations: list[tuple[str, str]] = []
+    for step in steps:
+        _note_tool_use(part=step, queries=queries, urls=urls, citations=citations)
+        if step.type == "model_output":
+            for item in step.content or []:
+                if item.type == "text":
+                    _note_url_citations(annotations=item.annotations, citations=citations)
+    tool_use.web_search_queries = len(queries)
+    tool_use.url_fetches = len(urls)
+    tool_use.record_citations(citations=citations)
 
 
 async def _record_tool_use(
@@ -263,19 +353,9 @@ async def adapt_interactions_stream(
                 ),
             )
         elif event.event_type == "error":
-            # Raise APIError for extract_friendly_error; SDK Error.code is a URI (not HTTP status),
-            # so in-band errors carry code=0 (unretried) unless decimal.
-            failure = event.error
-            code = failure.code if failure is not None else None
-            raise APIError(
-                code=int(code) if code is not None and code.isdecimal() else 0,
-                response_json={
-                    "error": {
-                        "message": (failure.message if failure is not None else None)
-                        or f"Gemini interactions stream error: {event!r}",
-                        "code": code,
-                    }
-                },
+            raise interactions_api_error(
+                failure=event.error,
+                fallback_message=f"Gemini interactions stream error: {event!r}",
             )
 
 
@@ -300,28 +380,14 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inp
         effort (ReasoningEffort): Reasoning effort grade (`"low"`, `"medium"` or `"high"`).
         tool_use (AnswerToolUse): The streamer's record of the answer's tool use.
     """
+    environment, generation_config, tools = interactions_answer_options(effort=effort)
     responses = await client.aio.interactions.create(
         model=model,
         system_instruction=system_instruction,
         input=steps,
-        # Ad-hoc remote sandbox (a bare "remote" string is treated as an environment ID); "*"
-        # allows server-side tools and YouTube fetches to reach any domain.
-        environment=EnvironmentParam(
-            type="remote",
-            network=EnvironmentNetworkEgressAllowlistParam(
-                allowlist=[AllowlistEntryParam(domain="*")]
-            ),
-        ),
-        generation_config=GenerationConfigParam(
-            # Direct to Google refuses unsupported thinking_level values; effort must stay within
-            # slow_model's supported set.
-            thinking_level=cast("ThinkingLevel", effort),
-            thinking_summaries="auto",
-        ),
-        tools=[
-            URLContext(type="url_context"),
-            GoogleSearch(search_types=["web_search"], type="google_search"),
-        ],
+        environment=environment,
+        generation_config=generation_config,
+        tools=tools,
         stream=True,
     )
     # Overload still returns Interaction | AsyncStream even with stream=True.

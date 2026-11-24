@@ -52,6 +52,10 @@ GROK_FILE_UPLOAD_TIMEOUT_SECONDS: Final[float] = 30.0
 # Combined transfer + `ACTIVE` poll bound for uploading a generated clip for persona reply.
 GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 60.0
 
+# Hard bound on non-streaming direct-to-Google YouTube QA `interactions.create` (`google-genai`
+# defaults to `timeout=None`; matches `openai`'s 600s default).
+INTERACTIONS_ANSWER_TIMEOUT_SECONDS: Final[float] = 600.0
+
 # --------------------------------------------------------------------------------------
 # Generated media (VIDEO edit worst case: render + 2 * FILES_READY_TIMEOUT_SECONDS)
 # --------------------------------------------------------------------------------------
