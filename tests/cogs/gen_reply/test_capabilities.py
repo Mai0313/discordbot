@@ -66,22 +66,8 @@ def _added_words(before: str, after: str) -> list[str]:
 @pytest.mark.parametrize(
     argnames=("switched_off", "promises", "says_instead"),
     argvalues=[
-        ({"inline_voice_enabled": False}, ("speak a line aloud",), False),
-        ({"inline_music_enabled": False}, ("write and record a short song",), False),
         ({"feedback_enabled": False}, ("feedback buttons", "regenerate the answer"), False),
-        ({"youtube_video_enabled": False}, ("I watch the video before answering",), False),
-        (
-            {"douyin_video_enabled": False},
-            ("Mention me with the link instead and I watch it",),
-            True,
-        ),
-        ({"bilibili_video_enabled": False}, ("Bilibili video link and I watch it",), True),
         ({"file_api_enabled": False}, ("I watch it and answer about it",), True),
-        (
-            {"deep_research_enabled": False},
-            ("fully cited research report", "kicks off the same thing"),
-            True,
-        ),
         (
             {"gemini_api_key": ""},
             (
@@ -95,17 +81,7 @@ def _added_words(before: str, after: str) -> list[str]:
             True,
         ),
     ],
-    ids=[
-        "voice",
-        "music",
-        "feedback",
-        "youtube",
-        "douyin",
-        "bilibili",
-        "file-api",
-        "research",
-        "keyless",
-    ],
+    ids=["feedback", "file-api", "keyless"],
 )
 def test_capabilities_block_drops_each_promise_its_switch_turns_off(
     switched_off: dict[str, object], promises: tuple[str, ...], says_instead: bool
@@ -135,63 +111,30 @@ def _media_sentence(content: str) -> str:
     return " ".join(after.split(" Attach", maxsplit=1)[0].split())
 
 
-@pytest.mark.parametrize(
-    argnames=("voice", "music", "key", "listed"),
-    argvalues=[
-        (True, True, False, "{voice} or {images}."),
-        (True, False, True, "{voice}, {images}, or {video}."),
-        (False, True, True, "{images}, {music}, or {video}."),
-    ],
-    ids=["keyless", "music-off", "voice-off"],
-)
-def test_capabilities_block_lists_the_media_still_on_as_one_sentence(
-    voice: bool, music: bool, key: bool, listed: str
-) -> None:
-    """The media list is rebuilt from what is left, so its "or" never ends up stranded.
-
-    The phrases come from the full document's own list, so only which media remain and how
-    they are joined is pinned here.
-    """
+def test_capabilities_block_lists_the_media_still_on_as_one_sentence() -> None:
+    """Without a Gemini key, the media list keeps voice and images as a natural sentence."""
     all_on = render_capabilities_block(config=_ALL_ON)["content"]
     assert isinstance(all_on, str)
     full = _media_sentence(content=all_on).removesuffix(".").split(", ")
-    speak, images, song, video = (phrase.removeprefix("or ") for phrase in full)
-    config = _ALL_ON.model_copy(
-        update={
-            "gemini_api_key": "test-key" if key else "",
-            "inline_voice_enabled": voice,
-            "inline_music_enabled": music,
-        }
-    )
+    speak, images, _song, _video = (phrase.removeprefix("or ") for phrase in full)
+    config = _ALL_ON.model_copy(update={"gemini_api_key": ""})
     content = render_capabilities_block(config=config)["content"]
     assert isinstance(content, str)
-    expected = listed.format(voice=speak, images=images, music=song, video=video)
-    assert _media_sentence(content=content) == expected
+    assert _media_sentence(content=content) == f"{speak} or {images}."
 
 
-@pytest.mark.parametrize("switched_on", [True, False], ids=["all-on", "all-off"])
+@pytest.mark.parametrize("has_key", [True, False], ids=["with-key", "keyless"])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_on: bool) -> None:
-    """The QA turn's reference and instructions follow the switches.
+async def test_the_answer_is_told_only_what_the_deployment_can_run(has_key: bool) -> None:
+    """The QA turn's reference and instructions follow whether a Gemini key is configured.
 
-    All on with a key is the default deployment, whose prompt has to keep its bytes for the
-    prefix cache: the reference is the document verbatim and the instructions are the reply
-    prompt with every marker instruction appended. Keyless with every marker off, the voice
-    bullet is cut and the reference is the gated render.
+    With a key is the default deployment, whose prompt has to keep its bytes for the prefix
+    cache: the reference is the document verbatim and the instructions are the reply prompt with
+    every marker instruction appended. Keyless, voice and inline image stay on while the
+    direct-to-Google markers are omitted and the reference is the gated render.
     """
     cog = _cog()
-    cog.config = (
-        _config_stub(
-            inline_voice_enabled=True,
-            inline_image_enabled=True,
-            inline_music_enabled=True,
-            inline_video_enabled=True,
-            deep_research_enabled=True,
-            gemini_api_key="test-key",
-        )
-        if switched_on
-        else _config_stub()
-    )
+    cog.config = _config_stub(gemini_api_key="test-key" if has_key else "")
     message = FakeMessage(content="<@999> can you make me a song?", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
         system_prompt=REPLY_PROMPT, context=ReplyContext(), allow_research=True
@@ -201,7 +144,7 @@ async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_
     (answer_input,) = _recorded(cog).responses.create_inputs
     reference = cast("EasyInputMessageParam", answer_input[0])["content"]
     assert isinstance(reference, str)
-    if switched_on:
+    if has_key:
         appended = (
             INLINE_IMAGE_INSTRUCTION,
             MUSIC_INSTRUCTION,
@@ -211,7 +154,11 @@ async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_
         assert instructions.startswith("\n".join((REPLY_PROMPT, *appended)))
         assert reference.endswith(CAPABILITIES_DOC)
     else:
-        assert VOICE_OPEN not in instructions
+        assert VOICE_OPEN in instructions
+        assert INLINE_IMAGE_INSTRUCTION in instructions
+        assert MUSIC_INSTRUCTION not in instructions
+        assert VIDEO_INSTRUCTION not in instructions
+        assert DEEP_RESEARCH_INSTRUCTION not in instructions
         assert reference == render_capabilities_block(config=cog.config)["content"]
         assert "write and record a short song" not in reference
 

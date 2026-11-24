@@ -226,28 +226,24 @@ class PromptGenerator(BaseModel):
         ..., description="Model settings for the prompt director, which needs the grounding tools."
     )
 
-    async def refine(  # noqa: PLR0913 -- optional conversation_context preserves existing call sites
+    async def refine(
         self,
         user_prompt: str,
         instructions: str,
         end_user_id: str,
-        enabled: bool,
         image_bytes_list: list[bytes] | None = None,
         conversation_context: str | None = None,
     ) -> str:
-        """Returns a refined generation prompt, falling back to `user_prompt` when disabled or on failure.
+        """Returns a refined generation prompt, falling back to `user_prompt` on failure.
 
         Args:
             user_prompt (str): Raw user generation request.
             instructions (str): Developer instructions for the refinement pass.
             end_user_id (str): Discord username sent as the LiteLLM end-user header.
-            enabled (bool): Whether prompt refinement is enabled for this call.
             image_bytes_list (list[bytes] | None): Optional source images passed as visual context.
             conversation_context (str | None): Optional recent text-only conversation lines used
                 only to resolve references, pronouns, or follow-up edits in `user_prompt`.
         """
-        if not enabled:
-            return user_prompt
         if conversation_context is not None and conversation_context.strip():
             safe_context = defuse_separator_fences(text=conversation_context.strip())
             safe_prompt = defuse_separator_fences(text=user_prompt)

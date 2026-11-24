@@ -15,12 +15,7 @@ def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched() -> Non
     and Threads downloads its clips whole besides. Read off the live registry so the wiring is
     what is pinned, and asserted over every source rather than the two it was written for.
     """
-    on = LLMConfig.model_construct(
-        gemini_api_key="test-key",
-        douyin_video_enabled=True,
-        bilibili_video_enabled=True,
-        file_api_enabled=True,
-    )
+    on = LLMConfig.model_construct(gemini_api_key="test-key", file_api_enabled=True)
     assert all(_link_source(name=name).media_ingest_allowed(on) for name in _LINK_SOURCES)
 
     off = on.model_copy(update={"file_api_enabled": False})

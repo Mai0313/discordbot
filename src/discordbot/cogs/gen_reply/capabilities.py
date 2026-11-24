@@ -36,10 +36,9 @@ def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
         config (LLMConfig): The deployment's switches, which decide what the reference may promise.
     """
     media = (
-        ("speak a line aloud", config.inline_voice_enabled),
+        ("speak a line aloud", True),
         ("draw one or more images", True),
-        ("write and record a short song", config.music_available),
-        # The VIDEO route makes and edits a clip with the key alone, whatever the inline switch.
+        ("write and record a short song", config.gemini_key_configured),
         (
             "generate a short video from a description or from attached images",
             config.gemini_key_configured,
@@ -68,7 +67,7 @@ def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
         ),
         (
             "- **YouTube**: mention me with a YouTube link, or mention me in a reply to a message carrying one, and I watch the video before answering.\n",
-            config.youtube_video_enabled and config.gemini_key_configured,
+            config.gemini_key_configured,
             "",
         ),
         (
@@ -83,7 +82,7 @@ def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
         ),
         (
             "start a long, fully cited research report in its own thread; only works in an ordinary text channel of a server I am a member of, since it needs to open a thread, and only where that channel lets me post with attachments, open a thread and write in it; where it does not, the command tells you I lack the permission. Asking me for deep research by mentioning me in such a channel kicks off the same thing.",
-            config.deep_research_available,
+            config.gemini_key_configured,
             "switched off for me, so the command only says so.",
         ),
     ):

@@ -150,22 +150,6 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     )
 
 
-async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
-    """With IMAGE_REFINE_PROMPT_ENABLED off, the raw request reaches images.generate with no director call."""
-    cog = _cog()
-    cog.config.image_refine_prompt_enabled = False
-    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
-
-    await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=_ready_context_task()
-    )
-
-    # The raw prompt reaches images.generate; the only create is the streaming persona reply.
-    assert _recorded(cog).images.generate_prompts == ["draw a cat"]
-    assert _recorded(cog).responses.create_streams == [True]
-    assert _recorded(cog).responses.create_models == [cog.toolkit.runtime_models.fast_model.name]
-
-
 async def test_handle_image_reply_injects_only_user_memory() -> None:
     """The conversational reply carries the requester's memory and tone note, never the server memory."""
     cog = _cog()
@@ -398,35 +382,16 @@ async def test_handle_video_reply_refines_prompt_before_render() -> None:
 async def test_handle_video_reply_skips_persona_upload_when_file_api_disabled() -> None:
     """With `file_api_enabled=False`, `_reply_about_video` forwards the flag and skips the upload."""
     cog = _cog(file_api_enabled=False)
-    cog.config.video_refine_prompt_enabled = False
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
         user_prompt="video", context_task=_ready_context_task()
     )
 
-    assert _recorded(cog).responses.create_streams == []
+    # Only the non-streaming prompt-refinement call runs; the streaming persona reply is skipped.
+    assert _recorded(cog).responses.create_streams == [False]
     assert _recorded_video(cog).aio.files.upload_calls == []
     assert message.replies[-1].file is not None
-
-
-async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
-    """With VIDEO_REFINE_PROMPT_ENABLED off, the raw request reaches omni with no director call."""
-    cog = _cog()
-    cog.config.video_refine_prompt_enabled = False
-
-    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
-
-    await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=_ready_context_task()
-    )
-
-    # The raw prompt reaches omni as input text; the only create is the streaming persona reply
-    # (no non-streaming refine call).
-    create_input = _recorded_video(cog).create_inputs[0]
-    assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
-    assert _recorded(cog).responses.create_streams == [True]
-    assert _recorded(cog).responses.create_models == [cog.toolkit.runtime_models.fast_model.name]
 
 
 async def _one_source_clip(

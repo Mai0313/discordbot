@@ -32,10 +32,6 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     """Blind test masks prompt and footer as `blind-test-model` while storing real model in DB."""
     cog = _cog()
     cog.config.slow_model_blind_test_enabled = True
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
     message = FakeMessage(content="<@999> 你是哪個模型?")
     seen_calls: list[dict[str, object]] = []
     finalized_logs: list[dict[str, object]] = []
@@ -111,10 +107,6 @@ async def test_blind_test_records_real_post_fallback_model_while_hiding_footer(
     """Even after a LiteLLM fallback, footer stays masked while `reply_turn` keeps the real model."""
     cog = _cog()
     cog.config.slow_model_blind_test_enabled = True
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
     message = FakeMessage(content="<@999> test fallback")
 
     monkeypatch.setattr(
@@ -160,10 +152,6 @@ async def test_blind_test_disabled_uses_default_slow_model_and_visible_name(
     """With the switch off, QA dispatches `slow_model` and displays its real name in the footer."""
     cog = _cog()
     assert cog.config.slow_model_blind_test_enabled is False
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
     message = FakeMessage(content="<@999> normal turn")
     expected_model = RuntimeModelCatalog().slow_model.name
     seen_models: list[object] = []

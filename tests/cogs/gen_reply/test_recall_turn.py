@@ -67,13 +67,11 @@ def _assert_route_offered(cog: ReplyGeneratorCogs, candidates: set[int]) -> None
     (route_input,) = responses.parse_inputs
     if candidates:
         assert responses.parse_text_formats == [RecallRouteClassification]
-        assert responses.parse_instructions == [
-            route_prompt(inline_image_enabled=True) + ROUTE_RECALL_SECTION
-        ]
+        assert responses.parse_instructions == [route_prompt() + ROUTE_RECALL_SECTION]
         assert extract_callable_user_ids(request=route_input) == candidates
     else:
         assert responses.parse_text_formats == [RouteClassification]
-        assert responses.parse_instructions == [route_prompt(inline_image_enabled=True)]
+        assert responses.parse_instructions == [route_prompt()]
         assert extract_callable_user_ids(request=route_input) == set()
         assert extract_server_memory_block(request=route_input) is None
 
@@ -167,9 +165,7 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
 ) -> None:
     """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
-    # Every appended marker off and voice, which rides inside REPLY_PROMPT, on, so the
-    # instructions checked below are REPLY_PROMPT whole.
-    cog.config = _config_stub(inline_voice_enabled=True)
+    cog.config = _config_stub()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_alias(subject_id=42, text="Boss(社群暱稱:老闆)")
 
@@ -219,9 +215,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 ) -> None:
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
-    # Every appended marker off and voice, which rides inside REPLY_PROMPT, on, so the
-    # instructions checked below are REPLY_PROMPT whole.
-    cog.config = _config_stub(inline_voice_enabled=True)
+    cog.config = _config_stub()
 
     scheduled: list[object] = []
 

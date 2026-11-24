@@ -92,7 +92,7 @@ async def test_interactions_client_pins_v1beta_api_version(
         )
 
     monkeypatch.setattr(target=httpx2.AsyncClient, name="send", value=fake_send)
-    cog = _research_cog(enabled=True)
+    cog = _research_cog()
     await cog.interactions_client.aio.interactions.get(id="int_1")
     assert paths == ["/v1beta/interactions/int_1"]
 
@@ -100,15 +100,10 @@ async def test_interactions_client_pins_v1beta_api_version(
 # ----- restart resume sweep -----------------------------------------------------------------
 
 
-def _research_cog(enabled: bool) -> research_cog.ResearchCogs:
-    """A cog on a bot with no gateway, whose config no deployment's `.env` reaches.
-
-    The key is always present so the switch alone decides `deep_research_available`.
-    """
+def _research_cog(gemini_api_key: str = "AIza-key") -> research_cog.ResearchCogs:
+    """A cog on a bot with no gateway, whose config no deployment's `.env` reaches."""
     cog = research_cog.ResearchCogs(bot=stub_bot())
-    cog.config = LLMConfig.model_construct(
-        deep_research_enabled=enabled, gemini_api_key="AIza-key"
-    )
+    cog.config = LLMConfig.model_construct(gemini_api_key=gemini_api_key)
     return cog
 
 
@@ -135,54 +130,32 @@ async def _seed_researching(
         await rdb.set_interaction(thread_id=thread_id, interaction_id=f"int_{thread_id}")
 
 
-async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _boom(**_kwargs: object) -> None:
-        raise AssertionError("the resume must not reach the provider while the switch is off")
-
-    monkeypatch.setattr(research_cog, "resume_research_stream", _boom)
-    await _seed_researching(thread_id=30, owner_id=300)
-    cog = _research_cog(enabled=False)
-
-    await cog._resume_all()
-
-    # Nothing is attached and nothing is delivered, and the row stays `researching` because that
-    # is what it is: the interaction runs server-side and a later start with the switch on may
-    # still deliver it.
-    assert not cog._tasks
-    assert cog._active_threads == set()
-    assert [
-        session.thread_id for session in await rdb.list_resumable(created_before=database_now())
-    ] == [30]
-
-
 async def test_resume_sweep_stays_off_without_a_gemini_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _boom(**_kwargs: object) -> None:
-        raise AssertionError("a keyless deployment must not reach the provider either")
+        raise AssertionError("a keyless deployment must not reach the provider")
 
     monkeypatch.setattr(research_cog, "resume_research_stream", _boom)
-    # The gate is `deep_research_available`, so a switched-on deployment with no key is refused
-    # here rather than at `genai.Client` inside the resume's own try.
+    # The gate is `gemini_key_configured`, so a keyless deployment leaves in-flight rows intact
+    # rather than failing inside `genai.Client`.
     await _seed_researching(thread_id=35, owner_id=350)
-    cog = _research_cog(enabled=True)
-    cog.config.gemini_api_key = "   "
+    cog = _research_cog(gemini_api_key="   ")
 
     await cog._resume_all()
 
     assert not cog._tasks
+    assert cog._active_threads == set()
     assert [
         session.thread_id for session in await rdb.list_resumable(created_before=database_now())
     ] == [35]
 
 
-async def test_resume_sweep_still_resumes_when_the_switch_is_on(
+async def test_resume_sweep_resumes_when_gemini_key_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _seed_researching(thread_id=40, owner_id=400)
-    cog = _research_cog(enabled=True)
+    cog = _research_cog()
     resumed: list[int] = []
 
     async def _fake_resume_one(session: rdb.PersistentResearchSession) -> None:
@@ -210,7 +183,7 @@ async def test_resume_sweep_leaves_the_runs_this_process_started(
     start tells them apart; resuming it would run the report twice, or abandon a live run.
     """
     await _seed_researching(thread_id=50, owner_id=500)
-    cog = _research_cog(enabled=True)
+    cog = _research_cog()
     await _seed_researching(thread_id=51, owner_id=510, stored_id=False)
     resumed: list[int] = []
 
@@ -263,7 +236,7 @@ class _Anchor(FakeDiscordMessage):
 
 def _launching_cog(monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs:
     """A cog that gets as far as `create_thread` without a title model behind it."""
-    cog = _research_cog(enabled=True)
+    cog = _research_cog()
 
     async def _title(brief: str) -> str:
         del brief
@@ -271,6 +244,17 @@ def _launching_cog(monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs
 
     monkeypatch.setattr(target=cog, name="_generate_thread_name", value=_title)
     return cog
+
+
+async def test_deep_research_refuses_without_a_gemini_key() -> None:
+    """A keyless deployment refuses `/deep_research` ephemerally without touching the channel."""
+    interaction = _ResearchInteraction(channel=text_channel_granting())
+
+    await _research_cog(gemini_api_key="").deep_research(
+        as_interaction(fake=interaction), topic="topic"
+    )
+
+    assert interaction.response.sent == [{"content": "深度研究目前停用中", "ephemeral": True}]
 
 
 async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
@@ -458,7 +442,7 @@ async def test_a_thread_the_bot_lost_access_to_is_not_reported_as_deleted(
     monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str
 ) -> None:
     """Both end the resume the same way, but only a deletion is the owner's doing."""
-    cog = _research_cog(enabled=True)
+    cog = _research_cog()
     cog.bot = as_bot(
         fake=SimpleNamespace(
             get_channel=lambda channel_id: None, fetch_channel=AsyncMock(side_effect=failure)
@@ -569,7 +553,7 @@ async def test_a_refused_thread_write_is_reported_without_a_traceback(
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
     thread = _RunThread(error=make_forbidden(message="Missing Permissions"), status_posts=False)
 
-    sent = await _research_cog(enabled=True)._safe_send(
+    sent = await _research_cog()._safe_send(
         thread=cast("Thread", thread), content="-# Researching..."
     )
 

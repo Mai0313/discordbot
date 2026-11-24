@@ -225,10 +225,6 @@ async def test_answer_turn_records_real_post_fallback_model_and_respects_kill_sw
 ) -> None:
     """`reply_turn` records the actual answered model, and `feedback_enabled=False` turns both off."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
     message = FakeMessage(content="<@999> 幫我解釋 WAL")
 
     async def fake_create(**_kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
@@ -422,10 +418,6 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
 ) -> None:
     """Gateway QA attaches `🔄` below `max_regens`; `/ask`, IMAGE, and capped turns omit it."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     async def fake_create(**_kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
         completed = _completed_event(input_tokens=10, output_tokens=5)
@@ -546,10 +538,6 @@ async def test_reply_turn_persists_before_inline_media_attaches(
 ) -> None:
     """Buttons clicked while slow inline media runs already find a persisted `reply_turn` row."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
     message = FakeMessage(content="<@999> 說個故事")
     vote_during_media: list[object] = []
 

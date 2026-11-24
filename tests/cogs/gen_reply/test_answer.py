@@ -112,32 +112,30 @@ async def test_the_answer_is_told_where_its_turn_happens(guild_id: int | None) -
     assert ("424242" in instructions) is (guild_id is not None)
 
 
-@pytest.mark.parametrize(
-    ("flag", "kwarg", "generator_type"),
-    [
-        ("inline_voice_enabled", "voice_generator", VoiceGenerator),
-        ("inline_image_enabled", "image_generator", ImageGenerator),
-    ],
-)
-@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("has_key", [True, False], ids=["with-key", "keyless"])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_a_marker_switch_controls_its_generator(
-    monkeypatch: pytest.MonkeyPatch, flag: str, kwarg: str, generator_type: type, enabled: bool
+async def test_answer_passes_inline_generators_for_configured_backends(
+    monkeypatch: pytest.MonkeyPatch, has_key: bool
 ) -> None:
-    """Each inline marker's switch gates whether the QA streamer receives its generator."""
+    """Voice and image generators always ride QA; music and video require `gemini_api_key`."""
     cog = _cog()
-    cog.config = _config_stub(**{flag: enabled})
+    cog.config = _config_stub(gemini_api_key="test-key" if has_key else "")
     built = _install_streamer(monkeypatch=monkeypatch)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext()
+        system_prompt="SYS", context=ReplyContext(), allow_research=True
     )
 
-    if enabled:
-        assert isinstance(built[0][kwarg], generator_type)
-    else:
-        assert built[0][kwarg] is None
+    assert isinstance(built[0]["voice_generator"], VoiceGenerator)
+    assert isinstance(built[0]["image_generator"], ImageGenerator)
+    assert (built[0]["music_generator"] is not None) is has_key
+    assert (built[0]["video_generator"] is not None) is has_key
+    dispatch = next(fields for text, fields in logged if text == "gen_reply answer dispatch")
+    assert dispatch["markers"] == (
+        "voice,image,music,video,research" if has_key else "voice,image"
+    )
 
 
 class _FakeInteractionsResource:
@@ -183,7 +181,7 @@ async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPa
         property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
     )
     cog = _cog()
-    cog.config = _config_stub(youtube_video_enabled=True, gemini_api_key="test-key")
+    cog.config = _config_stub(gemini_api_key="test-key")
     interactions = _FakeInteractionsResource(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
 
@@ -245,17 +243,14 @@ def test_count_media_parts_counts_only_the_shapes_media_reaches_the_model_in() -
     assert count_media_parts(answer_input=answer_input) == 3
 
 
-@pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"])
+@pytest.mark.parametrize("scenario", ["non_gemini_model", "no_url", "no_key"])
 @pytest.mark.usefixtures("no_memory_review")
 async def test_youtube_qa_falls_back_to_responses(
     monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
     """Without a watchable Gemini video turn, the answer stays on the Responses path."""
     cog = _cog()
-    cog.config = _config_stub(
-        youtube_video_enabled=scenario != "kill_switch_off",
-        gemini_api_key="" if scenario == "no_key" else "test-key",
-    )
+    cog.config = _config_stub(gemini_api_key="" if scenario == "no_key" else "test-key")
     slow_name = "gpt-5-mini" if scenario == "non_gemini_model" else "gemini-test"
     monkeypatch.setattr(
         RuntimeModelCatalog,
@@ -278,11 +273,7 @@ async def test_youtube_qa_falls_back_to_responses(
     # The fallback is silent to the user, so the log is the only place the reason survives. A
     # `no_url` turn never asked for the swap here, so it names no reason.
     declines = [fields for text, fields in logged if "youtube watch declined" in text]
-    expected_reason = {
-        "non_gemini_model": "model",
-        "kill_switch_off": "kill-switch",
-        "no_key": "no-gemini-key",
-    }.get(scenario)
+    expected_reason = {"non_gemini_model": "model", "no_key": "no-gemini-key"}.get(scenario)
     assert [fields.get("reason") for fields in declines] == (
         [expected_reason] if expected_reason else []
     )
@@ -312,7 +303,7 @@ async def test_a_cut_off_answer_acts_on_none_of_its_markers(
     is the turn failing before the reply is finalized.
     """
     cog = _cog()
-    cog.config = _config_stub(inline_image_enabled=True)
+    cog.config = _config_stub()
     scheduled: list[dict[str, object]] = []
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update",

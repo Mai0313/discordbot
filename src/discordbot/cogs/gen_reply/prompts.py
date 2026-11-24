@@ -165,19 +165,8 @@ def _spoken_list(items: list[str], serial_comma: bool) -> str:
     return f"{', '.join(head)}{comma} and {last}"
 
 
-def route_prompt(inline_image_enabled: bool) -> str:
-    """Returns the route call's instructions, advertising inline QA image generation when enabled.
-
-    Args:
-        inline_image_enabled (bool): Whether the QA answer is offered the inline image marker
-            (`LLMConfig.inline_image_enabled`).
-    """
-    inline_image_note = (
-        "The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.\n\n"
-        if inline_image_enabled
-        else ""
-    )
-    qa_draws_inline = " (QA draws that picture inline itself)" if inline_image_enabled else ""
+def route_prompt() -> str:
+    """Returns the route call's instructions for classification, effort grading, and link sources."""
     source_names = _spoken_list(
         items=[f"`{source.name}`" for source in LINK_CONTEXT_SOURCES], serial_comma=True
     )
@@ -200,10 +189,12 @@ def route_prompt(inline_image_enabled: bool) -> str:
     return f"""
 You are a routing classifier and effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in every field according to the rules below.
 
-{inline_image_note}Classification rules:
+The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
+
+Classification rules:
 - IMAGE: pick this only when the image itself is the deliverable. Two cases: (1) the user explicitly asks the bot to create, draw, render, generate, or make a brand-new image and that picture is what they want back, with little or no written answer expected alongside it; (2) the user attached or referenced an image and explicitly wants it modified, edited, altered, transformed, or retouched.
 - VIDEO: two cases: (1) the user explicitly wants the bot to create, generate, or make a video or animation; (2) the user attached a video file, or replied to a message with one attached, and explicitly wants that clip modified, edited, altered, transformed, or restyled, with the edited clip as what they want back.
-- QA: everything else — normal questions; image analysis; captioning; requests to summarize, recap, explain, or make a 懶人包 for ANYTHING, including a URL, webpage, article, referenced message, attachment, pasted content, and the channel's own recent conversation; discussions about art that do NOT ask the bot to actually generate or edit an image; and any message that is primarily a question, explanation, or conversation even when showing a picture alongside the answer would be nice{qa_draws_inline}. QA is also the default whenever no other category clearly applies.
+- QA: everything else — normal questions; image analysis; captioning; requests to summarize, recap, explain, or make a 懶人包 for ANYTHING, including a URL, webpage, article, referenced message, attachment, pasted content, and the channel's own recent conversation; discussions about art that do NOT ask the bot to actually generate or edit an image; and any message that is primarily a question, explanation, or conversation even when showing a picture alongside the answer would be nice (QA draws that picture inline itself). QA is also the default whenever no other category clearly applies.
 
 Only one category applies per request. When the message is ambiguous — including when you are unsure whether a produced image is the whole point or just a helpful add-on to an answer — prefer QA.
 

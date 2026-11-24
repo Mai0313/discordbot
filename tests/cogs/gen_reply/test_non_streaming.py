@@ -573,10 +573,7 @@ async def test_answer_turn_dispatches_youtube_interactions_non_streaming(
 
     cog = _cog()
     cog.config = _config_stub(
-        youtube_video_enabled=True,
-        gemini_api_key="test-key",
-        answer_streaming_enabled=False,
-        feedback_enabled=False,
+        gemini_api_key="test-key", answer_streaming_enabled=False, feedback_enabled=False
     )
     cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=_FakeInteractions())
     message = FakeMessage(

@@ -33,13 +33,6 @@ class RouteClassifier(BaseModel):
         ),
     )
     message: SkipValidation[Message] = Field(..., description="The message being classified.")
-    inline_image_enabled: bool = Field(
-        ...,
-        description=(
-            "Whether the QA answer can draw inline (`LLMConfig.inline_image_enabled`), and so "
-            "whether the route is told it can."
-        ),
-    )
 
     async def classify(
         self,
@@ -66,7 +59,7 @@ class RouteClassifier(BaseModel):
                 carrying the `## 成員稱呼` table, or None.
         """
         message_list = [*reference_messages, *current_message]
-        instructions = route_prompt(inline_image_enabled=self.inline_image_enabled)
+        instructions = route_prompt()
         text_format: type[RouteClassification] = RouteClassification
         if recall_candidates:
             message_list = [

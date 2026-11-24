@@ -114,10 +114,6 @@ async def test_regen_happy_path_guarantees_qa_reuses_effort_deletes_chunks_in_re
 ):
     """Regen reuses effort, forces QA even if classifier returns IMAGE, records implicit feedback, and deletes chunks reversed."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> Explain WAL", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -181,10 +177,6 @@ async def test_regen_permission_rejects_bystander_and_allows_owner(
 ) -> None:
     """Only the original asker or bot owner may regenerate a reply."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -231,10 +223,6 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
     """Blind-test regen excludes prior chain models, shows remaining count, and enforces max_regens."""
     cog = _cog()
     cog.config.slow_model_blind_test_enabled = True
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> compare models", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -288,10 +276,6 @@ async def test_regen_serializes_concurrent_clicks_on_same_reply(
 ) -> None:
     """A second click arriving while the first regen runs waits on the lock and is rejected."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> race me", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -352,10 +336,6 @@ async def test_regen_failure_leaves_old_reply_and_feedback_untouched_and_cleans_
 ) -> None:
     """When replacement streaming fails, old chunks and feedback stay untouched and partial preview is deleted."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> fail me", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -408,10 +388,6 @@ async def test_regen_failure_leaves_old_reply_and_feedback_untouched_and_cleans_
 async def test_regen_preserves_prior_explicit_downvote_reason() -> None:
     """Regenerating after an explicit thumbs-down keeps the user's original downvote reason."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> fix it", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -456,10 +432,6 @@ async def test_regen_deletion_ignores_not_found_and_logs_forbidden_without_trace
 ) -> None:
     """Deletion skips `NotFound`, logs `Forbidden` at `warn` with ids and no traceback, and stops."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> long reply", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(
@@ -617,10 +589,6 @@ async def test_regen_resolves_partial_messageable_interaction_channel_via_fetch_
 ) -> None:
     """DM/uncached `PartialMessageable` interaction channels resolve to a full channel before fetch."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> DM question", author=FakeAuthor(user_id=100))
     source.guild = None
@@ -676,10 +644,6 @@ async def test_regen_validates_access_with_single_row_lookup_and_walks_chain_onc
 ) -> None:
     """Pre-lock validation reads only the target row; chain walking runs once under the lock."""
     cog = _cog()
-    cog.config.inline_voice_enabled = False
-    cog.config.inline_image_enabled = False
-    cog.config.inline_music_enabled = False
-    cog.config.inline_video_enabled = False
 
     source = FakeMessage(content="<@999> Explain WAL", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})

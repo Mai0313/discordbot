@@ -695,11 +695,7 @@ def _classifier(
     cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
-    return RouteClassifier(
-        toolkit=toolkit or cog.toolkit,
-        message=message,
-        inline_image_enabled=cog.config.inline_image_enabled,
-    )
+    return RouteClassifier(toolkit=toolkit or cog.toolkit, message=message)
 
 
 def _streamer(message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
@@ -781,17 +777,10 @@ def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
 def _config_stub(**fields: object) -> LLMConfig:
     """The cog's LLMConfig with `fields` set and every other field at its declared default.
 
-    Never read from the environment. Every inline marker is off unless `fields` turns it on, so
-    nothing is appended to the answer instructions a test did not ask for.
+    Never read from the environment.
     """
-    markers_off = {
-        "inline_voice_enabled": False,
-        "inline_image_enabled": False,
-        "inline_music_enabled": False,
-        "inline_video_enabled": False,
-    }
     assert fields.keys() <= LLMConfig.model_fields.keys(), fields
-    return LLMConfig.model_construct().model_copy(update=markers_off | fields)
+    return LLMConfig.model_construct().model_copy(update=fields)
 
 
 def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test varies
