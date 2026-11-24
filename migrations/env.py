@@ -24,6 +24,7 @@ _SECTION_METADATA: dict[str, tuple[tuple[str, str, bool], ...]] = {
         ("discordbot.services.memory.database", "Base", False),
     ),
     "messages": (("discordbot.cogs.log_msg.cog", "metadata", False),),
+    "settings": (("discordbot.utils.server_settings", "Base", False),),
 }
 
 

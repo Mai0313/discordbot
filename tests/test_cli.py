@@ -26,6 +26,7 @@ from nextcord.errors import ApplicationInvokeError
 
 from discordbot import cli
 from discordbot.cli import DiscordBot
+from discordbot.typings.config import clear_bot_config_cache
 from discordbot.utils.timezone import database_now
 from discordbot.utils.media_delivery import upload_limit_for
 
@@ -453,7 +454,8 @@ def test_cli_imports_no_feature_modules() -> None:
         (("template", "economy"), {"cleanup.db", "economy.db"}),
         (("template", "games"), {"cleanup.db", "economy.db", "games.db"}),
         (("template", "memory"), {"cleanup.db", "reply.db"}),
-        (("template", "parse_threads"), {"cleanup.db", "reply.db"}),
+        (("template", "parse_threads"), {"cleanup.db", "reply.db", "settings.db"}),
+        (("template", "settings"), {"cleanup.db", "settings.db"}),
     ],
 )
 def test_discord_bot_boots_with_subsets_of_cogs_removed(
@@ -478,10 +480,10 @@ def test_discord_bot_boots_with_subsets_of_cogs_removed(
     assert not (tmp_path / "data" / "memories").exists()
 
 
-def test_discord_bot_activity_defaults_and_reads_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_discord_bot_activity_defaults_and_reads_toml(
+    tmp_path: Path, bot_config_isolated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`DiscordBot` presence defaults to `Discord` and honors `DISCORD_BOT_ACTIVITY`."""
+    """`DiscordBot` presence defaults to `Discord` and honors `[global.bot].activity`."""
     monkeypatch.chdir(path=tmp_path)
     monkeypatch.setattr(target=cli, name="ensure_database_upgraded", value=lambda **_kwargs: None)
     monkeypatch.setattr(target=DiscordBot, name="_load_cogs_sync", value=lambda self: None)
@@ -490,7 +492,10 @@ def test_discord_bot_activity_defaults_and_reads_env(
     assert default_bot.activity is not None
     assert default_bot.activity.name == "Discord"
 
-    monkeypatch.setenv(name="DISCORD_BOT_ACTIVITY", value="custom status")
+    bot_config_isolated.write_text(
+        data='[global.bot]\nactivity = "custom status"\n', encoding="utf-8"
+    )
+    clear_bot_config_cache()
     custom_bot = DiscordBot()
     assert custom_bot.activity is not None
     assert custom_bot.activity.name == "custom status"

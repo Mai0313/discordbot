@@ -78,40 +78,41 @@ flowchart TD
 
 ## 指令
 
-| 指令                                        | 功能                                                                                                       |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `@bot <message>`                            | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                                                 |
-| `/ask <question> [attachment]`              | 在机器人看不到对话的地方和 AI 聊天：机器人没加入的服务器、群组 DM，或你和别人的 DM。                       |
-| `/deep_research <topic>`                    | 在自己开的讨论串里产出一份附引用的长篇研究报告；只能在机器人所在服务器的普通文字频道使用。                 |
-| _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                                           |
-| `/clean_threads_url <url>`                  | 私密地把 Threads 分享链接还原成贴文本身的网址，转贴时不会带出分享者。                                      |
-| _Facebook URL_                              | 自动展开公开帖子、图片与视频；被 tag 时改为读过帖子再回答。带 `comment_id` 的链接会多显示那则评论。        |
-| _Instagram URL_                             | 自动展开公开帖子、轮播图片与视频（含 Reel）；被 tag 时改为读过帖子再回答。指向评论的链接会多显示那则评论。 |
-| _Twitter URL_                               | 自动展开帖子、图片、视频与上面的整串；被 tag 时改为连同热门回复读过再回答。                                |
-| _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                                          |
-| _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                                           |
-| `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                                         |
-| `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                                    |
-| `/vip`                                      | 购买永久 VIP 特权；重复购买只会扣款一次，并显示已有的 VIP 状态。                                           |
-| `/leaderboard`                              | 显示全域余额排行榜。                                                                                       |
-| `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                                               |
-| `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                                             |
-| `/central_bank status\|borrow\|call\|repay` | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                                       |
-| `/give <member> <amount>`                   | 转账虚拟欢乐豆给其他成员或 bot。                                                                           |
-| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号权限，不是 Discord 身份组。                              |
-| `/games blackjack <bet>`                    | 开一个多人 Blackjack 牌桌；`bet` 可输入含逗号的数字，`0` 代表全下。                                        |
-| `/games dragon_gate`                        | 开一个由共享奖池支撑的多人射龙门桌。                                                                       |
-| `/games blackjack_history [member] [count]` | 显示某位玩家最近的 Blackjack 牌局：手牌、下注与结果（默认 10 局，最多 50 局）。                            |
-| `/casino`                                   | 显示赌场系统的累积损益。                                                                                   |
-| `/pocat`                                    | 显示 bot 玩家自己的钱包：余额与累计流水。                                                                  |
-| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。                     |
-| `/memory server show`                       | 私密查看机器人对这个服务器社群的记忆；只能在机器人所在的服务器使用。                                       |
-| `/memory server catchup`                    | 把这个频道上次整理后的聊天整理进服务器社群记忆，结果公开贴出；每个服务器 10 分钟一次。                     |
-| `/ping`                                     | 检查机器人响应延迟。                                                                                       |
+| 指令                                        | 功能                                                                                                            |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `@bot <message>`                            | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                                                      |
+| `/ask <question> [attachment]`              | 在机器人看不到对话的地方和 AI 聊天：机器人没加入的服务器、群组 DM，或你和别人的 DM。                            |
+| `/deep_research <topic>`                    | 在自己开的讨论串里产出一份附引用的长篇研究报告；只能在机器人所在服务器的普通文字频道使用。                      |
+| _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                                                |
+| `/clean_threads_url <url>`                  | 私密地把 Threads 分享链接还原成贴文本身的网址，转贴时不会带出分享者。                                           |
+| _Facebook URL_                              | 自动展开公开帖子、图片与视频；被 tag 时改为读过帖子再回答。带 `comment_id` 的链接会多显示那则评论。             |
+| _Instagram URL_                             | 自动展开公开帖子、轮播图片与视频（含 Reel）；被 tag 时改为读过帖子再回答。指向评论的链接会多显示那则评论。      |
+| _Twitter URL_                               | 自动展开帖子、图片、视频与上面的整串；被 tag 时改为连同热门回复读过再回答。                                     |
+| _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                                               |
+| _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                                                |
+| `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                                              |
+| `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                                         |
+| `/vip`                                      | 购买永久 VIP 特权；重复购买只会扣款一次，并显示已有的 VIP 状态。                                                |
+| `/leaderboard`                              | 显示全域余额排行榜。                                                                                            |
+| `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                                                    |
+| `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                                                  |
+| `/central_bank status\|borrow\|call\|repay` | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                                            |
+| `/give <member> <amount>`                   | 转账虚拟欢乐豆给其他成员或 bot。                                                                                |
+| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号权限，不是 Discord 身份组。                                   |
+| `/games blackjack <bet>`                    | 开一个多人 Blackjack 牌桌；`bet` 可输入含逗号的数字，`0` 代表全下。                                             |
+| `/games dragon_gate`                        | 开一个由共享奖池支撑的多人射龙门桌。                                                                            |
+| `/games blackjack_history [member] [count]` | 显示某位玩家最近的 Blackjack 牌局：手牌、下注与结果（默认 10 局，最多 50 局）。                                 |
+| `/casino`                                   | 显示赌场系统的累积损益。                                                                                        |
+| `/pocat`                                    | 显示 bot 玩家自己的钱包：余额与累计流水。                                                                       |
+| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。                          |
+| `/memory server show`                       | 私密查看机器人对这个服务器社群的记忆；只能在机器人所在的服务器使用。                                            |
+| `/memory server catchup`                    | 把这个频道上次整理后的聊天整理进服务器社群记忆，结果公开贴出；每个服务器 10 分钟一次。                          |
+| `/settings`                                 | 私密打开本服务器的社交链接自动展开开关面板（Twitter、Threads、Facebook、Instagram、Douyin）；仅限服务器管理员。 |
+| `/ping`                                     | 检查机器人响应延迟。                                                                                            |
 
 ## 快速开始
 
-启动机器人仅需设置 `DISCORD_BOT_TOKEN`；若要启用 AI 对话与媒体生成，请在 `.env` 中一并填写 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 与 `GEMINI_API_KEY`（详见 `.env.example`）。
+启动机器人仅需设置 `DISCORD_BOT_TOKEN`；若要启用 AI 对话与媒体生成，请在 `.env` 中一并填写 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 与 `GEMINI_API_KEY`（详见 `.env.example`）。非机密的默认配置位于 `src/discordbot/config.toml`，部署时可通过 `./data/config.toml` 覆盖（修改后只需重启，无需重新构建）。
 
 使用 [uv](https://docs.astral.sh/uv/) 在本地运行：
 
@@ -132,11 +133,12 @@ docker compose up -d
 
 ## Cog 架构
 
-入口点（`src/discordbot/cli.py`）与具体功能解耦，会自动加载 `src/discordbot/cogs/` 下每个包含 `__init__.py` 与 `cog.py` 的目录。可选 cog 各自在 `setup()` 中升级自己的 SQLite 数据库，可以干净地增删；在线状态（`DISCORD_BOT_ACTIVITY`）与状态/回应表情（`EMOJI_*`）默认使用中性通用值，全新部署无需配置自定义 Discord Application Emoji。
+入口点（`src/discordbot/cli.py`）与具体功能解耦，会自动加载 `src/discordbot/cogs/` 下每个包含 `__init__.py` 与 `cog.py` 的目录。可选 cog 各自在 `setup()` 中升级自己的 SQLite 数据库，可以干净地增删；在线状态与状态/回应表情在 `src/discordbot/config.toml` 中默认使用中性通用值（可通过 `./data/config.toml` 覆盖），全新部署无需配置自定义 Discord Application Emoji。
 
 - `gen_reply`：AI 聊天（`@mention`、DM、`/ask`）、媒体生成、内嵌标记、反馈与 `🔄` 重新生成
 - `memory`：`/memory` 指令与独立的长期记忆重启恢复生命周期
 - `research`：`/deep_research` 深度研究讨论串
+- `settings`：`/settings` 服务器级功能覆盖设置（`data/database/settings.db`）
 - `parse_threads`、`parse_facebook`、`parse_instagram`、`parse_twitter`、`parse_douyin`：社交链接自动展开（`parse_threads` 另提供 `/clean_threads_url`）
 - `video`：`/download_video` 视频与抖音图文下载
 - `economy`：虚拟欢乐豆、发言奖励、VIP、借贷与排行榜

@@ -14,7 +14,14 @@ from collections.abc import Callable
 import pytest
 import requests
 
-from discordbot.utils import expansion_cog, model_pricing, sqlite_config, message_cleanup
+from discordbot.utils import (
+    expansion_cog,
+    model_pricing,
+    sqlite_config,
+    message_cleanup,
+    server_settings,
+)
+from discordbot.typings import config as bot_config
 from discordbot.cogs.games import database as games_database
 from discordbot.cogs.log_msg import cog as log_msg_cog
 from discordbot.services.memory import database as memory_database
@@ -53,6 +60,19 @@ def _assert_games_isolated(tmp_path: Path) -> None:
     assert games_database._engine.url.database == str(tmp_path / "games_history.db")
 
 
+def _assert_settings_isolated(tmp_path: Path) -> None:
+    """Checks `settings_isolated_db` points `server_settings` at `tmp_path` with an empty cache."""
+    assert server_settings._engine.url.database == str(tmp_path / "settings.db")
+    assert len(server_settings._cache) == 0
+
+
+def _assert_bot_config_isolated(tmp_path: Path) -> None:
+    """Checks `bot_config_isolated` redirects `LOCAL_CONFIG_PATH` into `tmp_path` and clears cache."""
+    assert tmp_path / "config.toml" == bot_config.LOCAL_CONFIG_PATH
+    assert bot_config._cached_bot_config is None
+    assert "DISCORDBOT_LOCAL_CONFIG_DISABLED" not in os.environ
+
+
 def _assert_usage_log_isolated(tmp_path: Path) -> None:
     """Checks `usage_log_isolated_dir` redirects `USAGE_LOG_DIR` into `tmp_path`."""
     assert os.environ["USAGE_LOG_DIR"] == str(tmp_path / "usage")
@@ -70,7 +90,8 @@ def _assert_upgraded_sections_reset(tmp_path: Path) -> None:
     del tmp_path
     repo_root = REPO_ROOT.resolve()
     assert sqlite_config._upgraded_sections == {
-        (repo_root, section) for section in ("cleanup", "economy", "games", "reply", "messages")
+        (repo_root, section)
+        for section in ("cleanup", "economy", "games", "reply", "messages", "settings")
     }
 
 
@@ -123,6 +144,8 @@ _AUTOUSE_CHECKS: dict[str, Callable[[Path], None]] = {
     "messages_isolated_db": _assert_messages_isolated,
     "cleanup_store_isolated": _assert_cleanup_isolated,
     "games_history_isolated_db": _assert_games_isolated,
+    "settings_isolated_db": _assert_settings_isolated,
+    "bot_config_isolated": _assert_bot_config_isolated,
     "usage_log_isolated_dir": _assert_usage_log_isolated,
     "model_price_mirror_isolated": _assert_model_price_mirror_isolated,
     "upgraded_sections_reset": _assert_upgraded_sections_reset,

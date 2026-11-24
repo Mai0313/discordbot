@@ -107,11 +107,12 @@ Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly.
 | `/memory show\|regenerate\|clear`           | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first.                               |
 | `/memory server show`                       | Privately shows what the bot remembers about this server's community; only inside a server the bot is in.                                                                      |
 | `/memory server catchup`                    | Reads this channel's chat since the last catchup into the server's community memory, then posts the result publicly; once per server every 10 minutes.                         |
+| `/settings`                                 | Privately opens the per-server toggle panel for automatic link expansion (Twitter, Threads, Facebook, Instagram, Douyin); server administrators only.                          |
 | `/ping`                                     | Checks bot latency.                                                                                                                                                            |
 
 ## Quick Start
 
-Only `DISCORD_BOT_TOKEN` is required to boot; configure `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `GEMINI_API_KEY` in `.env` (see `.env.example`) for AI chat and media generation.
+Only `DISCORD_BOT_TOKEN` is required to boot; configure `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `GEMINI_API_KEY` in `.env` (see `.env.example`) for AI chat and media generation. Non-secret defaults live in `src/discordbot/config.toml` and can be overridden without rebuilding via `./data/config.toml`.
 
 Run locally with [uv](https://docs.astral.sh/uv/):
 
@@ -132,11 +133,12 @@ docker compose up -d
 
 ## Cog Architecture
 
-The entry point (`src/discordbot/cli.py`) is feature-agnostic and auto-loads every cog directory under `src/discordbot/cogs/` (each containing `__init__.py` and `cog.py`). Optional cogs upgrade their own SQLite databases in `setup()` and can be added or removed cleanly, and bot presence (`DISCORD_BOT_ACTIVITY`) and status/reaction emojis (`EMOJI_*`) default to neutral values so fresh deployments work without custom Discord Application Emojis.
+The entry point (`src/discordbot/cli.py`) is feature-agnostic and auto-loads every cog directory under `src/discordbot/cogs/` (each containing `__init__.py` and `cog.py`). Optional cogs upgrade their own SQLite databases in `setup()` and can be added or removed cleanly, and bot presence and status/reaction emojis default to neutral values in `src/discordbot/config.toml` (overridable via `./data/config.toml`) so fresh deployments work without custom Discord Application Emojis.
 
 - `gen_reply`: AI chat (`@mention`, DM, `/ask`), media generation, inline markers, feedback, and `🔄` regeneration
 - `memory`: `/memory` commands and standalone long-term memory restart-resume lifecycle
 - `research`: `/deep_research` managed research threads
+- `settings`: `/settings` per-server feature overrides (`data/database/settings.db`)
 - `parse_threads`, `parse_facebook`, `parse_instagram`, `parse_twitter`, `parse_douyin`: social link auto-expansion (`parse_threads` also provides `/clean_threads_url`)
 - `video`: `/download_video` video and Douyin photo downloader
 - `economy`: virtual currency (`虛擬歡樂豆`), per-message rewards, VIP, loans, and leaderboards

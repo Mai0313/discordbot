@@ -1,4 +1,4 @@
-"""Tests for the non-streaming answer path (`ANSWER_STREAMING_ENABLED=false`)."""
+"""Tests for the non-streaming answer path (`global.reply.streaming_enabled = false`)."""
 
 from __future__ import annotations
 
@@ -596,7 +596,7 @@ async def test_answer_turn_dispatches_youtube_interactions_non_streaming(
 
 @pytest.mark.usefixtures("no_memory_review")
 async def test_answer_turn_dispatches_media_persona_non_streaming() -> None:
-    """Media persona replies use `stream=False` when `ANSWER_STREAMING_ENABLED=false`."""
+    """Media persona replies use `stream=False` when `answer_streaming_enabled=False`."""
     cog = _cog()
     cog.config = _config_stub(answer_streaming_enabled=False)
     _recorded(cog).responses.response_queue.append(

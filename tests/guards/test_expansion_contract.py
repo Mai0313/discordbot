@@ -42,6 +42,7 @@ from discordbot.utils.expansion_cog import (
     report_expansion_read_failure,
     report_expansion_delivery_failure,
 )
+from discordbot.utils.server_settings import set_auto_expand_override
 from discordbot.services.platforms.base import PlatformConversation
 from discordbot.services.platforms.threads import ThreadsOutput
 from discordbot.services.platforms.twitter import TwitterConversation
@@ -513,6 +514,24 @@ async def test_a_hidden_link_does_not_hide_the_open_one_after_it(
 
     assert urls == [post]
     assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_guild_override_turns_off_auto_expansion_for_that_platform(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """Turning a platform off for one guild suppresses links there without affecting other guilds."""
+    staged = _stage(cog=cog, outcome="readable")
+    assert staged.message.guild is not None
+    await set_auto_expand_override(
+        guild_id=staged.message.guild.id, platform=cog.SOURCE, enabled=False
+    )
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.reads == []
+    assert staged.message.reactions == []
+    assert staged.message.replies == []
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)

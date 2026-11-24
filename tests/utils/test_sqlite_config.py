@@ -13,7 +13,7 @@ from alembic.config import Config
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.utils import sqlite_config, message_cleanup, expansion_placeholder
+from discordbot.utils import sqlite_config, message_cleanup, server_settings, expansion_placeholder
 from discordbot.cogs.games import database as games_database
 from discordbot.cogs.log_msg import cog as log_msg
 from discordbot.cogs.research import database as research_database
@@ -38,6 +38,7 @@ _PRODUCTION_ENGINE_URLS: dict[str, str] = {
     "games": str(games_database._engine.url),
     "messages": str(log_msg._engine.url),
     "reply": str(sqlite_config.reply_db_engine.url),
+    "settings": str(server_settings._engine.url),
 }
 
 
@@ -111,6 +112,7 @@ def test_every_database_engine_points_at_its_expected_sqlite_file() -> None:
         "games": "sqlite+aiosqlite:///data/database/games.db",
         "messages": "sqlite+aiosqlite:///data/database/messages.db",
         "reply": "sqlite+aiosqlite:///data/database/reply.db",
+        "settings": "sqlite+aiosqlite:///data/database/settings.db",
     }
     for module in (
         ask_store,

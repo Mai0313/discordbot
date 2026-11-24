@@ -1,4 +1,4 @@
-"""Non-streaming answer path for `ANSWER_STREAMING_ENABLED=false`.
+"""Non-streaming answer path for `global.reply.streaming_enabled = false`.
 
 Isolated from `streaming.py` so either transport can be removed cleanly without unwinding
 `ResponseStreamer.finalize_reply`, inline media rendering, feedback buttons, or memory updates.

@@ -30,7 +30,7 @@ Finished replies also carry 👍 and 👎 feedback buttons underneath so anyone 
 
 A link that is only incidental to the question is left alone.
 
-Paste a link behind spoiler bars (`||link||`) or in angle brackets (`<link>`) without mentioning me and I leave it unexpanded.
+Paste a link behind spoiler bars (`||link||`) or in angle brackets (`<link>`) without mentioning me and I leave it unexpanded. Server administrators can also turn each auto-expanded platform on or off for their server.
 
 ## Memory
 
@@ -100,6 +100,7 @@ I have no command for this, and I cannot pass a message on myself. Whoever runs 
 
 ## Tools
 
+- `/settings` — server administrators only: toggle automatic link expansion (Twitter, Threads, Facebook, Instagram, Douyin) on or off for this server; only works inside a server I am a member of
 - `/clean_threads_url` — turn a Threads share link into the post's own URL, so passing it on no longer names whoever shared it; the answer is visible only to you and no media is fetched
 - `/download_video` — download a video from a supported platform, a Douyin link included; a Douyin photo post comes back as images; a file my reply to this or to `/ask` attaches can be as large as your own Nitro allowance or the server's boost tier allows, whichever is larger
 - `/ping` — my response latency
@@ -110,7 +111,7 @@ Open my profile and there is an Add App button. It offers two choices: putting m
 
 On your own account I come with you: my slash commands work in every server you are in, in group DMs, and in your DMs with other people, including servers I was never added to. That copy of me is yours alone: nobody else in those places sees me there, or can use me through you.
 
-Slash commands are the only part of me that travels that way. Mentioning me and the links I expand on my own both need me to be a member of the server itself, so somewhere I have not been added, `/ask` is how you talk to me instead. Three commands do not travel either: `/deep_research` needs an ordinary text channel to open its thread in, and `/memory server show` and `/memory server catchup` need a server whose community memory I keep, so all three refuse anywhere I am not a member.
+Slash commands are the only part of me that travels that way. Mentioning me and the links I expand on my own both need me to be a member of the server itself, so somewhere I have not been added, `/ask` is how you talk to me instead. Four commands do not travel either: `/deep_research` needs an ordinary text channel to open its thread in, `/memory server show` and `/memory server catchup` need a server whose community memory I keep, and `/settings` configures a server I am in, so all four refuse anywhere I am not a member.
 
 `/ask` also runs on a clock. Discord closes a slash command fifteen minutes after you send it. I stop shortly before that so the failure can still be said: an image or a video you asked for, or an answer that stalled, becomes a note that the command ran out of time, and a voice clip, picture, song or video I was adding to an answer is left off with a ⏱️ under the reply.
 

@@ -41,6 +41,7 @@ from tests.helpers.source_tree import REPO_ROOT, env_example_names
 # a keyless deployment passes), so every name under their prefixes goes too, as does a proxy,
 # which would carry a request out through a loopback port `_refuse_remote` lets through.
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+os.environ["DISCORDBOT_LOCAL_CONFIG_DISABLED"] = "1"
 cleared = env_example_names() | {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"}
 for name in list(os.environ):
     if name.upper() in cleared or name.upper().startswith((
@@ -52,6 +53,7 @@ for name in list(os.environ):
     )):
         del os.environ[name]
 
+from discordbot.utils.lru import BoundedLRU  # noqa: E402 -- `.env` must be off first
 from discordbot.utils.model_pricing import _LoadedTable  # noqa: E402 -- `.env` must be off first
 from discordbot.services.memory.git_history import memory_git  # noqa: E402 -- `.env` must be off first
 
@@ -108,7 +110,7 @@ def migrated_databases(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pa
     """Each database upgraded to its newest migration once per worker, keyed by its section."""
     root = tmp_path_factory.mktemp(basename="migrated")
     templates: dict[str, Path] = {}
-    for database in ("cleanup", "economy", "games", "reply", "messages"):
+    for database in ("cleanup", "economy", "games", "reply", "messages", "settings"):
         templates[database] = root / f"{database}.db"
         command.upgrade(
             config=migration_config(database=database, db_path=templates[database]),
@@ -127,7 +129,10 @@ def upgraded_sections_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     repo_root = REPO_ROOT.resolve()
     monkeypatch.setattr(
         "discordbot.utils.sqlite_config._upgraded_sections",
-        {(repo_root, section) for section in ("cleanup", "economy", "games", "reply", "messages")},
+        {
+            (repo_root, section)
+            for section in ("cleanup", "economy", "games", "reply", "messages", "settings")
+        },
     )
 
 
@@ -244,6 +249,21 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 
 
 @pytest.fixture(autouse=True)
+def bot_config_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Points local TOML overrides at a throwaway file and clears the cached `BotConfig`.
+
+    Autouse because `load_bot_config()` otherwise merges `./data/config.toml` from a real
+    deployment; each test starts from packaged `src/discordbot/config.toml` defaults and can
+    write overrides to the returned path.
+    """
+    local_config = tmp_path / "config.toml"
+    monkeypatch.delenv(name="DISCORDBOT_LOCAL_CONFIG_DISABLED", raising=False)
+    monkeypatch.setattr("discordbot.typings.config.LOCAL_CONFIG_PATH", local_config)
+    monkeypatch.setattr("discordbot.typings.config._cached_bot_config", None)
+    return local_config
+
+
+@pytest.fixture(autouse=True)
 def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Points every usage recorder built during a test at a throwaway directory.
 
@@ -344,6 +364,25 @@ def games_history_isolated_db(
         db_path=tmp_path / "games_history.db",
         template=migrated_databases["games"],
     )
+
+
+@pytest.fixture(autouse=True)
+def settings_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
+    """Points per-server settings at a throwaway `settings.db` and starts with an empty LRU cache.
+
+    Autouse because every expansion cog reads `settings.db` on `on_message` and expansion tests
+    reuse guild ids such as `100`; without both resets an override written in one test would leak
+    into the next or hit the live database.
+    """
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.utils.server_settings._engine",
+        db_path=tmp_path / "settings.db",
+        template=migrated_databases["settings"],
+    )
+    monkeypatch.setattr("discordbot.utils.server_settings._cache", BoundedLRU(max_entries=1024))
 
 
 @pytest.fixture(autouse=True)

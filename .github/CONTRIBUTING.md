@@ -45,7 +45,7 @@ Any layer may import from the layers to its right, never to its left; `services/
 
 ## Adding or Removing a Cog
 
-`src/discordbot/cli.py` is feature-agnostic: it upgrades only the core `cleanup.db` (`utils/message_cleanup.py`) and auto-loads every cog directory under `src/discordbot/cogs/`. Presence activity (`typings/config.py::DiscordConfig.bot_activity`) and reaction/status emojis (`typings/emojis.py::EmojiConfig`) default to neutral values so fresh deployments boot without custom Discord Application Emojis.
+`src/discordbot/cli.py` is feature-agnostic: it upgrades only the core `cleanup.db` (`utils/message_cleanup.py`) and auto-loads every cog directory under `src/discordbot/cogs/`. Presence activity (`[global.bot].activity`) and reaction/status emojis (`[global.emojis]`) default to neutral values in `src/discordbot/config.toml` (overridable via `./data/config.toml`) so fresh deployments boot without custom Discord Application Emojis.
 
 When adding a cog:
 
@@ -194,7 +194,7 @@ docker compose pull bot && docker compose up -d bot
 
 The image's `org.opencontainers.image.revision` label names the commit it was built from, so `docker inspect` on the running container shows what is deployed.
 
-Startup upgrades `cleanup.db` from `cli.py` and each loaded cog's own databases (`economy`, `games`, `reply`) from its `setup()` (with `migrations/env.py` loading only the active section's metadata lazily), while `log_msg` still only creates `messages.db`. When a merge adds a `messages.db` revision, the bot keeps running with message logging off until it is applied by hand. Stop the bot, back up the file (the backup reads through the WAL, so nothing committed is lost), and run the revision from the new image; batch mode rebuilds the table, so it needs free disk about the size of the file:
+Startup upgrades `cleanup.db` from `cli.py` and each loaded cog's own databases (`economy`, `games`, `reply`, `settings`) from its `setup()` (with `migrations/env.py` loading only the active section's metadata lazily), while `log_msg` still only creates `messages.db`. When a merge adds a `messages.db` revision, the bot keeps running with message logging off until it is applied by hand. Stop the bot, back up the file (the backup reads through the WAL, so nothing committed is lost), and run the revision from the new image; batch mode rebuilds the table, so it needs free disk about the size of the file:
 
 ```bash
 docker compose stop bot
