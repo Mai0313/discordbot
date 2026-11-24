@@ -5,21 +5,16 @@ from http import HTTPStatus
 import time
 from typing import Literal, NoReturn, TypedDict
 import asyncio
-import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
 from nextcord import Embed, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
-from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from nextcord.ui import View
-from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import Response, ResponseUsage, ResponseStreamEvent
 
 from discordbot.typings.memory import MemoryCredits
-from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
-from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
 from discordbot.utils.discord_errors import report_discord_failure
@@ -45,7 +40,6 @@ from discordbot.cogs.gen_reply.turn_state import current_answer_streamer
 from discordbot.cogs.gen_reply.inline_media import InlineMediaAttacher
 from discordbot.cogs.gen_reply.status_marks import (
     ANSWER_EMOJI,
-    RETRY_HINT_EMOJI,
     MEMORY_READ_EMOJI,
     MEMORY_WRITE_EMOJI,
 )
@@ -53,10 +47,6 @@ from discordbot.cogs.gen_reply.feedback_views import FEEDBACK_POLICY_NOTE
 
 # Unwrap backticked Discord mentions (`<@id>`, `<@&id>`, `<#id>`) that Gemini sometimes emits.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
-
-# Fixed retry delay plus random jitter to outlast 5xx bursts without lockstep retries.
-ANSWER_RETRY_INTERVAL_SECONDS = 5.0
-ANSWER_RETRY_JITTER_SECONDS = 1.0
 
 # Shown before background memory review finishes, then replaced in place.
 MEMORY_PENDING_NOTE = f"-# {MEMORY_WRITE_EMOJI} 正在整理記憶⋯"
@@ -91,8 +81,6 @@ class IncompleteAnswerError(Exception):
             notice = f"The answer stream ended before the answer finished ({reason})."
         super().__init__(notice)
         self.reason = reason
-        # Retrying max_output_tokens would hit the same budget again.
-        self.retryable = reason != "max_output_tokens"
 
 
 class AnswerStreamError(Exception):
@@ -110,7 +98,6 @@ class AnswerStreamError(Exception):
             "server_error": HTTPStatus.INTERNAL_SERVER_ERROR.value,
             "rate_limit_exceeded": HTTPStatus.TOO_MANY_REQUESTS.value,
             "request_timeout": HTTPStatus.REQUEST_TIMEOUT.value,
-            # Billing exhaustion is mapped away from 429 so retries never re-issue it.
             "insufficient_quota": HTTPStatus.PAYMENT_REQUIRED.value,
             "authentication_error": HTTPStatus.UNAUTHORIZED.value,
             "permission_error": HTTPStatus.FORBIDDEN.value,
@@ -128,15 +115,12 @@ class AnswerStreamError(Exception):
             status_code = None
         self.code = code
         self.status_code = status_code
-        self.is_retryable = status_code is not None and (
-            status_code >= 500 or status_code in {408, 409, 429}
-        )
 
 
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
 
-    `consume` reads one attempt while a background task edits Discord on a fixed cadence;
+    `consume` reads the stream while a background task edits Discord on a fixed cadence;
     `finalize_reply` writes the usage footer, optional memory credits, and inline generated media.
     """
 
@@ -178,31 +162,17 @@ class ResponseStreamer(BaseModel):
     carries_turn_notices: bool = Field(
         default=True,
         description=(
-            "Whether `reply` is the turn's own surface, so the turn's notices belong on it: a "
-            "`Retrying...` notice while an attempt is in flight, and the error embed once every "
-            "attempt is spent. False for a media persona reply, which renders onto the DELIVERED "
-            "image or video -- a notice there would caption a finished picture with a promise of "
-            "more to come and nothing would take it back on the failing path, and the "
-            "deliverable itself must never be overwritten by an error."
+            "Whether `reply` is the turn's own surface, so the turn's `/ask` delivery window, "
+            "pending memory note, and error embed belong on it. False for a media persona reply, "
+            "which renders onto the DELIVERED image or video -- the deliverable itself must never "
+            "be overwritten by an error."
         ),
     )
     displayed_content: str = Field(
         default="", description="The text last written to the Discord reply."
     )
     content_started: bool = Field(
-        default=False,
-        description="Whether THIS attempt has seen its first non-newline text delta.",
-    )
-    content_ever_started: bool = Field(
-        default=False,
-        description=(
-            "Whether any attempt put reply text on screen. Survives a retry reset, so it "
-            "answers 'was anything ever written here' where `content_started` answers 'is "
-            "this attempt past its leading newlines'."
-        ),
-    )
-    attempts: int = Field(
-        default=1, description="How many times the answer stream was opened for this reply."
+        default=False, description="Whether the stream has seen its first non-newline text delta."
     )
     preview_interval_seconds: float = Field(
         default=1.0, description="Cadence of the snapshot editor's Discord edits while streaming."
@@ -301,8 +271,6 @@ class ResponseStreamer(BaseModel):
     _hint_line: str = PrivateAttr(default="")
     # True if reply was deleted mid-stream, suppressing dropped-media hints.
     _reply_deleted: bool = PrivateAttr(default=False)
-    # Ensures first-reasoning latency is logged once across retries.
-    _reasoning_logged: bool = PrivateAttr(default=False)
     _answer_seconds: float = PrivateAttr(default=0.0)
 
     @property
@@ -412,14 +380,12 @@ class ResponseStreamer(BaseModel):
             delta = delta.lstrip("\n")
             if not delta:
                 return
-            if not self._reasoning_logged:
-                self._reasoning_logged = True
-                logfire.info(
-                    "gen_reply first reasoning delta",
-                    elapsed_seconds=time.monotonic() - self.created_at,
-                    model=self.model_name,
-                    message_id=self.message.id,
-                )
+            logfire.info(
+                "gen_reply first reasoning delta",
+                elapsed_seconds=time.monotonic() - self.created_at,
+                model=self.model_name,
+                message_id=self.message.id,
+            )
         self.reasoning_content += delta
         self._preview_editor().start()
 
@@ -430,55 +396,14 @@ class ResponseStreamer(BaseModel):
             if not delta:
                 return
             self.content_started = True
-            if not self.content_ever_started:
-                self.content_ever_started = True
-                logfire.info(
-                    "gen_reply first content delta",
-                    elapsed_seconds=time.monotonic() - self.created_at,
-                    model=self.model_name,
-                    message_id=self.message.id,
-                )
+            logfire.info(
+                "gen_reply first content delta",
+                elapsed_seconds=time.monotonic() - self.created_at,
+                model=self.model_name,
+                message_id=self.message.id,
+            )
         self.stored_content += delta
         self._preview_editor().start()
-
-    def reset_for_retry(self) -> None:
-        """Resets per-attempt text state and re-arms the preview editor for the next attempt.
-
-        Preserves `reply`, `created_at`, `content_ever_started`, `_reasoning_logged`, and token
-        counters across attempts, and resets the preview editor so the next delta can restart live
-        preview edits.
-        """
-        self.attempts += 1
-        self.stored_content = ""
-        self.reasoning_content = ""
-        self.content_started = False
-        if self._editor is not None:
-            self._editor.reset()
-
-    async def announce_retry(self) -> None:
-        """Marks the source message with `RETRY_HINT_EMOJI` and edits an existing reply to a retry notice.
-
-        Does not create a reply when none exists, and suppresses Discord HTTP errors.
-        """
-        await self.surface.mark(emoji=RETRY_HINT_EMOJI)
-        if self.reply is None:
-            return
-        notice = self._retry_notice()
-        with contextlib.suppress(HTTPException):
-            await self.reply.edit(content=notice)
-            self.displayed_content = notice
-
-    def _retry_notice(self) -> str:
-        """The text a reply carries while the next attempt is in flight."""
-        return f"-# {RETRY_HINT_EMOJI} Retrying... ({self.attempts}/{ANSWER_STREAM_MAX_ATTEMPTS})"
-
-    async def withdraw_retry_notice(self) -> None:
-        """Deletes `reply` if it is still showing only the retry notice after all attempts fail."""
-        if self.reply is None or self.displayed_content != self._retry_notice():
-            return
-        with contextlib.suppress(HTTPException):
-            await self.reply.delete()
-        self.reply = None
 
     async def land_failure(self, embed: Embed) -> bool:
         """Returns whether `embed` was landed under the partial answer on the in-progress `reply`.
@@ -536,7 +461,6 @@ class ResponseStreamer(BaseModel):
         """Records model and usage from a failed response event and raises `AnswerStreamError`."""
         if response.model:
             self.model_name = response.model
-        # Billed like any other attempt, so count it toward the final footer.
         self._record_usage(usage=response.usage)
         error = response.error
         code = error.code if error is not None else None
@@ -564,7 +488,6 @@ class ResponseStreamer(BaseModel):
                     self.tool_use.record_response(response=response.response)
             elif response.type == "response.incomplete":
                 self.model_name = response.response.model
-                # Billed like any other attempt, so count it toward the final footer.
                 self._record_usage(usage=response.response.usage)
                 details = response.response.incomplete_details
                 incomplete = (
@@ -657,7 +580,6 @@ class ResponseStreamer(BaseModel):
             backend=self.backend,
             effort=self.model_effort,
             answer_seconds=self._answer_seconds,
-            attempts=self.attempts,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cost=cost,
@@ -829,8 +751,7 @@ class ResponseStreamer(BaseModel):
         """Consumes `responses` into this streamer and stops the live preview editor when done.
 
         Args:
-            responses (AsyncIterator[ResponseStreamEvent]): Stream of Responses API events for one
-                attempt.
+            responses (AsyncIterator[ResponseStreamEvent]): Stream of Responses API events.
 
         Raises:
             AnswerStreamError: The stream emitted a `response.failed` or `error` event.
@@ -852,84 +773,42 @@ class ResponseStreamer(BaseModel):
                 model=self.model_name,
                 backend=self.backend,
                 reason=incomplete,
-                attempt=self.attempts,
                 reply_chars=len(self.stored_content),
                 reasoning_chars=len(self.reasoning_content),
             )
             raise IncompleteAnswerError(reason=incomplete)
 
 
-# Async factory so each retry re-issues the request across Responses and Interactions backends.
+# Async factory so opening the stream runs inside the `/ask` delivery window.
 type AnswerStreamFactory = Callable[[], Awaitable[AsyncIterator[ResponseStreamEvent]]]
 
 
-async def stream_answer_with_retry(
-    streamer: ResponseStreamer, open_stream: AnswerStreamFactory, message_id: int
-) -> str:
-    """Returns the finalized reply text after streaming `open_stream` into `streamer` with retries.
+async def stream_answer(streamer: ResponseStreamer, open_stream: AnswerStreamFactory) -> str:
+    """Returns the finalized reply text after streaming `open_stream` into `streamer`.
 
-    Retries on retryable LLM errors and on incomplete streams other than `max_output_tokens`, up
-    to `ANSWER_STREAM_MAX_ATTEMPTS`. Calls `reset_for_retry` between attempts and `announce_retry`
-    when `streamer.carries_turn_notices` is True. Runs attempts inside
-    `streamer.surface.delivery_budget_seconds()` when `carries_turn_notices` is True;
+    Runs `open_stream` and `streamer.consume` inside
+    `streamer.surface.delivery_budget_seconds()` when `streamer.carries_turn_notices` is True;
     `finalize_reply` runs outside that window.
 
     Args:
-        streamer (ResponseStreamer): Streamer rendering this reply in place across attempts.
+        streamer (ResponseStreamer): Streamer rendering this reply onto Discord.
         open_stream (AnswerStreamFactory): Factory that issues the request and returns its event
             stream.
-        message_id (int): Triggering Discord message id for log correlation.
 
     Raises:
         TimeoutError: The `/ask` delivery window expired, carrying `WINDOW_EXPIRED_NOTICE`.
-        AnswerStreamError: The last attempt emitted a `response.failed` or `error` event.
-        IncompleteAnswerError: The last attempt ended without completing, or ran out of output
-            budget.
-        Exception: The last attempt's unwrapped provider failure after all attempts are spent.
+        AnswerStreamError: The stream emitted a `response.failed` or `error` event.
+        IncompleteAnswerError: The stream ended without completing, or ran out of output budget.
+        Exception: Any unwrapped provider failure raised while opening or consuming the stream.
     """
-
-    def _worth_another_attempt(failure: BaseException) -> bool:
-        if isinstance(failure, IncompleteAnswerError):
-            return failure.retryable
-        if isinstance(failure, AnswerStreamError):
-            return failure.is_retryable
-        return is_retryable_llm_error(exc=failure)
-
-    async def _before_retry(retry_state: RetryCallState) -> None:
-        failure = retry_state.outcome.exception() if retry_state.outcome else None
-        streamer.reset_for_retry()
-        if streamer.carries_turn_notices:
-            await streamer.announce_retry()
-        logfire.warn(
-            "gen_reply answer stream retry",
-            message_id=message_id,
-            attempt=retry_state.attempt_number,
-            error_type=type(failure).__name__ if failure else None,
-            status_code=llm_status_code(exc=failure) if failure else None,
-            _exc_info=failure,
-        )
-
-    async def _attempt() -> None:
-        await streamer.consume(responses=await open_stream())
-
-    retrying = AsyncRetrying(
-        retry=retry_if_exception(_worth_another_attempt),
-        wait=wait_fixed(wait=ANSWER_RETRY_INTERVAL_SECONDS)
-        + wait_random(min=0, max=ANSWER_RETRY_JITTER_SECONDS),
-        stop=stop_after_attempt(ANSWER_STREAM_MAX_ATTEMPTS),
-        before_sleep=_before_retry,
-        reraise=True,
-    )
     window = asyncio.timeout(
         delay=streamer.surface.delivery_budget_seconds() if streamer.carries_turn_notices else None
     )
     try:
         async with window:
-            await retrying(_attempt)
+            await streamer.consume(responses=await open_stream())
     except Exception as exc:
         # Keep streamer published so the caller's error path can land the failure on the reply.
-        if streamer.carries_turn_notices:
-            await streamer.withdraw_retry_notice()
         if window.expired():
             raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
         raise

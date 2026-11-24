@@ -434,7 +434,7 @@ footer.end{
     <div class="legend">
       <div>
         <h4 class="lp">走 LiteLLM Proxy</h4>
-        <p>用 <code>OpenAI SDK</code> 打 <code>OPENAI_BASE_URL</code>，一律 Responses API。有 proxy 端的成本與用量追蹤，也有 router 自己的重試與 fallback。</p>
+        <p>用 <code>OpenAI SDK</code> 打 <code>OPENAI_BASE_URL</code>，一律 Responses API。有 proxy 端的成本與用量追蹤，也有 router 自己的 fallback。</p>
       </div>
       <div>
         <h4 class="ld">直連 Google</h4>
@@ -645,7 +645,7 @@ footer.end{
         <tr><td class="nowrap"><b>歷史來源</b></td><td>直接走頻道歷史</td><td>bot 不在頻道裡、沒有讀取歷史權限，只能重播<strong>它自己記下的對話</strong>（每個頻道 × 每個人一組）</td></tr>
         <tr><td class="nowrap"><b>狀態表情</b></td><td>有，一整串</td><td>沒有。合成出來的訊息在 Discord 上不存在，加表情只會 404。改由 Discord 自己的「思考中」狀態和就地串流的回覆來代替</td></tr>
         <tr><td class="nowrap"><b>訊息額度</b></td><td>無上限</td><td>編輯原始回應不限次，但<strong>只能再發 5 則 follow-up</strong>。超過大約一萬二千字的答案會被截斷並註明</td></tr>
-        <tr><td class="nowrap"><b>時間額度</b></td><td>無</td><td>互動 token <strong>15 分鐘</strong>後失效，之後連失敗通知都送不出去。所以 IMAGE / VIDEO 生成、QA 答案串流（重試在內）與 QA 回覆的內嵌媒體都被綁在「token 剩餘時間扣掉 60 秒」之內：生成或答案來不及就說明 Discord 視窗關了，內嵌媒體來不及就丟掉並留 ⏱️。IMAGE / VIDEO 交付後的人格回話刻意不綁，它沒有失敗通知需要留這段餘裕；VIDEO 人格回話看片用的 Files 上傳與記憶結果那行的事後編輯也沒綁</td></tr>
+        <tr><td class="nowrap"><b>時間額度</b></td><td>無</td><td>互動 token <strong>15 分鐘</strong>後失效，之後連失敗通知都送不出去。所以 IMAGE / VIDEO 生成、QA 答案串流與 QA 回覆的內嵌媒體都被綁在「token 剩餘時間扣掉 60 秒」之內：生成或答案來不及就說明 Discord 視窗關了，內嵌媒體來不及就丟掉並留 ⏱️。IMAGE / VIDEO 交付後的人格回話刻意不綁，它沒有失敗通知需要留這段餘裕；VIDEO 人格回話看片用的 Files 上傳與記憶結果那行的事後編輯也沒綁</td></tr>
         <tr><td class="nowrap"><b>伺服器記憶</b></td><td>會讀也會寫（限公開頻道）</td><td>完全不碰。bot 不在頻道裡，判斷不了誰看得到，寫得進去卻讀不回來的社群記憶只會默默過期</td></tr>
         <tr><td class="nowrap"><b>回饋與重抽按鈕</b></td><td>開啟 <code>FEEDBACK_ENABLED</code> 時附帶 👍 / 👎；QA 回覆在未達重抽上限前另附 🔄</td><td>開啟 <code>FEEDBACK_ENABLED</code> 時附帶 👍 / 👎，但不提供 🔄（沒有可重抓的來源訊息）</td></tr>
       </tbody>
@@ -807,13 +807,11 @@ footer.end{
       <dt>重抽與刪舊順序</dt><dd>僅限原發問者（或 bot 擁有者）點擊，同一則回覆以鎖序列化防連點。重抽時會重取原始發問訊息、保留原思考強度並強制走 QA 路線（仍執行分類以保留 YouTube、連結貼文與第三人記憶判定）。只有在新回覆順利落地並寫入 <code>reply.db</code> 後，才會對舊回合補記一筆 <code>regen</code> 隱含倒讚（若使用者原本已點過明確 👎 則保留原原因不覆寫）並由後往前刪除舊分段訊息；任何失敗都會保留舊回覆與評分原狀。</dd>
     </div>
 
-    <h3>有 bot 端重試的呼叫</h3>
+    <h3>重試與錯誤承接</h3>
     <div class="note warn">
       <span class="tag">哪些路徑會由 bot 端重試</span>
-      <p>LiteLLM 的 router 會對<strong>非串流</strong>路徑套用重試與 fallback，所以多數一次性呼叫失敗會自動降級；唯一例外是圖像生成（<code>ImageGenerator</code>），回傳空結果時會自動重試一次才報錯。串流路徑則由 <code>stream_answer_with_retry</code> 承接：除了 QA 答案串流，IMAGE / VIDEO 交付後的人格化回話也走同一套串流重試。</p>
-      <p>串流的 Responses 在 LiteLLM 1.103 以前完全沒有 fallback，provider 5xx 會原封不動打到客戶端——而那正好是使用者親眼看著它失敗的那一輪。實測某 12 小時窗口內 82 則回覆有 46 則死在這裡，同期一次性呼叫零失敗。1.104 起串流也會 fallback，不管是還沒吐字就 503，還是吐到一半才收到錯誤幀（備援模型會接著寫下去）。bot 端重試現在補的是 fallback 鏈蓋不到的部分：整條鏈一起失敗的時候，以及 YouTube 那條直連 Google、沒有 proxy 的串流。</p>
-      <p>所以串流回覆最多開 <strong>3 次</strong>（重試 2 次），每次間隔 5 秒加最多 1 秒抖動。重試不是無聲的：來源訊息上會多一個 🔁，已經存在的回覆會被換成「Retrying… (n/3)」的字樣，次數用完而畫面上只剩這行字時再把它撤掉。在 <code>/ask</code> 上，三次嘗試全部綁在 token 剩下的時間裡，到點就不再試，改說明 Discord 視窗關了。</p>
-      <p>判斷可不可以重試是看結構不是看訊息文字。中途失敗常常是一個裸的 API 錯誤，狀態碼是<strong>字串</strong> <code>"503"</code> 藏在 body 裡，只讀 <code>status_code</code> 什麼都抓不到。YouTube 那個後端丟的是 google-genai 另一套錯誤類別，判斷時一併認得，所以暫時性狀態碼與斷線一樣會重試；不重試的是它串流裡的 in-band 錯誤事件，因為照文件那裡的 code 是一個 URI 而不是狀態碼。</p>
+      <p>LiteLLM 的 router 負責非串流與串流路徑的 fallback（<code>num_retries: 0</code>），SDK 端維持各自預設重試（<code>OpenAI</code> 與 <code>google-genai</code>）；bot 端不再為答案串流加外層重試迴圈。唯一保留 bot 端重試的是圖像生成（<code>ImageGenerator</code>），回傳空結果時會自動重試一次才報錯。</p>
+      <p>QA 答案串流與 IMAGE / VIDEO 交付後的人格化回話都透過單次的 <code>stream_answer</code> 承接：在 <code>/ask</code> 上，QA 答案串流綁在 token 剩餘時間扣掉 60 秒的交付視窗內，逾時直接回報 Discord 視窗關閉；若串流中途失敗或未收到完成事件（如內容過濾、輸出預算用盡），回覆會保留已寫出的文字並在底下附上錯誤 embed。</p>
     </div>
   </section>
 
@@ -1166,7 +1164,7 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 15 -->
   <section id="s15">
     <div class="s-head"><span class="s-num">15</span><h2>使用者在畫面上會看到的訊號</h2></div>
-    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。狀態鏈、連結來源、YouTube（▶️）、研究（🔬）與語音（🗣️）預設為 Unicode，部署時可透過 <code>EMOJI_*</code> 環境變數覆寫為自訂應用程式表情；其餘提示標記（🔁、音樂 🎵、⏱️、⚠️、❓）為固定 Unicode。</p>
+    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。狀態鏈、連結來源、YouTube（▶️）、研究（🔬）與語音（🗣️）預設為 Unicode，部署時可透過 <code>EMOJI_*</code> 環境變數覆寫為自訂應用程式表情；其餘提示標記（音樂 🎵、⏱️、⚠️、❓）為固定 Unicode。</p>
 
     <h4>狀態鏈（會被下一個取代）</h4>
     <div class="signals">
@@ -1188,7 +1186,6 @@ footer.end{
       <div class="sig"><span class="ic">📺</span><span><span class="sn">Bilibili</span><span class="sx">讀過那支 Bilibili 影片了</span></span></div>
       <div class="sig"><span class="ic">▶️</span><span><span class="sn">YouTube</span><span class="sx">這則回覆是真的看過影片</span></span></div>
       <div class="sig"><span class="ic">🔬</span><span><span class="sn">研究</span><span class="sx">開了一條深度研究討論串</span></span></div>
-      <div class="sig"><span class="ic">🔁</span><span><span class="sn">重試</span><span class="sx">這則回覆花了不只一次嘗試</span></span></div>
       <div class="sig"><span class="ic">🗣️🖼️🎬🎵</span><span><span class="sn">生成中</span><span class="sx">語音、圖、片、音樂正在算</span></span></div>
       <div class="sig"><span class="ic">⏱️</span><span><span class="sn">碼表</span><span class="sx">語音算太久，被放掉了（其他媒體逾時是 ⚠️）；<code>/ask</code> 視窗到期時還沒做好的任何媒體也標這個</span></span></div>
       <div class="sig"><span class="ic">⚠️</span><span><span class="sn">警告</span><span class="sx">語音以外的附加媒體沒生出來，逾時也算（<code>/ask</code> 視窗到期除外，那是 ⏱️）</span></span></div>
@@ -1197,7 +1194,7 @@ footer.end{
 
     <h4>回覆底下的小字</h4>
     <div class="kv">
-      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時模型與強度會被遮蔽成 <code>blind-test-model</code>（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。<span class="mut">注意重試過的那一輪會少報：用量只在完成事件送出，死掉的那次上游照樣計費但回報不了。</span></dd>
+      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時模型與強度會被遮蔽成 <code>blind-test-model</code>（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。</dd>
       <dt>回饋按鈕與評分小字</dt><dd>開啟 <code>FEEDBACK_ENABLED</code> 時，最終回覆（或長回覆最後一段）底下會附帶 <code>-# 評分將用於架構改進⋯</code> 小字與常駐按鈕：👍 / 👎 供任何人評分（再按取消、切換覆寫，👎 另提供僅本人可見的原因按鈕、自由填寫與「取消評分」）；伺服器與私訊的 QA 回覆在未達重抽上限前另附 🔄，供原發問者就地重新生成。</dd>
       <dt>📖 讀了</dt><dd>這則回覆讀了誰的記憶。超過兩個人會收斂成「等 N 人」。</dd>
       <dt>✏️ 記下了 / 🩹 不再記得</dt><dd>背景審查完才會出現，換掉那句「正在整理記憶⋯」。一則回覆只會有一條記憶結果，而且這行不會進入之後的對話歷史。</dd>

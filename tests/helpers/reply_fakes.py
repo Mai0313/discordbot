@@ -18,7 +18,6 @@ from nextcord import File, Embed, Message
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.memory import MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import RouteClassification, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
@@ -637,10 +636,10 @@ def _install_streamer(
     """Swaps `ResponseStreamer` for a double that returns `reply`, or raises it, unstreamed.
 
     The double accepts whatever the answer path constructs it with, and the returned list gets
-    those kwargs once per construction. It carries only what a turn with no research launch and
-    no retryable failure reads back (`carries_turn_notices` is the one a failing `consume` needs);
-    a test driving research or a retry needs the attributes those paths read, since a missing one
-    fails with an AttributeError the reply path's own handler would swallow.
+    those kwargs once per construction. It carries only what a turn with no research launch reads
+    back (`carries_turn_notices` is the one a failing `consume` needs); a test driving research
+    needs the attributes that path reads, since a missing one fails with an AttributeError the
+    reply path's own handler would swallow.
     """
     built: list[dict[str, object]] = []
 
@@ -648,7 +647,7 @@ def _install_streamer(
         """Stands in for `ResponseStreamer` without touching Discord or the event stream."""
 
         carries_turn_notices = False
-        content_ever_started = False
+        content_started = False
         model_name = ""
         last_reply: object | None = None
 
@@ -1059,17 +1058,6 @@ def _stream_events_then_raise(
         raise error
 
     return cast("AsyncIterator[ResponseStreamEvent]", _iter())
-
-
-def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Makes the answer retry sleepless.
-
-    Both halves are needed: the jitter is a `wait_random` added on top of the fixed interval,
-    independent of it, so zeroing the interval alone still sleeps up to a second per attempt
-    and the test only looks instant.
-    """
-    monkeypatch.setattr(streaming_module, "ANSWER_RETRY_INTERVAL_SECONDS", 0.0)
-    monkeypatch.setattr(streaming_module, "ANSWER_RETRY_JITTER_SECONDS", 0.0)
 
 
 def _stalled(call: Callable[..., Awaitable[object]]) -> Callable[..., Awaitable[object]]:

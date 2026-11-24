@@ -62,7 +62,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **The owner does not trade quality for inference cost**: never propose a cheaper tier or a tighter memory limit on cost grounds. `slow_model` candidates are the newest snapshot or a pro one; never propose anything else for it on latency grounds.
 - **Author runtime prompts in English** (prompts, tool descriptions, `TTS_STYLE_DIRECTIVE`). Chinese stays only as quoted data (a token the context carries, such as `## 成員稱呼`, or a sample of what users type or a note should say), the 轉帳 caution in `COMMON_PROMPT` and the bot's name 破貓.
 - **A runtime prompt whose output is posted to Discord as markdown embeds `typings/discord_markdown.py::DISCORD_MARKDOWN_RULES`**; output that stays model input (a memory note) or plain text (a thread title) does not.
-- **Streaming QA and media persona replies ride `cogs/gen_reply/streaming.py::stream_answer_with_retry` (on an error or a stream that ends without completing), and `cogs/gen_reply/generation.py::ImageGenerator` retries an empty result once.** The owner keeps the streaming retry beside the proxy's fallbacks: do not propose removing it.
+- **Streaming QA and media persona replies ride `cogs/gen_reply/streaming.py::stream_answer` (single attempt, leaving retries to SDK defaults and fallbacks to the proxy), and `cogs/gen_reply/generation.py::ImageGenerator` retries an empty result once.**
 
 ## Other Cogs
 

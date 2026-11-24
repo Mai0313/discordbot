@@ -50,7 +50,7 @@ from discordbot.services.memory.writer import (
     server_subject,
     target_centered_memory_messages,
 )
-from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer
 from discordbot.services.memory.pipeline import schedule_memory_update
 from discordbot.utils.channel_visibility import channel_is_public
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
@@ -354,7 +354,7 @@ class AnswerTurn(BaseModel):
             ):
 
                 async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-                    """Issues the persona-reply request; called again per retry attempt."""
+                    """Issues the persona-reply request inside the stream helper."""
                     return await self.toolkit.openai_client.responses.create(
                         model=model.name,
                         instructions=build_runtime_instructions(
@@ -369,9 +369,7 @@ class AnswerTurn(BaseModel):
                         extra_headers={"x-litellm-end-user-id": self.message.author.name},
                     )
 
-                persona_reply = await stream_answer_with_retry(
-                    streamer=streamer, open_stream=open_stream, message_id=self.message.id
-                )
+                persona_reply = await stream_answer(streamer=streamer, open_stream=open_stream)
             # Record the persona reply so `/ask` history retains evidence the media was delivered.
             await self.surface.record_turn(answer=persona_reply)
         except Exception as exc:
@@ -392,12 +390,11 @@ class AnswerTurn(BaseModel):
                 message_id=self.message.id,
                 model=model.name,
             )
-            # Delete an unstarted hosted-case base ping; check `content_ever_started` because
-            # retries reset `content_started`.
+            # Delete an unstarted hosted-case base ping so it never lingers without reply text.
             if (
                 reply is None
                 and base is not None
-                and (streamer is None or not streamer.content_ever_started)
+                and (streamer is None or not streamer.content_started)
             ):
                 with contextlib.suppress(Exception):
                     await base.delete()
@@ -609,7 +606,7 @@ class AnswerTurn(BaseModel):
         ):
 
             async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-                """Issues the answer request; called again per retry attempt."""
+                """Issues the answer request inside the `/ask` delivery window."""
                 if use_interactions and yt_url is not None:
                     return create_interactions_answer_stream(
                         client=toolkit.gemini_client,
@@ -630,9 +627,7 @@ class AnswerTurn(BaseModel):
                     extra_headers={"x-litellm-end-user-id": self.message.author.name},
                 )
 
-            full_reply = await stream_answer_with_retry(
-                streamer=streamer, open_stream=open_stream, message_id=self.message.id
-            )
+            full_reply = await stream_answer(streamer=streamer, open_stream=open_stream)
         await self._sync_extra_reply_chunk_ids(streamer=streamer)
         # Launch after streaming finishes so thread creation never races the reply's media edit.
         if research_offered and streamer.markers.research_brief:
