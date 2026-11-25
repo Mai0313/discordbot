@@ -20,8 +20,8 @@ from agents.models.openai_responses import OpenAIResponsesModel
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.cogs.research.agent import RESEARCH_TOOLS, RESEARCH_AGENT_CONFIG
-from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
+from discordbot.cogs.research.agent import RESEARCH_TOOLS, research_agent_config
+from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, format_identity_model
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -40,11 +40,14 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
         RunResult: Final agent run result.
     """
     set_tracing_disabled(disabled=True)
+    slow_model_name = RuntimeModelCatalog().slow_model.name
     agent = Agent(
         name="Assistant",
-        instructions=REPLY_PROMPT,
+        instructions=format_identity_model(
+            system_prompt=REPLY_PROMPT, model_label=slow_model_name
+        ),
         model=OpenAIResponsesModel(
-            model=RuntimeModelCatalog().slow_model.name,
+            model=slow_model_name,
             openai_client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
         ),
     )
@@ -63,9 +66,12 @@ def gen_reply_gemini(user_prompt: str) -> None:
     client = genai.Client(
         api_key=config.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
     )
+    catalog = RuntimeModelCatalog()
     responses = client.interactions.create(
-        agent=RuntimeModelCatalog().antigravity_model.name,
-        system_instruction=REPLY_PROMPT,
+        agent=catalog.antigravity_model.name,
+        system_instruction=format_identity_model(
+            system_prompt=REPLY_PROMPT, model_label=catalog.slow_model.name
+        ),
         input=user_prompt,
         environment=EnvironmentParam(
             type="remote",
@@ -75,7 +81,7 @@ def gen_reply_gemini(user_prompt: str) -> None:
         ),
         stream=True,
         tools=RESEARCH_TOOLS,
-        agent_config=RESEARCH_AGENT_CONFIG,
+        agent_config=research_agent_config(model=catalog.antigravity_reasoning_model.name),
     )
     # A `str` agent misses the SDK's `AgentOption` literal overloads, so the call types as
     # `Interaction | Stream`; `stream=True` makes it the stream.

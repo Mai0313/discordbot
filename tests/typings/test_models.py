@@ -21,11 +21,14 @@ where #459 lost whole replies to it.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
+from discordbot.typings.config import clear_bot_config_cache
 from discordbot.typings.models import (
     ModelSettings,
+    SlowModelSettings,
     RouteClassification,
     RuntimeModelCatalog,
     RecallRouteClassification,
@@ -39,15 +42,21 @@ _REFUSED_EFFORTS = frozenset({"none", "disable"})
 
 
 def _catalog_models() -> dict[str, ModelSettings]:
-    """Every ModelSettings the catalog exposes, keyed by its property name."""
+    """Every ModelSettings the catalog exposes (including every `slow_candidates` entry)."""
     catalog = RuntimeModelCatalog()
     names = [
         name
         for name in dir(type(catalog))
         if not name.startswith("_") and isinstance(getattr(type(catalog), name, None), property)
     ]
-    found = {name: getattr(catalog, name) for name in names}
-    return {name: value for name, value in found.items() if isinstance(value, ModelSettings)}
+    found: dict[str, ModelSettings] = {}
+    for name in names:
+        value = getattr(catalog, name)
+        if isinstance(value, ModelSettings):
+            found[name] = value
+    for index, candidate in enumerate(catalog.slow_candidates):
+        found[f"slow_candidates[{index}]"] = candidate
+    return found
 
 
 def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
@@ -101,7 +110,34 @@ def test_model_settings_and_catalog_helpers() -> None:
 def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
-    assert {"triage_model", "fast_model", "slow_model"} <= set(models)
+    assert {"triage_model", "fast_model", "slow_model", "slow_candidates[0]"} <= set(models)
+
+
+def test_runtime_model_catalog_reads_local_config_overrides(bot_config_isolated: Path) -> None:
+    """`RuntimeModelCatalog` reflects `[global.models]` overrides from local `config.toml`."""
+    bot_config_isolated.write_text(
+        data=(
+            '[global.models]\nantigravity_reasoning = "gemini-4-neon"\n'
+            'memory = { name = "gemini-4-hydrogen", effort = "medium" }\n\n'
+            '[global.models.slow]\ndisplay_name = "Gemini Next"\n'
+            "candidates = [\n"
+            '  { name = "gemini-4-neon", effort = "low" },\n'
+            '  { name = "gemini-4-hydrogen", effort = "medium" },\n'
+            "]\n"
+        ),
+        encoding="utf-8",
+    )
+    clear_bot_config_cache()
+
+    catalog = RuntimeModelCatalog()
+    assert catalog.antigravity_reasoning_model.name == "gemini-4-neon"
+    assert catalog.memory_model == ModelSettings(name="gemini-4-hydrogen", effort="medium")
+    assert catalog.slow_display_name == "Gemini Next"
+    assert catalog.slow_candidates == (
+        SlowModelSettings(name="gemini-4-neon", effort="low"),
+        SlowModelSettings(name="gemini-4-hydrogen", effort="medium"),
+    )
+    assert catalog.slow_model == SlowModelSettings(name="gemini-4-neon", effort="low")
 
 
 @pytest.mark.parametrize("route_shape", [RouteClassification, RecallRouteClassification])

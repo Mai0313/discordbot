@@ -44,6 +44,10 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
 if TYPE_CHECKING:
     from collections.abc import Sequence, Coroutine
 
+type AttachmentCache = BoundedLRU[
+    tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
+]
+
 
 def shorten_earlier_reply(text: str) -> str:
     """Returns `text` cut to `HISTORY_EARLIER_REPLY_MAX_CHARS` with a mark saying so, or unchanged when it fits.
@@ -70,11 +74,20 @@ class MessageInputBuilder(BaseModel):
     attachment_handler: SkipValidation[AttachmentRenderer] = Field(
         ..., description="Strategy that renders each attachment source to a content part."
     )
+    model_name: str | None = Field(
+        default=None,
+        description=(
+            "Explicit answer model name gating attachment modalities; defaults to "
+            "`runtime_models.slow_model.name`."
+        ),
+    )
     # Per-message rendered parts keyed on (message_id, edited_at, source_keys) with earliest
     # handle expiry, so edits and late embed unfurls re-render and handles refresh before expiry.
-    _attachment_cache: BoundedLRU[
-        tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
-    ] = PrivateAttr(default_factory=BoundedLRU)
+    _attachment_cache: AttachmentCache = PrivateAttr(default_factory=BoundedLRU)
+
+    def bind_attachment_cache(self, cache: AttachmentCache) -> None:
+        """Replaces the rendered-part cache with `cache` to share uploads across same-provider models."""
+        self._attachment_cache = cache
 
     def get_user_prompt(self, content: str) -> str:
         """Returns `content` with bot mention syntax removed and surrounding whitespace stripped.
@@ -274,6 +287,10 @@ class MessageInputBuilder(BaseModel):
                 rejected.append((source, required, carried))
         return accepted, rejected
 
+    def _effective_model_name(self) -> str:
+        """Returns the model name gating attachment modalities for this builder."""
+        return self.model_name or self.runtime_models.slow_model.name
+
     def count_supported_sources(self, message: Message) -> int:
         """Returns the number of attachment sources on `message` accepted by the slow model and renderer.
 
@@ -284,7 +301,7 @@ class MessageInputBuilder(BaseModel):
         if not sources:
             return 0
         accepted, _ = self._split_on_modality(
-            sources=sources, model_name=self.runtime_models.slow_model.name
+            sources=sources, model_name=self._effective_model_name()
         )
         return len(accepted)
 
@@ -294,7 +311,7 @@ class MessageInputBuilder(BaseModel):
         """Returns the subset of `sources` accepted by the slow model and renderer, logging skips."""
         if not sources:
             return []
-        model_name = self.runtime_models.slow_model.name
+        model_name = self._effective_model_name()
         accepted, rejected = self._split_on_modality(sources=sources, model_name=model_name)
         for source, required, carried in rejected:
             logfire.info(

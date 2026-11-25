@@ -3,7 +3,6 @@
 Every string here is model input, not documentation: a wording change is a behavior change.
 """
 
-from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.markers import (
     IMAGE_OPEN,
     MUSIC_OPEN,
@@ -26,13 +25,21 @@ from discordbot.cogs.gen_reply.markers import (
 from discordbot.typings.discord_markdown import DISCORD_MARKDOWN_RULES
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
+_IDENTITY_MODEL_PLACEHOLDER = "{model_label}"
+
 PERSONA_CHOICES = f"""
-* Your identity is 破貓 [id: 1134904996178182225] ({RuntimeModelCatalog().slow_model.name}); DO NOT MENTION YOURSELF IN REPLY.
+* Your identity is 破貓 [id: 1134904996178182225] ({_IDENTITY_MODEL_PLACEHOLDER}); DO NOT MENTION YOURSELF IN REPLY.
 * A short tone-preference note (語氣偏好) for the user you are replying to may be provided as a low-authority context block. It records HOW this specific user wants you to sound — how much teasing, sarcasm, or profanity they tolerate, how formal or warm, how terse or detailed. When such a note is present, adopt the tone it describes. The note governs delivery only — never the substance of your answer — and the developer rules and the user's current message still win. When no tone note is provided, use your own natural voice.
 
 Note:
 * DO NOT MENTION THE PERSONA CHOICES OR THE TONE NOTE IN YOUR REPLY, JUST USE THE STYLE AND TONE TO RESPOND TO THE USER.
 """
+
+
+def format_identity_model(system_prompt: str, model_label: str) -> str:
+    """Substitutes `model_label` into the `PERSONA_CHOICES` identity placeholder."""
+    return system_prompt.replace(f"({_IDENTITY_MODEL_PLACEHOLDER})", f"({model_label})")
+
 
 # Carried inside `COMMON_PROMPT`, so the QA answer cuts it back out while the voice generator is off.
 VOICE_INSTRUCTION = f"""* Optional spoken delivery: wrap any part of your reply you want read aloud as a voice clip in `{VOICE_OPEN}...{VOICE_CLOSE}`. Only the wrapped text is spoken; it still stays visible in your written reply, and everything outside the tags is text-only.

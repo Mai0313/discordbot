@@ -11,7 +11,7 @@ from google.genai.errors import APIError
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.cogs.gen_reply import non_streaming as non_streaming_module
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RuntimeModelCatalog
 from discordbot.utils.llm_errors import HIGH_DEMAND_ERROR_NOTICE, extract_friendly_error
 from discordbot.utils.preview_editor import CadencePreviewEditor
 from discordbot.cogs.gen_reply.context import ReplyContext
@@ -554,8 +554,8 @@ async def test_answer_turn_dispatches_youtube_interactions_non_streaming(
     logged = capture_logs(monkeypatch=monkeypatch, level="info")
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
     recorded_streams: list[object] = []
 

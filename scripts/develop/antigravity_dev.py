@@ -31,6 +31,7 @@ from discordbot.cogs.gen_reply.prompts import (
     COMMON_PROMPT,
     PERSONA_CHOICES,
     REQUEST_TIME_CONTEXT_PROMPT,
+    format_identity_model,
 )
 
 console = Console()
@@ -90,7 +91,9 @@ def build_agent_config(response_schema: type[BaseModel] | None = None) -> LocalA
     # and no identity override, while `CustomSystemInstructions(text=...)` is the other end and
     # throws the harness prompt away — which is what handing it REPLY_PROMPT whole would mean.
     system_instructions = TemplatedSystemInstructions(
-        identity=PERSONA_CHOICES.strip(),
+        identity=format_identity_model(
+            system_prompt=PERSONA_CHOICES, model_label=AGENT_MODEL.name or "gemini-4-hydrogen"
+        ).strip(),
         sections=[
             SystemInstructionSection(title="request_time", content=request_time),
             SystemInstructionSection(title="common_rules", content=COMMON_PROMPT.strip()),

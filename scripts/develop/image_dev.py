@@ -10,7 +10,7 @@ from rich.console import Console
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.images import to_data_uri
-from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
+from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT, format_identity_model
 from discordbot.cogs.gen_reply.generation import ImageGenerator
 
 console = Console()
@@ -57,7 +57,9 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     image_url = to_data_uri(data=image_bytes)
     reply_responses = client.responses.create(
         model=MEDIA_REPLY_MODEL.name,
-        instructions=IMAGE_REPLY_PROMPT,
+        instructions=format_identity_model(
+            system_prompt=IMAGE_REPLY_PROMPT, model_label=MEDIA_REPLY_MODEL.name
+        ),
         input=[
             {
                 "role": "user",

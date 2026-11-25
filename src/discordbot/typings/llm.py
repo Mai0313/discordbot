@@ -92,18 +92,6 @@ class LLMConfig(BaseModel):
             "and refuse `🔄` regeneration clicks."
         ),
     )
-    slow_model_blind_test_enabled: bool = Field(
-        default=False,
-        description=(
-            "Whether QA turns randomly pick `slow_model` from "
-            "`RuntimeModelCatalog.slow_model_blind_test_candidates` (allowing `🔄` regeneration "
-            "across remaining untried candidates) and mask the model name as `blind-test-model` "
-            "in the system prompt and reply footer (also hiding the effort label in the footer), "
-            "while still recording the real answered model and effort in `reply.db` and logs; "
-            "when false QA uses `slow_model`, allows one regeneration, and shows its real name "
-            "and effort."
-        ),
-    )
     file_api_enabled: bool = Field(
         default=True,
         description=(
@@ -137,7 +125,6 @@ class LLMConfig(BaseModel):
             "anthropic_api_key": credentials.anthropic_api_key,
             "xai_api_key": credentials.xai_api_key,
             "feedback_enabled": reply.feedback_enabled,
-            "slow_model_blind_test_enabled": reply.slow_model_blind_test_enabled,
             "file_api_enabled": reply.file_api_enabled,
             "answer_streaming_enabled": reply.streaming_enabled,
         }

@@ -18,7 +18,7 @@ from discordbot.typings.emojis import (
     FACEBOOK_EMOJI,
     INSTAGRAM_EMOJI,
 )
-from discordbot.typings.models import ModelSettings, RouteClassification, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RouteClassification, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.routing import RouteClassifier
@@ -205,9 +205,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         yt_url: str | None = None,
         question: str = "",
         regen: object = None,
+        slow_model: object = None,
     ) -> int | None:
         """Records slow message handler dispatch."""
-        del yt_url, allow_research, question, regen
+        del yt_url, allow_research, question, regen, slow_model
         calls.append("stream_answer")
         effort_flags.append(effort)
         contexts.append(context)
@@ -610,8 +611,8 @@ async def test_on_message_skips_link_media_ingest_for_non_gemini_slow_model(
     cog = _link_cog(sources=[name])
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="openai/gpt-5.4")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="openai/gpt-5.4", effort="low"),)),
     )
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 

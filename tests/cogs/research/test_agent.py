@@ -61,7 +61,7 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
     # The config block names the agent's own family and the catalog's reasoning model; a
     # `deep-research` one here would be the removed tiers' `collaborative_planning` coming back, and
     # nothing upstream rejects a mismatched family, so the discriminator is pinned here instead.
-    assert kwargs["agent_config"] is agent.RESEARCH_AGENT_CONFIG
+    assert kwargs["agent_config"] == agent.research_agent_config()
     assert kwargs["agent_config"]["type"] == "antigravity"
     assert (
         kwargs["agent_config"]["model"] == RuntimeModelCatalog().antigravity_reasoning_model.name
@@ -71,6 +71,30 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
     assert result.report_text.startswith("# Report")
     assert result.input_tokens == 10
     assert result.output_tokens == 5
+
+
+async def test_stream_antigravity_honors_explicit_reasoning_model_override() -> None:
+    """`stream_antigravity` forwards an explicit `reasoning_model` rather than baking one at import."""
+    client = _fake_client(
+        streams=[_FakeStream([_created_event(), _completed_event()])],
+        terminal=_terminal_interaction(),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    await agent.stream_antigravity(
+        client=as_client(fake=client),
+        agent="antigravity-preview-09-2026",
+        brief="b",
+        system_instruction="sys",
+        streamer=streamer,
+        on_created=agent._noop_created,
+        reasoning_model="gemini-4-neon",
+    )
+
+    assert client.aio.interactions.create_kwargs["agent_config"] == {
+        "type": "antigravity",
+        "model": "gemini-4-neon",
+    }
 
 
 async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture

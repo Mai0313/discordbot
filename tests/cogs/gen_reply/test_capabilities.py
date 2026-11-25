@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 import pytest
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.markers import VOICE_OPEN
 from discordbot.cogs.gen_reply.prompts import (
@@ -14,6 +15,7 @@ from discordbot.cogs.gen_reply.prompts import (
     VIDEO_INSTRUCTION,
     INLINE_IMAGE_INSTRUCTION,
     DEEP_RESEARCH_INSTRUCTION,
+    format_identity_model,
 )
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
@@ -151,7 +153,10 @@ async def test_the_answer_is_told_only_what_the_deployment_can_run(has_key: bool
             VIDEO_INSTRUCTION,
             DEEP_RESEARCH_INSTRUCTION,
         )
-        assert instructions.startswith("\n".join((REPLY_PROMPT, *appended)))
+        formatted_reply_prompt = format_identity_model(
+            system_prompt=REPLY_PROMPT, model_label=RuntimeModelCatalog().slow_model.name
+        )
+        assert instructions.startswith("\n".join((formatted_reply_prompt, *appended)))
         assert reference.endswith(CAPABILITIES_DOC)
     else:
         assert VOICE_OPEN in instructions

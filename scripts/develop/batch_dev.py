@@ -11,7 +11,7 @@ from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
+from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, format_identity_model
 
 if TYPE_CHECKING:
     from openai.types.batch import Batch
@@ -42,7 +42,9 @@ def _response_body(user_prompt: str, file_id: str | None = None) -> dict[str, ob
     """Builds the non-streaming Responses API body for one batch request."""
     return {
         "model": SLOW_MODEL.name,
-        "instructions": REPLY_PROMPT,
+        "instructions": format_identity_model(
+            system_prompt=REPLY_PROMPT, model_label=SLOW_MODEL.name
+        ),
         "input": _response_input(user_prompt=user_prompt, file_id=file_id),
         "reasoning": SLOW_MODEL.reasoning,
         "tools": SLOW_MODEL.tools,

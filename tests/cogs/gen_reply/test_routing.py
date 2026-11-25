@@ -94,7 +94,7 @@ async def test_route_classify_carries_decision_and_defaults_qa(
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
-    assert fallback.effort == "medium"
+    assert fallback.effort == cog.toolkit.runtime_models.slow_model.effort
     # Nothing raised, so this record is the only trace that the route was never read.
     assert [fields["message_id"] for _, fields in warned] == [message.id]
 
@@ -204,14 +204,10 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last(
     ] == [["42"], ["42"]]
 
 
-async def test_an_unparseable_route_falls_back_to_a_plain_medium_effort_qa(
+async def test_an_unparseable_route_falls_back_to_plain_qa_with_configured_fallback_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A triage answer that fails its schema loses the picks along with everything else.
-
-    The fallback is the plain class, so the pipeline resolves no picks from it, and `medium`,
-    the grade the route gives whatever it is unsure about.
-    """
+    """A triage answer that fails its schema loses the picks and uses the candidate fallback effort."""
     cog = _cog()
     with pytest.raises(ValidationError) as invalid:
         RecallRouteClassification.model_validate(obj={"decision": "SING"})
@@ -231,7 +227,18 @@ async def test_an_unparseable_route_falls_back_to_a_plain_medium_effort_qa(
     )
 
     assert type(route) is RouteClassification
-    assert route == RouteClassification(decision="QA", effort="medium")
+    assert route == RouteClassification(
+        decision="QA", effort=cog.toolkit.runtime_models.slow_model.effort
+    )
+
+    explicit = await _classifier(cog=cog, message=as_message(fake=FakeMessage())).classify(
+        reference_messages=_ROUTE_REFERENCE,
+        current_message=_ROUTE_CURRENT,
+        recall_candidates={},
+        server_memory_block=None,
+        fallback_effort="medium",
+    )
+    assert explicit == RouteClassification(decision="QA", effort="medium")
 
 
 async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
@@ -239,7 +246,7 @@ async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
 ) -> None:
     """A provider outage on the triage call costs the route, not the reply.
 
-    The same plain medium-effort QA as an answer outside the schema. A refusal keeps raising, so a
+    The same plain fallback QA as an answer outside the schema. A refusal keeps raising, so a
     defect in the request is not buried under a turn that looks routed.
     """
     cog = _cog()
@@ -267,6 +274,7 @@ async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
             current_message=_ROUTE_CURRENT,
             recall_candidates={42: RecallCandidate(prompt_label="Boss(社群暱稱:李董)")},
             server_memory_block=_ROUTE_SERVER_MEMORY,
+            fallback_effort="medium",
         )
 
     for _ in range(2):

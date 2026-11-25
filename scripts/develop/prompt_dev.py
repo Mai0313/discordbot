@@ -34,7 +34,7 @@ from google.genai.interactions import (
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
+from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, format_identity_model
 
 if TYPE_CHECKING:
     from anthropic.types.tool_param import ToolParam as AnthropicToolParam
@@ -46,6 +46,9 @@ console = Console()
 config = LLMConfig()
 
 SLOW_MODEL = RuntimeModelCatalog().slow_model
+FORMATTED_REPLY_PROMPT = format_identity_model(
+    system_prompt=REPLY_PROMPT, model_label=SLOW_MODEL.name
+)
 
 
 def gen_reply(user_prompt: str) -> None:
@@ -59,7 +62,7 @@ def gen_reply(user_prompt: str) -> None:
     start = time.time()
     responses = client.responses.create(
         model=SLOW_MODEL.name,
-        instructions=REPLY_PROMPT,
+        instructions=FORMATTED_REPLY_PROMPT,
         input=cast("ResponseInputParam", message_list),
         reasoning=SLOW_MODEL.reasoning,
         tools=SLOW_MODEL.tools,
@@ -99,7 +102,7 @@ def gen_reply_chat(user_prompt: str) -> None:
     responses = client.chat.completions.create(
         model=SLOW_MODEL.name,
         messages=[
-            {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
+            {"role": "system", "content": [{"type": "text", "text": FORMATTED_REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
         ],
         reasoning_effort=SLOW_MODEL.effort,
@@ -155,7 +158,7 @@ def gen_reply_gemini(user_prompt: str) -> None:
     start = time.time()
     responses = client.interactions.create(
         model=SLOW_MODEL.name,
-        system_instruction=REPLY_PROMPT,
+        system_instruction=FORMATTED_REPLY_PROMPT,
         # If calling the Gemini API Endpoint directly, `service_tier` should be `standard`, not `auto`.
         # For the example here, we call it through Litellm Proxy, so `auto` is acceptable.
         service_tier="auto",
@@ -213,7 +216,7 @@ def gen_reply_anthropic(user_prompt: str) -> None:
     start = time.time()
     with client.messages.stream(
         model=SLOW_MODEL.name,
-        system=REPLY_PROMPT,
+        system=FORMATTED_REPLY_PROMPT,
         service_tier="auto",
         max_tokens=16000,
         thinking={"type": "adaptive"},

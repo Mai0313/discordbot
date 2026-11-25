@@ -2,19 +2,19 @@
 
 from typing import Literal, cast
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
 
+from discordbot.typings.config import ModelsConfig, load_bot_config
 from discordbot.typings.emojis import LinkSourceName
-
-# Shown in the Discord usage footer and system prompt when blind testing masks `slow_model`.
-BLIND_TEST_MODEL_LABEL = "blind-test-model"
 
 
 class ModelSettings(BaseModel):
     """Model name and reasoning effort that should be used together."""
+
+    model_config = ConfigDict(frozen=True)
 
     name: str = Field(
         ...,
@@ -60,13 +60,30 @@ class ModelSettings(BaseModel):
         return [{"type": "web_search"}]
 
 
+class SlowModelSettings(ModelSettings):
+    """QA answer model settings whose `effort` is restricted to the route's three grades."""
+
+    effort: Literal["low", "medium", "high"] = Field(
+        default="low",
+        description=(
+            "Router-failure fallback reasoning effort for this candidate, or the active grade "
+            "chosen by the router for one QA turn."
+        ),
+    )
+
+
 class RuntimeModelCatalog(BaseModel):
-    """Runtime model settings used by Discord bot LLM paths."""
+    """Runtime model settings used by Discord bot LLM paths, backed by `[global.models]`."""
+
+    @staticmethod
+    def _models() -> ModelsConfig:
+        """Returns the live `[global.models]` configuration from `config.toml`."""
+        return load_bot_config().global_config.models
 
     @property
     def image_model(self) -> ModelSettings:
         """Returns model settings for `images.generate` and `images.edit`."""
-        return ModelSettings(name="gemini-nano-banana-2.1")
+        return ModelSettings(name=self._models().image)
 
     @property
     def video_model(self) -> ModelSettings:
@@ -74,17 +91,17 @@ class RuntimeModelCatalog(BaseModel):
 
         Uses a bare Gemini model name for direct `interactions.create` calls.
         """
-        return ModelSettings(name="gemini-omni-1.2-flash")
+        return ModelSettings(name=self._models().video)
 
     @property
     def music_model(self) -> ModelSettings:
         """Returns model settings for music generation on the native Lyria Interactions API."""
-        return ModelSettings(name="lyria-3.5")
+        return ModelSettings(name=self._models().music)
 
     @property
     def tts_model(self) -> ModelSettings:
         """Returns model settings for spoken-reply synthesis (`audio.speech`; `effort` unused)."""
-        return ModelSettings(name="gemini-3.8-flash-tts")
+        return ModelSettings(name=self._models().tts)
 
     @property
     def antigravity_model(self) -> ModelSettings:
@@ -92,7 +109,7 @@ class RuntimeModelCatalog(BaseModel):
 
         `effort` and `tools` are unused.
         """
-        return ModelSettings(name="antigravity-preview-09-2026")
+        return ModelSettings(name=self._models().antigravity)
 
     @property
     def antigravity_reasoning_model(self) -> ModelSettings:
@@ -100,42 +117,51 @@ class RuntimeModelCatalog(BaseModel):
 
         Must name a model accepted by the Antigravity agent; `effort` and `tools` are unused.
         """
-        return ModelSettings(name="gemini-4-hydrogen")
+        return ModelSettings(name=self._models().antigravity_reasoning)
 
     @property
     def triage_model(self) -> ModelSettings:
         """Returns model settings for fixed-schema triage calls."""
-        return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
+        triage = self._models().triage
+        return ModelSettings(name=triage.name, effort=triage.effort)
 
     @property
     def fast_model(self) -> ModelSettings:
         """Returns model settings for intermediate prose generation short of the final answer."""
-        return ModelSettings(name="gemini-4-hydrogen", effort="low")
+        fast = self._models().fast
+        return ModelSettings(name=fast.name, effort=fast.effort)
 
     @property
-    def slow_model(self) -> ModelSettings:
-        """Returns model settings for full text replies and strategic reasoning.
+    def slow_candidates(self) -> tuple[SlowModelSettings, ...]:
+        """Configured QA candidate models with each model's router-failure fallback effort.
+
+        Sampled uniformly per QA turn; every entry should support `RouteClassification.effort`
+        (`low`, `medium`, `high`).
+        """
+        return tuple(
+            SlowModelSettings(name=candidate.name, effort=candidate.effort)
+            for candidate in self._models().slow.candidates
+        )
+
+    @property
+    def slow_display_name(self) -> str:
+        """Optional visible model label masking the real QA model and effort, or empty."""
+        return self._models().slow.display_name
+
+    @property
+    def slow_model(self) -> SlowModelSettings:
+        """Returns the primary slow model (first configured QA candidate).
 
         Callers also inspect `name` to determine provider and supported input modalities.
         """
-        # Pin to a snapshot whose supported efforts cover `RouteClassification.effort`;
-        # an unpriced non-Gemini name falls back to `{"text", "image"}` modalities for answers.
-        return ModelSettings(name="gemini-4-neon", effort="high")
-
-    @property
-    def slow_model_blind_test_candidates(self) -> tuple[str, ...]:
-        """Candidate Gemini 4 models sampled uniformly per QA turn while blind testing is on.
-
-        Every entry must support `RouteClassification.effort` (`low`, `medium`, `high`) and
-        agentic YouTube video understanding.
-        """
-        return ("gemini-4-neon", "gemini-4-hydrogen")
+        return self.slow_candidates[0]
 
     @property
     def memory_model(self) -> ModelSettings:
         """Returns model settings for background long-term memory evaluation and consolidation."""
         # Keep effort="medium": high exhausts compaction output tokens; low trips deletion guard.
-        return ModelSettings(name="gemini-4-neon", effort="medium")
+        memory = self._models().memory
+        return ModelSettings(name=memory.name, effort=memory.effort)
 
 
 class RouteClassification(BaseModel):

@@ -16,7 +16,7 @@ I slowly learn each person's preferences and how they like me to sound, and I ma
 
 An answer can stop partway, most often because the provider's content filter cut it off or it ran out of room to think. When that happens, my reply keeps whatever I managed to write and says why it stopped.
 
-Finished replies also carry 👍 and 👎 feedback buttons underneath so anyone can rate the answer; clicking again cancels the rating, switching overwrites it, and a 👎 offers optional quick reason buttons (plus a short free-text form under 其他) visible only to the person who clicked. Normal text replies in a server or DM (not `/ask`, image, or video replies) also carry a 🔄 button so the original asker can regenerate the answer in place, replacing the old reply once the new one lands; normally a reply can be regenerated once, or across the remaining candidate models during a blind test.
+Finished replies also carry 👍 and 👎 feedback buttons underneath so anyone can rate the answer; clicking again cancels the rating, switching overwrites it, and a 👎 offers optional quick reason buttons (plus a short free-text form under 其他) visible only to the person who clicked. Normal text replies in a server or DM (not `/ask`, image, or video replies) also carry a 🔄 button so the original asker can regenerate the answer in place, replacing the old reply once the new one lands; normally a reply can be regenerated once, or across the remaining configured candidate models when multiple candidates are active.
 
 ### Links I open on my own
 

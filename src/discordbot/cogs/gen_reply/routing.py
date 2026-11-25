@@ -4,7 +4,7 @@ Runs on the critical path from text-only message renders without attachment uplo
 """
 
 import time
-from typing import cast
+from typing import Literal, cast
 
 from openai import APIError
 import logfire
@@ -40,6 +40,7 @@ class RouteClassifier(BaseModel):
         current_message: list[EasyInputMessageParam],
         recall_candidates: dict[int, RecallCandidate],
         server_memory_block: EasyInputMessageParam | None,
+        fallback_effort: Literal["low", "medium", "high"] | None = None,
     ) -> RouteClassification:
         """Returns the route, effort, link-read flags, and optional recall picks for one message.
 
@@ -57,7 +58,14 @@ class RouteClassifier(BaseModel):
                 keyed by Discord user id.
             server_memory_block (EasyInputMessageParam | None): Server memory context block
                 carrying the `## 成員稱呼` table, or None.
+            fallback_effort (Literal["low", "medium", "high"] | None): Reasoning effort used only
+                when the triage call fails; defaults to the primary slow model's configured effort.
         """
+        default_effort: Literal["low", "medium", "high"] = (
+            fallback_effort
+            if fallback_effort is not None
+            else self.toolkit.runtime_models.slow_model.effort
+        )
         message_list = [*reference_messages, *current_message]
         instructions = route_prompt()
         text_format: type[RouteClassification] = RouteClassification
@@ -92,7 +100,7 @@ class RouteClassifier(BaseModel):
                     message_id=self.message.id,
                     model=triage_model.name,
                 )
-                route = RouteClassification(decision="QA")
+                route = RouteClassification(decision="QA", effort=default_effort)
         except ValidationError as exc:
             # ValidationError covers both empty output text and schema mismatches.
             logfire.warn(
@@ -101,7 +109,7 @@ class RouteClassifier(BaseModel):
                 model=triage_model.name,
                 _exc_info=exc,
             )
-            route = RouteClassification(decision="QA")
+            route = RouteClassification(decision="QA", effort=default_effort)
         except APIError as exc:
             # Retryable provider errors degrade to QA; non-retryable errors propagate.
             if not is_retryable_llm_error(exc=exc):
@@ -114,7 +122,7 @@ class RouteClassifier(BaseModel):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            route = RouteClassification(decision="QA")
+            route = RouteClassification(decision="QA", effort=default_effort)
         # Log elapsed_seconds explicitly; logfire's console exporter prints no span duration.
         logfire.info(
             "gen_reply route done",
