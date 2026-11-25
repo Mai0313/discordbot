@@ -23,7 +23,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
-from discordbot.typings.models import BLIND_TEST_MODEL_LABEL, ModelSettings
+from discordbot.typings.models import ModelSettings, SlowModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.discord_errors import report_discord_failure
 from discordbot.utils.llm_transcript import (
@@ -41,6 +41,7 @@ from discordbot.cogs.gen_reply.prompts import (
     DEEP_RESEARCH_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
     REQUEST_LOCATION_CONTEXT_PROMPT,
+    format_identity_model,
 )
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
@@ -87,18 +88,32 @@ class RegenOptions(BaseModel):
     )
     excluded_models: frozenset[str] = Field(
         default_factory=frozenset,
-        description="Models already tried earlier in this regen chain, excluded in blind-test mode.",
+        description="Models already tried earlier in this regen chain, excluded when others remain.",
     )
     forced_effort: Literal["low", "medium", "high"] | None = Field(
         default=None, description="Reasoning effort preserved from the replaced turn, when valid."
     )
 
 
-def max_regens_for(config: LLMConfig, candidates: Sequence[str]) -> int:
+def select_slow_model(
+    candidates: Sequence[SlowModelSettings], excluded_models: frozenset[str] = frozenset()
+) -> SlowModelSettings:
+    """Draws one QA candidate uniformly, excluding `excluded_models` while untried models remain.
+
+    Args:
+        candidates (Sequence[SlowModelSettings]): Non-empty pool of configured QA candidates.
+        excluded_models (frozenset[str]): Model names already tried earlier in a regen chain.
+    """
+    remaining = [candidate for candidate in candidates if candidate.name not in excluded_models]
+    pool = remaining or list(candidates)
+    if len(pool) == 1:
+        return pool[0]
+    return secrets.choice(seq=pool)
+
+
+def max_regens_for(candidates: Sequence[ModelSettings]) -> int:
     """Returns the maximum number of regenerations allowed for one QA reply chain."""
-    if config.slow_model_blind_test_enabled:
-        return max(1, len(candidates) - 1)
-    return 1
+    return max(1, len(candidates) - 1)
 
 
 def build_runtime_instructions(system_prompt: str, message: Message, guild_id: int | None) -> str:
@@ -356,7 +371,11 @@ class AnswerTurn(BaseModel):
                 ),
             )
             instructions = build_runtime_instructions(
-                system_prompt=system_prompt, message=self.message, guild_id=self.surface.guild_id
+                system_prompt=format_identity_model(
+                    system_prompt=system_prompt, model_label=model.name
+                ),
+                message=self.message,
+                guild_id=self.surface.guild_id,
             )
             with logfire.span(
                 f"gen_reply {media_noun} reply", model=model.name, message_id=self.message.id
@@ -457,33 +476,39 @@ class AnswerTurn(BaseModel):
             unparented_log="Source message deleted before the media reply; sending unparented",
         )
 
-    def _select_qa_model(
+    def _resolve_qa_model(
         self,
-        effort: Literal["low", "medium", "high"],
+        effort: Literal["low", "medium", "high"] | None,
         system_prompt: str,
+        slow_model: SlowModelSettings | None = None,
         excluded_models: frozenset[str] = frozenset(),
-    ) -> tuple[ModelSettings, str, str]:
+    ) -> tuple[SlowModelSettings, str, str]:
         """Returns `(slow_model, system_prompt, model_display_name)` for one QA turn.
 
-        When `slow_model_blind_test_enabled` is true, draws one candidate once for the whole turn
-        (excluding models already tried in the current regen chain when others remain) and masks
-        the visible model label in `system_prompt` and the usage footer while leaving pricing,
-        logs, and `reply_turn.model` on the real model name.
+        Uses `slow_model` when already selected by the pipeline, otherwise samples one from
+        `slow_candidates` (excluding `excluded_models` while untried models remain). Substitutes
+        the visible identity label (`slow_display_name` when configured, else the real model name)
+        into `system_prompt` while leaving pricing, logs, and `reply_turn.model` on the real model.
         """
-        base_slow_model = self.toolkit.runtime_models.slow_model
-        if not self.config.slow_model_blind_test_enabled:
-            return base_slow_model.model_copy(update={"effort": effort}), system_prompt, ""
-        candidates = self.toolkit.runtime_models.slow_model_blind_test_candidates
-        remaining = [candidate for candidate in candidates if candidate not in excluded_models]
-        chosen_name = secrets.choice(seq=remaining or candidates)
-        # Mask the baked-in identity model name so asking the bot does not spoil blind tests.
-        masked_prompt = system_prompt.replace(
-            f"({base_slow_model.name})", f"({BLIND_TEST_MODEL_LABEL})"
+        runtime_models = self.toolkit.runtime_models
+        chosen = (
+            slow_model
+            if slow_model is not None
+            else select_slow_model(
+                candidates=runtime_models.slow_candidates, excluded_models=excluded_models
+            )
+        )
+        resolved_effort: Literal["low", "medium", "high"] = (
+            effort if effort is not None else chosen.effort
+        )
+        display_name = runtime_models.slow_display_name
+        formatted_prompt = format_identity_model(
+            system_prompt=system_prompt, model_label=display_name or chosen.name
         )
         return (
-            base_slow_model.model_copy(update={"name": chosen_name, "effort": effort}),
-            masked_prompt,
-            BLIND_TEST_MODEL_LABEL,
+            chosen.model_copy(update={"effort": resolved_effort}),
+            formatted_prompt,
+            display_name,
         )
 
     def _interactions_decline_reason(self, slow_model: ModelSettings) -> str | None:
@@ -561,11 +586,12 @@ class AnswerTurn(BaseModel):
         self,
         system_prompt: str,
         context: ReplyContext,
-        effort: Literal["low", "medium", "high"] = "medium",
+        effort: Literal["low", "medium", "high"] | None = None,
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
         regen: RegenOptions | None = None,
+        slow_model: SlowModelSettings | None = None,
     ) -> int | None:
         """Streams the QA answer from `context`, launches any research brief, and schedules memory updates.
 
@@ -576,11 +602,14 @@ class AnswerTurn(BaseModel):
         Args:
             system_prompt (str): Base QA system prompt before marker instructions are applied.
             context (ReplyContext): Pre-built conversation, link, and memory context.
-            effort (Literal["low", "medium", "high"]): Reasoning effort selected by the router.
+            effort (Literal["low", "medium", "high"] | None): Reasoning effort selected by the
+                router, or None to fall back to the selected candidate's default effort.
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.
             regen (RegenOptions | None): Regeneration depth, parent reply id, and excluded models.
+            slow_model (SlowModelSettings | None): Preselected QA candidate for this turn, or
+                None to sample from `runtime_models.slow_candidates`.
 
         Returns:
             int | None: Discord message id of the final landed reply chunk, or None if not sent.
@@ -606,14 +635,18 @@ class AnswerTurn(BaseModel):
         regen_count = regen.regen_count if regen is not None else 0
         regen_of_reply_message_id = regen.regen_of_reply_message_id if regen is not None else None
         excluded_models = regen.excluded_models if regen is not None else frozenset()
-        slow_model, system_prompt, model_display_name = self._select_qa_model(
-            effort=effort, system_prompt=system_prompt, excluded_models=excluded_models
+        resolved_slow_model, system_prompt, model_display_name = self._resolve_qa_model(
+            effort=effort,
+            system_prompt=system_prompt,
+            slow_model=slow_model,
+            excluded_models=excluded_models,
         )
-        dispatched_model.set(slow_model.name)
+        resolved_effort = resolved_slow_model.effort
+        dispatched_model.set(resolved_slow_model.name)
         answer_input = context.answer_input(config=self.config)
 
         decline_reason = (
-            self._interactions_decline_reason(slow_model=slow_model)
+            self._interactions_decline_reason(slow_model=resolved_slow_model)
             if yt_url is not None
             else None
         )
@@ -626,7 +659,7 @@ class AnswerTurn(BaseModel):
                 "gen_reply youtube watch declined; answering on the responses backend",
                 message_id=self.message.id,
                 reason=decline_reason,
-                model=slow_model.name,
+                model=resolved_slow_model.name,
             )
         if use_interactions:
             # Persistent reaction outside the status chain; added before `ResponseStreamer` so
@@ -634,7 +667,7 @@ class AnswerTurn(BaseModel):
             await self.surface.mark(emoji=YOUTUBE_EMOJI)
 
         allow_regen = self.surface.interaction is None and regen_count < max_regens_for(
-            config=self.config, candidates=toolkit.runtime_models.slow_model_blind_test_candidates
+            candidates=toolkit.runtime_models.slow_candidates
         )
         streaming = self.config.answer_streaming_enabled
         streamer = ResponseStreamer(
@@ -642,7 +675,7 @@ class AnswerTurn(BaseModel):
             surface=self.surface,
             memory_lookups=context.memory_credits,
             model_display_name=model_display_name,
-            model_effort=effort,
+            model_effort=resolved_effort,
             backend=backend,
             streaming=streaming,
             voice_generator=voice_generator,
@@ -650,7 +683,7 @@ class AnswerTurn(BaseModel):
             music_generator=music_generator,
             video_generator=video_generator,
             media_delivery=self.media_delivery,
-            input_builder=toolkit.input_builder,
+            input_builder=toolkit.input_builder_for(model=resolved_slow_model),
             feedback_view=(
                 ReplyFeedbackView(allow_regen=allow_regen)
                 if self.config.feedback_enabled
@@ -658,8 +691,8 @@ class AnswerTurn(BaseModel):
             ),
             on_final_message=self._feedback_hook(
                 route="QA",
-                default_model=slow_model.name,
-                effort=effort,
+                default_model=resolved_slow_model.name,
+                effort=resolved_effort,
                 backend=backend,
                 question=question,
                 regen_of_reply_message_id=regen_of_reply_message_id,
@@ -668,10 +701,10 @@ class AnswerTurn(BaseModel):
         logfire.info(
             "gen_reply answer dispatch",
             message_id=self.message.id,
-            model=slow_model.name,
+            model=resolved_slow_model.name,
             backend=backend,
             streaming=streaming,
-            effort=effort,
+            effort=resolved_effort,
             input_blocks=len(answer_input),
             history=len(context.hist_messages),
             reference=len(context.reference_messages),
@@ -687,11 +720,14 @@ class AnswerTurn(BaseModel):
             system_prompt=system_prompt, message=self.message, guild_id=self.surface.guild_id
         )
         with logfire.span(
-            "gen_reply answer", model=slow_model.name, backend=backend, message_id=self.message.id
+            "gen_reply answer",
+            model=resolved_slow_model.name,
+            backend=backend,
+            message_id=self.message.id,
         ):
             full_reply = await self._deliver_qa_answer(
                 streamer=streamer,
-                slow_model=slow_model,
+                slow_model=resolved_slow_model,
                 instructions=instructions,
                 answer_input=answer_input,
                 yt_url=yt_url if use_interactions else None,

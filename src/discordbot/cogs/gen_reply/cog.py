@@ -126,9 +126,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return ReplyRegenerator(
             bot=self.bot,
             config=self.config,
-            blind_test_candidates=(
-                lambda: self.toolkit.runtime_models.slow_model_blind_test_candidates
-            ),
+            slow_candidates=lambda: self.toolkit.runtime_models.slow_candidates,
             start_turn=self._start_turn,
         )
 

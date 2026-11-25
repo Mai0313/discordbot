@@ -15,7 +15,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RuntimeModelCatalog
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
@@ -177,8 +177,8 @@ async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPa
     """
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
     cog = _cog()
     cog.config = _config_stub(gemini_api_key="test-key")
@@ -254,8 +254,8 @@ async def test_youtube_qa_falls_back_to_responses(
     slow_name = "gpt-5-mini" if scenario == "non_gemini_model" else "gemini-test"
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name=slow_name, effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name=slow_name, effort="high"),)),
     )
     interactions = _FakeInteractionsResource(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)

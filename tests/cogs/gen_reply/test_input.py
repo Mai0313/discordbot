@@ -13,7 +13,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import LoadedMedia, RenderedPart, RenderedAttachment
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
@@ -50,8 +50,8 @@ def _pin_gemini_slow_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pins the answer tier to Gemini so Files API selection tests stay independent of catalog choices."""
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
 
 

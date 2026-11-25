@@ -49,7 +49,28 @@ def test_packaged_config_toml_parses_cleanly_with_expected_defaults() -> None:
     assert config.global_config.reply.file_api_enabled is True
     assert config.global_config.reply.streaming_enabled is True
     assert config.global_config.reply.feedback_enabled is True
-    assert config.global_config.reply.slow_model_blind_test_enabled is False
+    assert config.global_config.models.image == "gemini-nano-banana-2.1"
+    assert config.global_config.models.video == "gemini-omni-1.2-flash"
+    assert config.global_config.models.music == "lyria-3.5"
+    assert config.global_config.models.tts == "gemini-3.8-flash-tts"
+    assert config.global_config.models.antigravity == "antigravity-preview-09-2026"
+    assert config.global_config.models.antigravity_reasoning == "gemini-4-hydrogen"
+    assert (
+        config.global_config.models.triage.name,
+        config.global_config.models.triage.effort,
+    ) == ("gemini-3.5-flash-lite", "minimal")
+    assert (config.global_config.models.fast.name, config.global_config.models.fast.effort) == (
+        "gemini-4-hydrogen",
+        "low",
+    )
+    assert (
+        config.global_config.models.memory.name,
+        config.global_config.models.memory.effort,
+    ) == ("gemini-4-neon", "medium")
+    assert config.global_config.models.slow.display_name == ""
+    assert [(c.name, c.effort) for c in config.global_config.models.slow.candidates] == [
+        ("gemini-4-neon", "low")
+    ]
     assert config.server.auto_expand.model_dump() == {
         "twitter": True,
         "threads": True,
@@ -70,7 +91,14 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
             '[global.media_hosting]\nbase_url = "https://media.example"\nserve_dir = "/srv/media"\n\n'
             "[global.economy]\nallow_central_bank_self_approval = true\n\n"
             '[global.emojis]\ntwitter = "<:twitter:1234567890>"\n\n'
-            "[global.reply]\nstreaming_enabled = false\nslow_model_blind_test_enabled = true\n\n"
+            "[global.reply]\nstreaming_enabled = false\n\n"
+            '[global.models]\nimage = "gemini-image-override"\n'
+            'fast = { effort = "medium" }\n\n'
+            '[global.models.slow]\ndisplay_name = "Gemini Next"\n'
+            "candidates = [\n"
+            '  { name = "gemini-4-neon", effort = "low" },\n'
+            '  { name = "gemini-4-hydrogen", effort = "medium" },\n'
+            "]\n\n"
             "[server.auto_expand]\ntwitter = false\n"
         ),
         encoding="utf-8",
@@ -90,9 +118,19 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
     assert config.global_config.emojis.twitter == "<:twitter:1234567890>"
     assert config.global_config.emojis.threads == "🧵"
     assert config.global_config.reply.streaming_enabled is False
-    assert config.global_config.reply.slow_model_blind_test_enabled is True
     assert config.global_config.reply.file_api_enabled is True
     assert config.global_config.reply.feedback_enabled is True
+    assert config.global_config.models.image == "gemini-image-override"
+    assert config.global_config.models.video == "gemini-omni-1.2-flash"
+    assert (config.global_config.models.fast.name, config.global_config.models.fast.effort) == (
+        "gemini-4-hydrogen",
+        "medium",
+    )
+    assert config.global_config.models.slow.display_name == "Gemini Next"
+    assert [(c.name, c.effort) for c in config.global_config.models.slow.candidates] == [
+        ("gemini-4-neon", "low"),
+        ("gemini-4-hydrogen", "medium"),
+    ]
     assert config.server.auto_expand.twitter is False
     assert config.server.auto_expand.threads is True
 
@@ -110,6 +148,15 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
         "[global.economy]\nunknown_economy = true\n",
         '[global.emojis]\nunknown_emoji = "x"\n',
         "[global.reply]\nanswer_streaming_enabled = false\n",
+        "[global.reply]\nslow_model_blind_test_enabled = true\n",
+        '[global.models]\nunknown_tier = "x"\n',
+        '[global.models]\nimage = "   "\n',
+        '[global.models]\ntriage = { name = "gemini-3.5-flash-lite", effort = "minimal", extra = 1 }\n',
+        "[global.models.slow]\nunknown_slow = true\n",
+        "[global.models.slow]\ncandidates = []\n",
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low" }, { name = "gemini-4-neon", effort = "medium" }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "minimal" }]\n',
+        '[global.models.slow]\ndisplay_name = "line1\\nline2"\n',
         "[server]\nunknown_server = true\n",
         "[server.auto_expand]\nbilibili = true\n",
     ],
@@ -124,6 +171,15 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
         "economy",
         "emojis",
         "reply",
+        "removed-blind-test-flag",
+        "models-extra",
+        "models-blank-name",
+        "reasoning-model-extra",
+        "slow-extra",
+        "slow-empty-candidates",
+        "slow-duplicate-candidates",
+        "slow-invalid-effort",
+        "slow-multiline-display-name",
         "server",
         "auto-expand",
     ],
@@ -158,7 +214,6 @@ def test_llm_config_combines_env_credentials_with_toml_reply_switches(
             "file_api_enabled = false\n"
             "streaming_enabled = false\n"
             "feedback_enabled = false\n"
-            "slow_model_blind_test_enabled = true\n"
         ),
         encoding="utf-8",
     )
@@ -171,7 +226,6 @@ def test_llm_config_combines_env_credentials_with_toml_reply_switches(
     assert loaded.file_api_enabled is False
     assert loaded.answer_streaming_enabled is False
     assert loaded.feedback_enabled is False
-    assert loaded.slow_model_blind_test_enabled is True
 
     # Explicit kwargs override both env and TOML, while `model_construct` stays pure static.
     overridden = LLMConfig(api_key="explicit", answer_streaming_enabled=True)

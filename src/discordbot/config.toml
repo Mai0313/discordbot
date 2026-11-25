@@ -57,8 +57,29 @@ file_api_enabled = true
 streaming_enabled = true
 # When false, finalized replies omit 👍/👎/🔄 buttons and skip reply.db turn snapshots.
 feedback_enabled = true
-# When true, QA turns sample from the blind-test candidate pool and mask the model label.
-slow_model_blind_test_enabled = false
+
+[global.models]
+# Media, TTS, and deep-research model identifiers (no reasoning effort).
+image = "gemini-nano-banana-2.1"
+video = "gemini-omni-1.2-flash"
+music = "lyria-3.5"
+tts = "gemini-3.8-flash-tts"
+antigravity = "antigravity-preview-09-2026"
+antigravity_reasoning = "gemini-4-hydrogen"
+
+# Conversational and reasoning tiers (`name` + Responses API reasoning `effort`).
+triage = { name = "gemini-3.5-flash-lite", effort = "minimal" }
+fast = { name = "gemini-4-hydrogen", effort = "low" }
+memory = { name = "gemini-4-neon", effort = "medium" }
+
+[global.models.slow]
+# Non-empty masks the visible model label (and hides effort) in the system prompt and usage footer,
+# e.g. "Gemini Next", while pricing, logs, and reply.db still record the real model and effort.
+display_name = ""
+# Uniformly sampled per QA turn; each candidate's `effort` is used only when routing fails.
+candidates = [
+  { name = "gemini-4-neon", effort = "low" },
+]
 
 [server.auto_expand]
 # Default per-server link auto-expansion (overridable per guild via `/settings`).

@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import asyncio
+from pathlib import Path
 from collections.abc import AsyncIterator
 
 import pytest
@@ -10,7 +11,8 @@ from sqlalchemy import select
 from nextcord.ui import Button
 from openai.types.responses import ResponseStreamEvent
 
-from discordbot.typings.models import RouteClassification
+from discordbot.typings.config import clear_bot_config_cache
+from discordbot.typings.models import SlowModelSettings, RouteClassification
 from discordbot.cogs.gen_reply.turn_state import current_answer_streamer
 from discordbot.cogs.gen_reply.feedback_store import (
     ReplyTurnRow,
@@ -217,12 +219,23 @@ async def test_regen_permission_rejects_bystander_and_allows_owner(
 
 
 @pytest.mark.usefixtures("no_memory_review")
-async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_chain(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_regen_multi_candidate_excludes_tried_models_tracks_remaining_and_caps_chain(
+    bot_config_isolated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Blind-test regen excludes prior chain models, shows remaining count, and enforces max_regens."""
+    """Multi-candidate regen excludes prior chain models, shows remaining count, and caps chain."""
+    bot_config_isolated.write_text(  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+        data=(
+            '[global.models.slow]\ndisplay_name = "Gemini Next"\n'
+            "candidates = [\n"
+            '  { name = "gemini-4-neon", effort = "low" },\n'
+            '  { name = "gemini-4-hydrogen", effort = "medium" },\n'
+            '  { name = "gemini-4-extra", effort = "medium" },\n'
+            "]\n"
+        ),
+        encoding="utf-8",
+    )
+    clear_bot_config_cache()
     cog = _cog()
-    cog.config.slow_model_blind_test_enabled = True
 
     source = FakeMessage(content="<@999> compare models", author=FakeAuthor(user_id=100))
     channel = _FakeRegenChannel(messages={source.id: source})
@@ -244,30 +257,43 @@ async def test_regen_blind_test_excludes_tried_models_tracks_remaining_and_caps_
 
     last_pool: tuple[str, ...] = ()
 
-    def deterministic_choice(seq: list[str]) -> str:
+    def deterministic_choice(seq: list[SlowModelSettings]) -> SlowModelSettings:
         nonlocal last_pool
-        last_pool = tuple(seq)
+        last_pool = tuple(item.name for item in seq)
         return seq[0]
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.secrets.choice", deterministic_choice)
 
-    # First regen (R1 -> R2): neon excluded -> picks hydrogen, remaining = 0, R2 hides 🔄.
+    # First regen (R1 -> R2): neon excluded -> picks hydrogen, remaining = 1, R2 keeps 🔄.
     c2 = _completed_event(input_tokens=5, output_tokens=5)
     c2.response.model = "gemini-4-hydrogen"
     _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 2"), c2]]
     click1 = _regen_interaction(reply_message_id=2201, user_id=100, channel=channel)
     await cog.regenerator.handle(interaction=as_interaction(fake=click1))
 
-    assert last_pool == ("gemini-4-hydrogen",)
-    assert click1.edits[0]["content"] == "正在換另一個模型重新生成中⋯（最後一次重抽）"
+    assert last_pool == ("gemini-4-hydrogen", "gemini-4-extra")
+    assert click1.edits[0]["content"] == "正在換另一個模型重新生成中⋯（本次後剩餘 1 次重抽）"
     assert click1.edits[-1]["content"] == "已重新生成回覆"
     r2 = source.replies[0]
-    assert _has_regen_button(view=r2.view) is False
+    assert _has_regen_button(view=r2.view) is True
 
-    # Attempting a second regen on R2 is rejected at the chain-depth cap.
+    # Second regen (R2 -> R3): neon & hydrogen excluded -> only extra left, R3 hides 🔄.
+    c3 = _completed_event(input_tokens=5, output_tokens=5)
+    c3.response.model = "gemini-4-extra"
+    _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 3"), c3]]
     click2 = _regen_interaction(reply_message_id=r2.id, user_id=100, channel=channel)
     await cog.regenerator.handle(interaction=as_interaction(fake=click2))
-    assert click2.edits[-1]["content"] == "已達重新生成次數上限"
+
+    assert _recorded(cog).responses.create_models[-1] == "gemini-4-extra"
+    assert click2.edits[0]["content"] == "正在換另一個模型重新生成中⋯（最後一次重抽）"
+    assert click2.edits[-1]["content"] == "已重新生成回覆"
+    r3 = source.replies[1]
+    assert _has_regen_button(view=r3.view) is False
+
+    # Attempting a third regen on R3 is rejected at the chain-depth cap.
+    click3 = _regen_interaction(reply_message_id=r3.id, user_id=100, channel=channel)
+    await cog.regenerator.handle(interaction=as_interaction(fake=click3))
+    assert click3.edits[-1]["content"] == "已達重新生成次數上限"
 
 
 @pytest.mark.usefixtures("no_memory_review")

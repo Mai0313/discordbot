@@ -41,10 +41,14 @@ RESEARCH_TOOLS = [
     GoogleSearch(search_types=["web_search"], type="google_search"),
 ]
 
+
 # `interactions.get` can return `agent_config=None` even after a 200 create; do not read it back.
-RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(
-    type="antigravity", model=RuntimeModelCatalog().antigravity_reasoning_model.name
-)
+def research_agent_config(model: str | None = None) -> AntigravityAgentConfigParam:
+    """Returns the Antigravity agent config pointing at `model` (or the catalog's reasoning tier)."""
+    return AntigravityAgentConfigParam(
+        type="antigravity", model=model or RuntimeModelCatalog().antigravity_reasoning_model.name
+    )
+
 
 # Poll-fallback interval and re-attach backoff.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
@@ -318,6 +322,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
     system_instruction: str,
     streamer: "ResearchProgressStreamer",
     on_created: "CreatedCallback",
+    reasoning_model: str | None = None,
 ) -> ResearchResult:
     """Returns the terminal `ResearchResult` after streaming an Antigravity research run.
 
@@ -328,6 +333,8 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
         system_instruction (str): System instruction for the research agent.
         streamer (ResearchProgressStreamer): Live progress streamer for reasoning deltas.
         on_created (CreatedCallback): Callback invoked with the interaction ID on creation.
+        reasoning_model (str | None): Optional reasoning model for `agent_config.model`; defaults
+            to `RuntimeModelCatalog().antigravity_reasoning_model.name`.
     """
     environment = EnvironmentParam(
         type="remote",
@@ -335,6 +342,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
             allowlist=[AllowlistEntryParam(domain="*")]
         ),
     )
+    agent_config = research_agent_config(model=reasoning_model)
     driver = _StreamDriver(client=client)
 
     async def _open() -> "AsyncIterator[InteractionSSEEvent]":
@@ -344,7 +352,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
                 input=brief,
                 system_instruction=system_instruction,
                 environment=environment,
-                agent_config=RESEARCH_AGENT_CONFIG,
+                agent_config=agent_config,
                 tools=RESEARCH_TOOLS,
                 background=True,
                 store=True,

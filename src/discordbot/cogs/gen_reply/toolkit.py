@@ -12,9 +12,10 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from google.genai.types import HttpOptions
 
+from discordbot.utils.lru import BoundedLRU
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.cogs.gen_reply.input import MessageInputBuilder
+from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.cogs.gen_reply.input import AttachmentCache, MessageInputBuilder
 from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.cogs.gen_reply.generation import (
     ImageGenerator,
@@ -23,6 +24,7 @@ from discordbot.cogs.gen_reply.generation import (
     VoiceGenerator,
     PromptGenerator,
 )
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 
 
@@ -45,6 +47,10 @@ class ReplyToolkit(BaseModel):
         ),
     )
     _memory_writer: MemoryWriterAI | None = PrivateAttr(default=None)
+    _attachment_buckets: dict[bool, tuple[AttachmentRenderer, AttachmentCache]] = PrivateAttr(
+        default_factory=dict
+    )
+    _input_builders: dict[str, MessageInputBuilder] = PrivateAttr(default_factory=dict)
 
     @cached_property
     def runtime_models(self) -> RuntimeModelCatalog:
@@ -106,18 +112,44 @@ class ReplyToolkit(BaseModel):
             client=self.gemini_client, music_model=self.runtime_models.music_model
         )
 
-    @cached_property
-    def input_builder(self) -> MessageInputBuilder:
-        """Returns the Discord-message-to-Responses-API input builder and its attachment caches."""
-        return MessageInputBuilder(
-            bot=self.bot,
-            runtime_models=self.runtime_models,
-            attachment_handler=build_attachment_handler(
-                model=self.runtime_models.slow_model,
+    def input_builder_for(self, model: ModelSettings) -> MessageInputBuilder:
+        """Returns the cached input builder matching `model`'s provider and modality set.
+
+        Shares one `(AttachmentRenderer, AttachmentCache)` pair per provider bucket so multiple
+        Gemini candidates reuse uploaded Files API handles across history and regenerations while
+        mixed-provider candidate pools never serve one provider's rendered parts to another.
+
+        Args:
+            model (ModelSettings): Selected answer model for the turn.
+        """
+        builder = self._input_builders.get(model.name)
+        if builder is not None:
+            return builder
+        bucket = self._attachment_buckets.get(model.is_gemini)
+        if bucket is None:
+            handler = build_attachment_handler(
+                model=model,
                 gemini_client=lambda: self.gemini_client_if_configured,
                 file_api_enabled=self.config.file_api_enabled,
-            ),
+            )
+            cache: AttachmentCache = BoundedLRU()
+            bucket = (handler, cache)
+            self._attachment_buckets[model.is_gemini] = bucket
+        handler, cache = bucket
+        builder = MessageInputBuilder(
+            bot=self.bot,
+            runtime_models=self.runtime_models,
+            attachment_handler=handler,
+            model_name=model.name,
         )
+        builder.bind_attachment_cache(cache=cache)
+        self._input_builders[model.name] = builder
+        return builder
+
+    @property
+    def input_builder(self) -> MessageInputBuilder:
+        """Returns the input builder for the primary slow model (`slow_model`)."""
+        return self.input_builder_for(model=self.runtime_models.slow_model)
 
     @property
     def memory_writer(self) -> MemoryWriterAI:

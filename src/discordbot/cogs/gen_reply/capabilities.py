@@ -61,7 +61,8 @@ def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
             "the person who clicked. Normal text replies in a server or DM (not `/ask`, image, or "
             "video replies) also carry a 🔄 button so the original asker can regenerate the answer "
             "in place, replacing the old reply once the new one lands; normally a reply can be "
-            "regenerated once, or across the remaining candidate models during a blind test.\n\n",
+            "regenerated once, or across the remaining configured candidate models when multiple "
+            "candidates are active.\n\n",
             config.feedback_enabled,
             "",
         ),

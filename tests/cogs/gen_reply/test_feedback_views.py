@@ -11,6 +11,7 @@ from sqlalchemy import select
 from nextcord.ui import Button
 from openai.types.responses import ResponseStreamEvent
 
+from discordbot.typings.models import SlowModelSettings
 from discordbot.cogs.gen_reply.answer import AnswerTurn, RegenOptions
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.surface import TurnSurface
@@ -459,8 +460,17 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
     )
     assert _has_regen(view=msg1.replies[0].view) is False
 
-    # Blind test on (default 2 candidates -> max_regens=1): regen=None shows 🔄, regen_count=1 hides it.
-    cog.config.slow_model_blind_test_enabled = True
+    # With 2 candidates -> max_regens=1: regen=None shows 🔄, regen_count=1 hides it.
+    monkeypatch.setattr(
+        type(cog.toolkit.runtime_models),
+        "slow_candidates",
+        property(
+            lambda _self: (
+                SlowModelSettings(name="gemini-4-neon", effort="low"),
+                SlowModelSettings(name="gemini-4-hydrogen", effort="medium"),
+            )
+        ),
+    )
     msg_b0 = FakeMessage(content="<@999> qb0")
     turn_b0 = AnswerTurn(
         config=cog.config,
@@ -488,8 +498,14 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
     # With 3 candidates -> max_regens=2: regen_count=1 still shows 🔄, regen_count=2 hides it.
     monkeypatch.setattr(
         type(cog.toolkit.runtime_models),
-        "slow_model_blind_test_candidates",
-        property(lambda _self: ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-extra")),
+        "slow_candidates",
+        property(
+            lambda _self: (
+                SlowModelSettings(name="gemini-4-neon", effort="low"),
+                SlowModelSettings(name="gemini-4-hydrogen", effort="medium"),
+                SlowModelSettings(name="gemini-4-extra", effort="medium"),
+            )
+        ),
     )
     msg_b1_three = FakeMessage(content="<@999> qb1_3")
     turn_b1_three = AnswerTurn(

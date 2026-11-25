@@ -439,6 +439,7 @@ class ResearchCogs(commands.Cog):
                 system_instruction=self._system_instruction(),
                 streamer=streamer,
                 on_created=_persist,
+                reasoning_model=self.runtime_models.antigravity_reasoning_model.name,
             )
         except Exception as exc:
             logfire.error(

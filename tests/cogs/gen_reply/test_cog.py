@@ -12,7 +12,7 @@ from nextcord import Attachment
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import cog as gen_reply_cog
-from discordbot.typings.models import ModelSettings, RouteClassification, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RouteClassification, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.routing import RouteClassifier
@@ -210,8 +210,8 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
     cog = _cog()
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-answer-tier", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-answer-tier", effort="high"),)),
     )
 
     async def failing_create(**kwargs: object) -> object:

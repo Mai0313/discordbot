@@ -15,7 +15,12 @@ from discordbot.typings.models import RouteClassification, RecallRouteClassifica
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.recall import NO_STORED_MEMORY
 from discordbot.services.memory.store import user_scope, write_tone, server_scope
-from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, ROUTE_RECALL_SECTION, route_prompt
+from discordbot.cogs.gen_reply.prompts import (
+    REPLY_PROMPT,
+    ROUTE_RECALL_SECTION,
+    route_prompt,
+    format_identity_model,
+)
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.typings.context_budgets import MEMORY_CONTEXT_TARGET_USERS
 from discordbot.cogs.gen_reply.status_marks import MEMORY_READ_EMOJI
@@ -193,7 +198,9 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     )
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx],
-        system_prompt=REPLY_PROMPT,
+        system_prompt=format_identity_model(
+            system_prompt=REPLY_PROMPT, model_label=cog.toolkit.runtime_models.slow_model.name
+        ),
     )
     answer = request_input(responses=_recorded(cog).responses)
     assert "喜歡簡短回覆" in (extract_user_memory_blocks(request=answer).get(1) or "")
@@ -233,7 +240,9 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     assert _recorded(cog).responses.create_streams == [True]
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx],
-        system_prompt=REPLY_PROMPT,
+        system_prompt=format_identity_model(
+            system_prompt=REPLY_PROMPT, model_label=cog.toolkit.runtime_models.slow_model.name
+        ),
     )
     assert Counter(scheduled) == Counter((user_scope(user_id=1), server_scope(server_id=1)))
 

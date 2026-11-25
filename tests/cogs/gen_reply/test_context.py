@@ -10,7 +10,7 @@ import pytest
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import shorten_earlier_reply
 from discordbot.cogs.gen_reply.context import (
     ReplyContext,
@@ -277,8 +277,8 @@ async def test_render_history_holds_inlined_attachment_bytes_to_the_budget(
     """
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
@@ -518,8 +518,8 @@ async def test_an_earlier_reply_degraded_to_markers_is_still_shortened(
     """The text-only re-render a payload-capped post gets keeps the opening-only form."""
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
@@ -547,8 +547,8 @@ async def test_render_history_logs_unsupported_attachment_once_when_payload_capp
     """A payload-capped history message classifies and logs unsupported skips once, not twice."""
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",

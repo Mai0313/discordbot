@@ -9,7 +9,7 @@ import httpx2
 from google.genai import _api_client as genai_api_client
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import SlowModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
@@ -32,8 +32,8 @@ def test_gemini_uploader_uploads_through_the_toolkit_client(
     """
     monkeypatch.setattr(
         RuntimeModelCatalog,
-        "slow_model",
-        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="gemini-test", effort="high"),)),
     )
     bot = stub_bot()
     keyed = ReplyToolkit(

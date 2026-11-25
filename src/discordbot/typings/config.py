@@ -5,10 +5,12 @@ from typing import Any, Final, Literal
 from pathlib import Path
 import tomllib
 
-from pydantic import Field, BaseModel, ConfigDict, AliasChoices
+from pydantic import Field, BaseModel, ConfigDict, AliasChoices, field_validator
 from pydantic_settings import BaseSettings
 
 AutoExpandPlatform = Literal["twitter", "threads", "facebook", "instagram", "douyin"]
+ReasoningEffortGrade = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+SlowEffortGrade = Literal["low", "medium", "high"]
 
 DEFAULT_CONFIG_PATH: Final[Path] = Path(__file__).resolve().parents[1] / "config.toml"
 LOCAL_CONFIG_PATH: Path = Path("./data/config.toml")
@@ -228,6 +230,14 @@ class EmojiConfig(BaseModel):
     )
 
 
+def _require_non_blank(value: str) -> str:
+    """Strips `value` and rejects empty or whitespace-only strings."""
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("must not be blank")
+    return cleaned
+
+
 class ReplyGlobalConfig(BaseModel):
     """Operator-only AI reply switches loaded from `[global.reply]`."""
 
@@ -254,13 +264,138 @@ class ReplyGlobalConfig(BaseModel):
             "turn snapshots in `reply.db`."
         ),
     )
-    slow_model_blind_test_enabled: bool = Field(
-        default=False,
+
+
+class ReasoningModelConfig(BaseModel):
+    """Model name and Responses API reasoning effort loaded from `[global.models]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., description="LiteLLM model string dispatched on the Responses API.")
+    effort: ReasoningEffortGrade = Field(
+        ..., description="Reasoning effort passed to the Responses API for this tier."
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        """Rejects blank model names."""
+        return _require_non_blank(value=value)
+
+
+class SlowModelCandidate(BaseModel):
+    """One QA answer model candidate and its router-failure fallback effort."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., description="LiteLLM model string dispatched for QA replies.")
+    effort: SlowEffortGrade = Field(
+        default="low",
+        description="Fallback reasoning effort used only when the triage router fails.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        """Rejects blank candidate model names."""
+        return _require_non_blank(value=value)
+
+
+class SlowModelsConfig(BaseModel):
+    """QA answer candidate pool and optional display-label mask loaded from `[global.models.slow]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(
+        default="",
         description=(
-            "Whether QA turns randomly sample `slow_model` from the blind-test candidate pool and "
-            "mask the visible model label as `blind-test-model`."
+            "Optional single-line display label shown in the system prompt and Discord usage "
+            "footer in place of the real model and effort (empty leaves them unmasked)."
+        ),
+        examples=["", "Gemini Next"],
+    )
+    candidates: list[SlowModelCandidate] = Field(
+        default_factory=lambda: [SlowModelCandidate(name="gemini-4-neon", effort="low")],
+        min_length=1,
+        description=(
+            "Non-empty list of distinct QA candidate models sampled uniformly per turn; each "
+            "entry's `effort` acts as the router-failure fallback for turns drawing that candidate."
         ),
     )
+
+    @field_validator("display_name")
+    @classmethod
+    def _validate_display_name(cls, value: str) -> str:
+        """Rejects multiline display labels so usage-footer parsing stays single-line."""
+        if "\n" in value or "\r" in value:
+            raise ValueError("display_name must be a single line")
+        return value.strip()
+
+    @field_validator("candidates")
+    @classmethod
+    def _validate_unique_candidates(
+        cls, value: list[SlowModelCandidate]
+    ) -> list[SlowModelCandidate]:
+        """Rejects duplicate model names so uniform sampling and regen exclusions stay exact."""
+        names = [candidate.name for candidate in value]
+        if len(set(names)) != len(names):
+            raise ValueError("slow.candidates must not contain duplicate model names")
+        return value
+
+
+class ModelsConfig(BaseModel):
+    """Runtime model tiers loaded from `[global.models]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image: str = Field(
+        default="gemini-nano-banana-2.1",
+        description="Model string for `images.generate` and `images.edit`.",
+    )
+    video: str = Field(
+        default="gemini-omni-1.2-flash",
+        description="Bare Gemini model name for direct `interactions.create` video generation.",
+    )
+    music: str = Field(
+        default="lyria-3.5",
+        description="Bare Gemini model name for direct `interactions.create` music generation.",
+    )
+    tts: str = Field(
+        default="gemini-3.8-flash-tts",
+        description="Model string for spoken-reply synthesis (`audio.speech`).",
+    )
+    antigravity: str = Field(
+        default="antigravity-preview-09-2026",
+        description="Managed agent identifier for direct-to-Google deep research.",
+    )
+    antigravity_reasoning: str = Field(
+        default="gemini-4-hydrogen",
+        description="Reasoning model passed as `agent_config.model` for deep research.",
+    )
+    triage: ReasoningModelConfig = Field(
+        default_factory=lambda: ReasoningModelConfig(
+            name="gemini-3.5-flash-lite", effort="minimal"
+        ),
+        description="Model and effort for fixed-schema route/effort/recall triage calls.",
+    )
+    fast: ReasoningModelConfig = Field(
+        default_factory=lambda: ReasoningModelConfig(name="gemini-4-hydrogen", effort="low"),
+        description="Model and effort for prompt refinement and media persona replies.",
+    )
+    memory: ReasoningModelConfig = Field(
+        default_factory=lambda: ReasoningModelConfig(name="gemini-4-neon", effort="medium"),
+        description="Model and effort for background long-term memory review and consolidation.",
+    )
+    slow: SlowModelsConfig = Field(
+        default_factory=SlowModelsConfig,
+        description="QA answer candidate pool and optional display-label mask.",
+    )
+
+    @field_validator("image", "video", "music", "tts", "antigravity", "antigravity_reasoning")
+    @classmethod
+    def _validate_model_name(cls, value: str) -> str:
+        """Rejects blank model identifiers."""
+        return _require_non_blank(value=value)
 
 
 class GlobalConfig(BaseModel):
@@ -292,6 +427,9 @@ class GlobalConfig(BaseModel):
     )
     reply: ReplyGlobalConfig = Field(
         default_factory=ReplyGlobalConfig, description="Operator-only AI reply switches."
+    )
+    models: ModelsConfig = Field(
+        default_factory=ModelsConfig, description="Runtime model catalog configuration."
     )
 
 

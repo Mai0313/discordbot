@@ -16,12 +16,12 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
-from discordbot.typings.models import RecallRouteClassification
+from discordbot.typings.models import SlowModelSettings, RecallRouteClassification
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import LINK_CONTEXT_GRACE_SECONDS
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
-from discordbot.cogs.gen_reply.answer import AnswerTurn, RegenOptions
+from discordbot.cogs.gen_reply.answer import AnswerTurn, RegenOptions, select_slow_model
 from discordbot.cogs.gen_reply.context import MessageParts, ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 from discordbot.cogs.gen_reply.routing import RouteClassifier
@@ -143,7 +143,9 @@ class ReplyPipeline(BaseModel):
         )
         return blocks
 
-    def _start_link_builds(self, selected: set[str]) -> LinkBuilds | None:
+    def _start_link_builds(
+        self, selected: set[str], slow_model: SlowModelSettings
+    ) -> LinkBuilds | None:
         """Starts deadline-bound link builds for each selected source with a readable URL."""
         if not selected:
             return None
@@ -163,8 +165,7 @@ class ReplyPipeline(BaseModel):
                 continue
             media_client = (
                 self.toolkit.gemini_client_if_configured
-                if self.toolkit.runtime_models.slow_model.is_gemini
-                and link_source.media_ingest_allowed(config=self.config)
+                if slow_model.is_gemini and link_source.media_ingest_allowed(config=self.config)
                 else None
             )
             link_tasks[link_source.name] = asyncio.create_task(
@@ -215,7 +216,11 @@ class ReplyPipeline(BaseModel):
         await handler(user_prompt=self.user_prompt, context_task=context_task)
 
     async def _answer_qa(
-        self, route: "RouteClassification", context: ReplyContext, pipeline_started: float
+        self,
+        route: "RouteClassification",
+        context: ReplyContext,
+        pipeline_started: float,
+        slow_model: SlowModelSettings,
     ) -> int | None:
         """Streams the QA answer, watching a linked YouTube video when the router asked for one."""
         message = self.message
@@ -240,6 +245,7 @@ class ReplyPipeline(BaseModel):
             yt_url=yt_url,
             question=self.user_prompt,
             regen=self.regen,
+            slow_model=slow_model,
         )
 
     def _apply_route_overrides(self, route: "RouteClassification") -> "RouteClassification":
@@ -267,7 +273,13 @@ class ReplyPipeline(BaseModel):
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
         link_builds: LinkBuilds | None = None
-        context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
+        excluded_models = self.regen.excluded_models if self.regen is not None else frozenset()
+        chosen_slow_model = select_slow_model(
+            candidates=self.toolkit.runtime_models.slow_candidates, excluded_models=excluded_models
+        )
+        context_builder = ReplyContextBuilder(
+            toolkit=self.toolkit, surface=self.surface, slow_model=chosen_slow_model
+        )
         classifier = RouteClassifier(toolkit=self.toolkit, message=message)
         try:
             with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
@@ -293,6 +305,7 @@ class ReplyPipeline(BaseModel):
                     current_message=text_current,
                     recall_candidates=recall.optional_candidates,
                     server_memory_block=recall.server_memory_block,
+                    fallback_effort=chosen_slow_model.effort,
                 )
                 # Resolve before handing prep_task to a media route (finally stops cancelling it).
                 recall_picks.set_result(
@@ -313,7 +326,9 @@ class ReplyPipeline(BaseModel):
                     )
                 else:
                     # Assign before awaiting marks so finally drains tasks if marking raises/cancels.
-                    link_builds = self._start_link_builds(selected=set(route.link_context_sources))
+                    link_builds = self._start_link_builds(
+                        selected=set(route.link_context_sources), slow_model=chosen_slow_model
+                    )
                     await self._mark_link_sources(link_builds=link_builds)
                     self.reactions.advance(emoji=ANSWER_EMOJI)
                     context = await prep_task
@@ -327,7 +342,10 @@ class ReplyPipeline(BaseModel):
                     )
                     pipeline_span.set_attribute(key="effort", value=route.effort)
                     reply_message_id = await self._answer_qa(
-                        route=route, context=context, pipeline_started=pipeline_started
+                        route=route,
+                        context=context,
+                        pipeline_started=pipeline_started,
+                        slow_model=chosen_slow_model,
                     )
                 self.reactions.advance(emoji=DONE_EMOJI)
                 # Log turn total explicitly because logfire's console exporter prints no span end.

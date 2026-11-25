@@ -683,7 +683,7 @@ footer.end{
           <span class="nbody">頻道歷史（連同歷史裡的附件上傳）與語氣偏好，全部只讀不寫，所以走錯路線可以安全丟棄。伺服器記憶與程式端確定的參與者記憶在三條線開跑前就讀好了，因為分類那支呼叫要帶著它們。分類挑中的第三人，會在歷史與上傳都好了之後併進記憶區塊。</span>
         </div>
       </div>
-      <p class="lf-foot"><strong>會合點：</strong>分類一回來，它挑中的第三人就交給線 C。強度和挑人都是分類本身的欄位，所以沒有另外的寬限期要等；分類解析失敗或撞上暫時性錯誤時一起退回保守值：走 QA、強度 <code>medium</code>、只保留程式端確定的那幾個人。</p>
+      <p class="lf-foot"><strong>會合點：</strong>分類一回來，它挑中的第三人就交給線 C。強度和挑人都是分類本身的欄位，所以沒有另外的寬限期要等；分類解析失敗或撞上暫時性錯誤時一起退回保守值：走 QA、強度退回該輪抽中候選模型在 <code>[global.models.slow].candidates</code> 裡各自的預設 <code>effort</code>、只保留程式端確定的那幾個人。</p>
     </div>
 
     <ol class="flow" start="2">
@@ -748,7 +748,7 @@ footer.end{
     </table></div>
 
     <h3>思考強度是同一支呼叫的一個欄位</h3>
-    <p>輸出是 <code>low</code> / <code>medium</code> / <code>high</code> 三選一。<strong><code>medium</code> 是常態，<code>low</code> 和 <code>high</code> 都要爭取來的</strong>：只有完全不需要查、不需要算、光靠看到的東西就能一行回完的訊息（打招呼、道謝、貼圖、純鬥嘴）才給 low；只有真的要推理才寫得對的工作（程式、數學、多步分析或規劃）才給 high。拿不準、或分類呼叫失敗時，一律 <code>medium</code>。</p>
+    <p>輸出是 <code>low</code> / <code>medium</code> / <code>high</code> 三選一。<strong><code>medium</code> 是常態，<code>low</code> 和 <code>high</code> 都要爭取來的</strong>：只有完全不需要查、不需要算、光靠看到的東西就能一行回完的訊息（打招呼、道謝、貼圖、純鬥嘴）才給 low；只有真的要推理才寫得對的工作（程式、數學、多步分析或規劃）才給 high。拿不準時給 <code>medium</code>；若分類呼叫本身失敗，則退回該輪抽中候選模型各自的 fallback <code>effort</code>。</p>
     <p>分類讀的是純文字，看不到附件內容、連結背後的東西和短訊息背後的歷史，而且刻意不給它頻道歷史（給了它會從舊訊息裡挑連結來源）。這個盲點用規則補：指著它看不到的東西的短問句一律 medium，不會是 low。另外把貼圖標成「sticker」而不是「image」，因為純貼圖反應被當成截圖會被誤判成要回答的問題。</p>
     <p>QA 拿到這個等級後，會用它覆蓋答案模型的預設強度，並顯示在回覆頁尾的 <code>模型 (強度)</code> 上。</p>
 
@@ -779,7 +779,7 @@ footer.end{
       <div class="branch-col">
         <header><b>預設後端</b><span class="chip proxy">Proxy</span></header>
         <div class="bc-body">
-          <p>全天都是 <code>gemini-4-neon</code>（開啟 <code>global.reply.slow_model_blind_test_enabled</code> 時則從候選池 <code>gemini-4-neon</code> / <code>gemini-4-hydrogen</code> 均勻抽樣），用路由給的強度，開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
+          <p>由 <code>[global.models.slow].candidates</code> 定義候選池（預設為 <code>gemini-4-neon</code>，部署時可放多個模型均勻抽樣），每輪開頭抽好候選模型後，用路由給的強度（僅在路由失敗時退回該候選各自的預設 <code>effort</code>），開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
           <p class="mut">這一輪不掛任何自訂 function tool，這是刻意的：一旦掛上，Gemini 那一輪會變成「呼叫工具就結束、正文空白」，接地引用歸零。</p>
         </div>
       </div>
@@ -800,10 +800,10 @@ footer.end{
       <li><strong>來源被刪</strong>：回覆改成不帶父訊息直接送進頻道，IMAGE / VIDEO 生成好的圖或片也一樣；回覆自己被刪則安靜結束，不會重發。</li>
     </ul>
 
-    <h3>盲測抽樣與 🔄 重新生成</h3>
+    <h3>候選池抽樣與 🔄 重新生成</h3>
     <div class="kv">
-      <dt>盲測遮蔽</dt><dd>開啟 <code>global.reply.slow_model_blind_test_enabled</code> 時，每一輪 QA 會從候選清單均勻抽一個模型，並將系統提示詞與頁尾可見的模型名稱改寫為 <code>blind-test-model</code>（同時隱藏思考強度）；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
-      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>global.reply.feedback_enabled</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：一般模式最多重抽 1 次；盲測模式最多重抽 <code>候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
+      <dt>候選池與顯示名稱</dt><dd><code>[global.models.slow].candidates</code> 定義每一輪 QA 均勻抽樣的候選清單（每個模型各自帶一顆僅在路由失敗時生效的 fallback <code>effort</code>）。若設定非空的 <code>[global.models.slow].display_name</code>（例如 <code>Gemini Next</code>），系統提示詞與頁尾可見的模型名稱會改顯示該名稱並隱藏思考強度；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
+      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>global.reply.feedback_enabled</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：單一候選最多重抽 1 次；多個候選最多重抽 <code>候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
       <dt>重抽與刪舊順序</dt><dd>僅限原發問者（或 bot 擁有者）點擊，同一則回覆以鎖序列化防連點。重抽時會重取原始發問訊息、保留原思考強度並強制走 QA 路線（仍執行分類以保留 YouTube、連結貼文與第三人記憶判定）。只有在新回覆順利落地並寫入 <code>reply.db</code> 後，才會對舊回合補記一筆 <code>regen</code> 隱含倒讚（若使用者原本已點過明確 👎 則保留原原因不覆寫）並由後往前刪除舊分段訊息；任何失敗都會保留舊回覆與評分原狀。</dd>
     </div>
 
@@ -1113,7 +1113,7 @@ footer.end{
       <thead><tr><th>功能</th><th>觸發時機</th><th>路徑</th><th>SDK / API</th><th>模型</th></tr></thead>
       <tbody>
         <tr><td><b>路由分類</b>（含思考強度、第三人記憶）</td><td class="mut">每一輪</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
-        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設（含 🔄 重新生成）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses（預設 stream）</td><td class="m">gemini-4-neon（盲測抽樣碳/氖/氫）<br>· 路由給的強度</td></tr>
+        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設（含 🔄 重新生成）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses（預設 stream）</td><td class="m">[global.models.slow].candidates<br>預設 gemini-4-neon · 路由給的強度</td></tr>
         <tr><td><b>QA 答案（看 YouTube）</b></td><td class="mut">四道閘全過</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions（預設 stream）</td><td class="m">同上</td></tr>
         <tr><td><b>提示詞導演</b></td><td class="mut">IMAGE / VIDEO 生成前（編輯影片時跳過）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses + 搜尋工具</td><td class="m">gemini-4-hydrogen · low</td></tr>
         <tr><td><b>圖片生成 / 編輯</b></td><td class="mut">IMAGE 路線、<code>generate-image</code> 標記</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · images.generate / edit</td><td class="m">gemini-nano-banana-2.1</td></tr>
@@ -1139,13 +1139,12 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 14 -->
   <section id="s14">
     <div class="s-head"><span class="s-num">14</span><h2>總開關與它們關掉之後的行為</h2></div>
-    <p class="lede">直連 Google 的功能（音樂、內嵌影片、YouTube 觀看、深度研究）只以是否設定 <code>GEMINI_API_KEY</code> 為閘，不再各自留開關；下列四個營運／實驗總開關定義於 <code>src/discordbot/config.toml</code> 的 <code>[global.reply]</code>（可在 <code>./data/config.toml</code> 覆寫，修改後重啟即生效）。</p>
+    <p class="lede">直連 Google 的功能（音樂、內嵌影片、YouTube 觀看、深度研究）只以是否設定 <code>GEMINI_API_KEY</code> 為閘，不再各自留開關；下列三個營運總開關定義於 <code>src/discordbot/config.toml</code> 的 <code>[global.reply]</code>，所有模型與 QA 候選池則定義於 <code>[global.models]</code>（皆可在 <code>./data/config.toml</code> 覆寫，修改後重啟即生效）。</p>
 
     <div class="tw"><table>
       <thead><tr><th>開關（<code>[global.reply]</code>）</th><th>關掉（或開啟）會怎樣</th><th>需要直連金鑰</th></tr></thead>
       <tbody>
         <tr><td class="m">feedback_enabled</td><td>完成的回覆不再附帶 👍 / 👎 / 🔄 按鈕與評分小字，也不寫入 <code>reply.db</code> 回合快照，並停用 🔄 重新生成</td><td>否</td></tr>
-        <tr><td class="m">slow_model_blind_test_enabled</td><td>預設關閉。開啟時 QA 從候選模型均勻抽樣、在提示詞與頁尾改以 <code>blind-test-model</code> 遮蔽模型與強度，並允許多輪不重複模型重抽</td><td>否</td></tr>
         <tr><td class="m">file_api_enabled</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
         <tr><td class="m">streaming_enabled</td><td>QA 回覆（含 YouTube Interactions）與 IMAGE / VIDEO 人格化回話改走非串流（<code>stream=False</code>），等完整結果回來後一次貼出，不做即時預覽編輯</td><td>否</td></tr>
       </tbody>
@@ -1185,7 +1184,7 @@ footer.end{
 
     <h4>回覆底下的小字</h4>
     <div class="kv">
-      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；開啟 <code>global.reply.slow_model_blind_test_enabled</code> 時模型與強度會被遮蔽成 <code>blind-test-model</code>（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。</dd>
+      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；設定非空的 <code>[global.models.slow].display_name</code>（如 <code>Gemini Next</code>）時模型與強度會改顯示該名稱（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。</dd>
       <dt>回饋按鈕與評分小字</dt><dd>開啟 <code>global.reply.feedback_enabled</code> 時，最終回覆（或長回覆最後一段）底下會附帶 <code>-# 評分將用於架構改進⋯</code> 小字與常駐按鈕：👍 / 👎 供任何人評分（再按取消、切換覆寫，👎 另提供僅本人可見的原因按鈕、自由填寫與「取消評分」）；伺服器與私訊的 QA 回覆在未達重抽上限前另附 🔄，供原發問者就地重新生成。</dd>
       <dt>📖 讀了</dt><dd>這則回覆讀了誰的記憶。超過兩個人會收斂成「等 N 人」。</dd>
       <dt>✏️ 記下了 / 🩹 不再記得</dt><dd>背景審查完才會出現，換掉那句「正在整理記憶⋯」。一則回覆只會有一條記憶結果，而且這行不會進入之後的對話歷史。</dd>

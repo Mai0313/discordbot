@@ -20,6 +20,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryCredits
+from discordbot.typings.models import ModelSettings
 from discordbot.cogs.gen_reply.input import MessageInputBuilder, shorten_earlier_reply
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, marker_block, render_author_identity
 from discordbot.cogs.gen_reply.recall import (
@@ -383,6 +384,20 @@ class ReplyContextBuilder(BaseModel):
             "compartments are scoped to."
         ),
     )
+    slow_model: ModelSettings | None = Field(
+        default=None,
+        description=(
+            "Selected QA answer model for this turn, picking the matching attachment renderer and "
+            "modality gate; defaults to `toolkit.runtime_models.slow_model`."
+        ),
+    )
+
+    @property
+    def _input_builder(self) -> MessageInputBuilder:
+        """Returns the input builder matched to `self.slow_model` (or the primary slow model)."""
+        if self.slow_model is not None:
+            return self.toolkit.input_builder_for(model=self.slow_model)
+        return self.toolkit.input_builder
 
     @property
     def message(self) -> Message:
@@ -420,7 +435,7 @@ class ReplyContextBuilder(BaseModel):
         """
         if not hist_messages:
             return []
-        input_builder = self.toolkit.input_builder
+        input_builder = self._input_builder
         supported_by_id: dict[int, list[AttachmentSource]] = {}
         for m in hist_messages:
             try:
@@ -500,7 +515,7 @@ class ReplyContextBuilder(BaseModel):
         replied_to = replied_to_message(message=self.message)
         if replied_to is None:
             return []
-        input_builder = self.toolkit.input_builder
+        input_builder = self._input_builder
         processed = await input_builder.process_single_message(
             message=replied_to, text_only=text_only
         )
@@ -516,7 +531,7 @@ class ReplyContextBuilder(BaseModel):
         messages: list[EasyInputMessageParam] = [
             current_header(message=self.message, has_reference=has_reference)
         ]
-        input_builder = self.toolkit.input_builder
+        input_builder = self._input_builder
         current_msg = await input_builder.process_single_message(
             message=self.message, text_only=text_only
         )

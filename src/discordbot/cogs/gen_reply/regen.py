@@ -24,6 +24,7 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.models import SlowModelSettings
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.asyncio_locks import KeyedLockManager
@@ -106,10 +107,10 @@ class ReplyRegenerator(BaseModel):
     config: LLMConfig = Field(
         ..., description="Runtime LLM and feedback configuration governing regen limits."
     )
-    blind_test_candidates: Callable[[], tuple[str, ...]] = Field(
+    slow_candidates: Callable[[], tuple[SlowModelSettings, ...]] = Field(
         ...,
         description=(
-            "Zero-arg provider returning configured blind-test candidates, read lazily so "
+            "Zero-arg provider returning configured QA slow candidates, read lazily so "
             "constructing the cog never builds the toolkit eagerly."
         ),
     )
@@ -240,10 +241,11 @@ class ReplyRegenerator(BaseModel):
         source_message: Message,
         state: RegenChainState,
         max_regens: int,
+        multi_candidate: bool,
     ) -> int | None:
         """Runs the replacement QA turn, cleaning up dangling previews on failure."""
         remaining = max_regens - (state.chain_depth + 1)
-        if self.config.slow_model_blind_test_enabled:
+        if multi_candidate:
             progress = (
                 f"正在換另一個模型重新生成中⋯（本次後剩餘 {remaining} 次重抽）"
                 if remaining > 0
@@ -334,7 +336,8 @@ class ReplyRegenerator(BaseModel):
         if user is None:
             return
         state = await load_regen_chain_state(reply_message_id=reply_message_id)
-        max_regens = max_regens_for(config=self.config, candidates=self.blind_test_candidates())
+        candidates = self.slow_candidates()
+        max_regens = max_regens_for(candidates=candidates)
         refusal = (
             "這則回覆已超過可重新生成範圍"
             if state is None
@@ -366,6 +369,7 @@ class ReplyRegenerator(BaseModel):
             source_message=source_message,
             state=state,
             max_regens=max_regens,
+            multi_candidate=len(candidates) > 1,
         )
         if new_reply_message_id is None:
             return
