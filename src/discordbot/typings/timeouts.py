@@ -4,7 +4,7 @@ Every failure- or degradation-producing deadline lives here, along with retry co
 multiply a bound. Excluded by rule:
 
 - Animation pacing, cache TTLs, retry cadences, `@tasks.loop` intervals, view idle expiry,
-  and `MEDIA_HOSTING_RETENTION_HOURS` (not failures): stay beside their callers.
+  and `[global.media_hosting].retention_hours` (not failures): stay beside their callers.
 - Deep research: intentionally unbounded at the job level; the agent settles server-side.
 - Pure liveness wrappers around single `AsyncOpenAI` calls: `openai` already defaults to
   600s read/write/pool with `max_retries=2`. Direct `google-genai` calls default to

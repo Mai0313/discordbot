@@ -5,6 +5,32 @@
 # Playing-activity label shown in the bot's Discord presence.
 activity = "Discord"
 
+[global.logging]
+# Lowest severity written to stdout and ./data/logs ("debug" keeps full traces; raise to "info" for outcomes only).
+level = "debug"
+
+[global.usage]
+# Append-only monthly JSONL feature-usage records (separate from ./data/logs).
+enabled = true
+directory = "./data/usage"
+
+[global.memory]
+# Commit memory changes to ./data/memories/.git when an operator initialized a git repo there.
+git_enabled = true
+
+[global.media_hosting]
+# External static host fallback for files exceeding Discord's per-message upload limit.
+# Leave base_url or serve_dir empty to keep hosting disabled (the bot never creates serve_dir).
+enabled = true
+base_url = ""
+serve_dir = ""
+max_bytes = 8589934592
+retention_hours = 168.0
+
+[global.economy]
+# Allow central-bank borrowers to approve their own loans (local testing only; keep false in production).
+allow_central_bank_self_approval = false
+
 [global.emojis]
 # Standard Unicode defaults; override with custom `<:name:id>` Discord Application Emojis.
 facebook = "📘"

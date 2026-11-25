@@ -1,4 +1,4 @@
-"""Environment-backed core credentials/logging and TOML-backed bot configuration."""
+"""Environment-backed core credentials and TOML-backed bot configuration."""
 
 import os
 from typing import Any, Final, Literal
@@ -27,16 +27,110 @@ class DiscordConfig(BaseSettings):
     )
 
 
-class LoggingConfig(BaseSettings):
-    """Console and log-file verbosity, loaded from environment variables."""
+class LoggingConfig(BaseModel):
+    """Console and log-file verbosity loaded from `[global.logging]`."""
 
-    log_level: Literal["trace", "debug", "info", "notice", "warn", "warning", "error", "fatal"] = (
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["trace", "debug", "info", "notice", "warn", "warning", "error", "fatal"] = (
         Field(
             default="debug",
-            description="Lowest severity written to the console and to ./data/logs. Defaults to debug so the log file keeps the full trace; raise it to info on a deployment that only wants outcomes.",
+            description=(
+                "Lowest severity written to the console and to ./data/logs. Defaults to debug so the "
+                "log file keeps the full trace; raise it to info on a deployment that only wants "
+                "outcomes."
+            ),
             examples=["debug", "info"],
-            validation_alias=AliasChoices("LOG_LEVEL"),
         )
+    )
+
+
+class UsageLogConfig(BaseModel):
+    """Append-only monthly usage-recording settings loaded from `[global.usage]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether feature usage is recorded at all; when false no file is created.",
+        examples=[True],
+    )
+    directory: str = Field(
+        default="./data/usage",
+        description="Directory the monthly usage record files are written into.",
+        examples=["./data/usage"],
+    )
+
+
+class MemoryConfig(BaseModel):
+    """Deployment settings for long-term memory storage loaded from `[global.memory]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    git_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether memory changes are committed to the store's git repository. Best-effort "
+            "either way: the bot never creates that repository, and a missing one disables "
+            "this silently."
+        ),
+    )
+
+
+class MediaHostingConfig(BaseModel):
+    """Configuration for the external static media host loaded from `[global.media_hosting]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Kill-switch for hosting oversized media externally and linking it; when false the "
+            "URL fallback is inert and every oversize item takes the call site's host-free path."
+        ),
+    )
+    base_url: str = Field(
+        default="",
+        description="Public base URL the external static host serves from.",
+        examples=["https://media.mai0313.com"],
+    )
+    serve_dir: str = Field(
+        default="",
+        description=(
+            "In-container directory (bind-mounted from the host) hosted files are written into; "
+            "nginx serves those same files from the host path."
+        ),
+        examples=["/mnt/share/media"],
+    )
+    max_bytes: int = Field(
+        default=8 * 1024**3,
+        description="Soft cap on total hosted bytes; oldest files are evicted past it (<=0 disables).",
+    )
+    retention_hours: float = Field(
+        default=168.0,
+        description="Hosted files older than this many hours are reaped, cap or not (<=0 disables).",
+    )
+
+    @property
+    def available(self) -> bool:
+        """Returns whether hosting can run: enabled and both base URL and serve dir are set."""
+        return self.enabled and bool(self.base_url.strip()) and bool(self.serve_dir.strip())
+
+    @property
+    def cleanup_enabled(self) -> bool:
+        """Returns whether the cleanup loop should run: hosting available and at least one cap is set."""
+        return self.available and (self.max_bytes > 0 or self.retention_hours > 0)
+
+
+class EconomyConfig(BaseModel):
+    """Economy feature settings loaded from `[global.economy]`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_central_bank_self_approval: bool = Field(
+        default=False,
+        description="Allow central-bank borrowers to approve their own loan requests for local testing.",
+        examples=[False],
     )
 
 
@@ -176,6 +270,22 @@ class GlobalConfig(BaseModel):
 
     bot: BotAppearanceConfig = Field(
         default_factory=BotAppearanceConfig, description="Bot presence settings."
+    )
+    logging: LoggingConfig = Field(
+        default_factory=LoggingConfig, description="Console and log-file verbosity settings."
+    )
+    usage: UsageLogConfig = Field(
+        default_factory=UsageLogConfig, description="Append-only monthly usage-recording settings."
+    )
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig, description="Long-term memory deployment settings."
+    )
+    media_hosting: MediaHostingConfig = Field(
+        default_factory=MediaHostingConfig,
+        description="External static media hosting configuration.",
+    )
+    economy: EconomyConfig = Field(
+        default_factory=EconomyConfig, description="Economy feature settings."
     )
     emojis: EmojiConfig = Field(
         default_factory=EmojiConfig, description="Reaction and status emoji markers."

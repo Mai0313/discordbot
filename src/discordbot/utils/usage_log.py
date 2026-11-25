@@ -11,9 +11,9 @@ from datetime import datetime
 import threading
 
 import logfire
-from pydantic import Field, BaseModel, AliasChoices
-from pydantic_settings import BaseSettings
+from pydantic import Field, BaseModel
 
+from discordbot.typings.config import UsageLogConfig, load_bot_config
 from discordbot.utils.timezone import database_now
 
 # `slash`: application-command invocation; `reply`: AI reply turn (named by route).
@@ -22,22 +22,16 @@ UsageKind = Literal["slash", "reply"]
 # Serializes worker-thread appends; threading.Lock because writes run off the event loop.
 _WRITE_LOCK = threading.Lock()
 
+# Seam patched by tests to isolate default usage writes even when a test rewrites local config.toml.
+_DEFAULT_USAGE_DIR_OVERRIDE: Path | None = None
 
-class UsageLogConfig(BaseSettings):
-    """Usage-recording settings, read from environment variables."""
 
-    enabled: bool = Field(
-        default=True,
-        description="Whether feature usage is recorded at all; when false no file is created.",
-        examples=[True],
-        validation_alias=AliasChoices("USAGE_LOG_ENABLED"),
-    )
-    directory: str = Field(
-        default="./data/usage",
-        description="Directory the monthly usage record files are written into.",
-        examples=["./data/usage"],
-        validation_alias=AliasChoices("USAGE_LOG_DIR"),
-    )
+def default_usage_log_config() -> UsageLogConfig:
+    """Returns `[global.usage]` from `config.toml`, applying any test directory override."""
+    usage = load_bot_config().global_config.usage
+    if _DEFAULT_USAGE_DIR_OVERRIDE is not None:
+        return usage.model_copy(update={"directory": str(_DEFAULT_USAGE_DIR_OVERRIDE)})
+    return usage
 
 
 class UsageRecord(BaseModel):
@@ -77,7 +71,7 @@ class UsageRecorder(BaseModel):
     """Appends `UsageRecord` entries to monthly JSONL files."""
 
     config: UsageLogConfig = Field(
-        default_factory=UsageLogConfig,
+        default_factory=default_usage_log_config,
         description="The usage-recording configuration backing this recorder.",
     )
 

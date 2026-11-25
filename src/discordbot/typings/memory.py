@@ -1,4 +1,4 @@
-"""Pure types for long-term memory: observation vocabularies, facts, and config.
+"""Pure types for long-term memory: observation vocabularies and distilled facts.
 
 The write side records observations and the read side stores distilled facts (one file per
 fact). `MemorySection` uses ASCII keys for structured LLM schemas that map to Traditional
@@ -8,8 +8,7 @@ Chinese headings at render time.
 from typing import Literal
 from datetime import datetime
 
-from pydantic import Field, BaseModel, ConfigDict, AliasChoices
-from pydantic_settings import BaseSettings
+from pydantic import Field, BaseModel, ConfigDict
 
 # Whose memory a scope holds: one user's, or the bot's own memory of one server.
 type MemoryFlavor = Literal["user", "server"]
@@ -170,17 +169,3 @@ class MemoryCredits(BaseModel):
     def total(self) -> int:
         """Returns how many users' memory this reply read."""
         return len(self.named) + self.unnamed
-
-
-class MemoryConfig(BaseSettings):
-    """Deployment settings for long-term memory storage, read from environment variables."""
-
-    git_history_enabled: bool = Field(
-        default=True,
-        description=(
-            "Whether memory changes are committed to the store's git repository. Best-effort "
-            "either way: the bot never creates that repository, and a missing one disables "
-            "this silently."
-        ),
-        validation_alias=AliasChoices("MEMORY_GIT_ENABLED"),
-    )

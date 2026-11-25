@@ -4,8 +4,7 @@ from enum import StrEnum
 from typing import Final
 from datetime import datetime
 
-from pydantic import Field, BaseModel, ConfigDict, AliasChoices
-from pydantic_settings import BaseSettings
+from pydantic import Field, BaseModel, ConfigDict
 
 BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 10
 VIP_PURCHASE_COST: Final[int] = 50_000
@@ -481,15 +480,4 @@ class PortfolioView(BaseModel):
     net_worth: int = Field(..., description="Balance minus total debt principal and interest.")
     is_vip: bool = Field(
         default=False, description="Whether the account owns the permanent VIP perk."
-    )
-
-
-class EconomyConfig(BaseSettings):
-    """Economy feature settings loaded from environment variables."""
-
-    allow_central_bank_self_approval: bool = Field(
-        default=False,
-        description="Allow central-bank borrowers to approve their own loan requests for local testing.",
-        examples=[False],
-        validation_alias=AliasChoices("ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL"),
     )

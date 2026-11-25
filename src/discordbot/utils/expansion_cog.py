@@ -26,7 +26,7 @@ from nextcord.ext import commands
 
 from discordbot.utils.urls import PostLink
 from discordbot.typings.media import LoadedMedia
-from discordbot.typings.config import AutoExpandPlatform
+from discordbot.typings.config import AutoExpandPlatform, MediaHostingConfig
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.timezone import database_now
@@ -58,7 +58,6 @@ from discordbot.utils.file_downloads import DownloadTooLargeError, stream_to_fil
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
-    MediaHostingConfig,
     MediaHostingService,
     MediaDeliveryPlanner,
     upload_limit_for,
@@ -462,9 +461,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         ensure_database_upgraded(section="settings")
         # Host-free on purpose: an image left without room keeps the link it already has.
         self.card_image_planner = MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(
-                config=MediaHostingConfig.model_validate(obj={"MEDIA_HOSTING_ENABLED": False})
-            )
+            media_hosting=MediaHostingService(config=MediaHostingConfig(enabled=False))
         )
         self._resume_started = False
         # Captured before on_ready so the restart sweep skips expansions from this process.

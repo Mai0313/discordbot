@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from nextcord import Message, NotFound, Forbidden, Interaction, HTTPException
 from nextcord.ext import commands
 
-from discordbot.utils.media_delivery import MediaHostingConfig
+from discordbot.typings.config import MediaHostingConfig
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -162,27 +162,19 @@ def make_media_hosting_config(
     max_bytes: int | None = None,
     retention_hours: float | None = None,
 ) -> MediaHostingConfig:
-    """Builds a MediaHostingConfig from these arguments alone, whatever the environment holds.
-
-    Every field is handed over, a cap left as None taking the model's own default, because
-    ``model_validate`` on a settings class still reads the process environment for any field
-    it is not given. The env-alias names keep the call type-clean: the alias kwargs on
-    ``__init__`` are invisible to a checker without a pydantic plugin.
-    """
-    return MediaHostingConfig.model_validate(
-        obj={
-            "MEDIA_HOSTING_ENABLED": enabled,
-            "MEDIA_HOSTING_BASE_URL": base_url,
-            "MEDIA_HOSTING_SERVE_DIR": serve_dir,
-            "MEDIA_HOSTING_MAX_BYTES": (
-                MediaHostingConfig.model_fields["max_bytes"].default
-                if max_bytes is None
-                else max_bytes
-            ),
-            "MEDIA_HOSTING_RETENTION_HOURS": (
-                MediaHostingConfig.model_fields["retention_hours"].default
-                if retention_hours is None
-                else retention_hours
-            ),
-        }
+    """Builds a `MediaHostingConfig` from these arguments alone, defaulting omitted caps."""
+    return MediaHostingConfig(
+        enabled=enabled,
+        base_url=base_url,
+        serve_dir=serve_dir,
+        max_bytes=(
+            MediaHostingConfig.model_fields["max_bytes"].default
+            if max_bytes is None
+            else max_bytes
+        ),
+        retention_hours=(
+            MediaHostingConfig.model_fields["retention_hours"].default
+            if retention_hours is None
+            else retention_hours
+        ),
     )

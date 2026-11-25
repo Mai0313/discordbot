@@ -17,7 +17,7 @@ import contextlib
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 
-from discordbot.typings.memory import MemoryConfig
+from discordbot.typings.config import load_bot_config
 from discordbot.typings.timeouts import YTDLP_SOCKET_TIMEOUT_SECONDS
 from discordbot.services.memory.store import scope_lock, memory_root
 
@@ -78,7 +78,7 @@ class MemoryGitService(BaseModel):
     def start(self) -> None:
         """Starts the single worker if git history is enabled and a repository exists.
 
-        Idempotent on the active event loop; evaluates `MemoryConfig().git_history_enabled` here
+        Idempotent on the active event loop; evaluates `[global.memory].git_enabled` here
         rather than at import time and rebinds cleanly if the event loop changed.
         """
         if not self.enabled or self._stopping:
@@ -87,7 +87,7 @@ class MemoryGitService(BaseModel):
         self._reset_stale_loop_state(loop=loop)
         if self._worker is not None and not self._worker.done():
             return
-        if not MemoryConfig().git_history_enabled:
+        if not load_bot_config().global_config.memory.git_enabled:
             logfire.info("Memory git history disabled by configuration")
             self.enabled = False
             return

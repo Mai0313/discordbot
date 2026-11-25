@@ -272,7 +272,7 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     store in this repo that nothing ever prunes.
     """
     usage_dir = tmp_path / "usage"
-    monkeypatch.setenv(name="USAGE_LOG_DIR", value=str(usage_dir))
+    monkeypatch.setattr("discordbot.utils.usage_log._DEFAULT_USAGE_DIR_OVERRIDE", usage_dir)
     return usage_dir
 
 

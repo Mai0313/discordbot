@@ -15,6 +15,7 @@ import pytest
 import requests
 
 from discordbot.utils import (
+    usage_log,
     expansion_cog,
     model_pricing,
     sqlite_config,
@@ -74,8 +75,8 @@ def _assert_bot_config_isolated(tmp_path: Path) -> None:
 
 
 def _assert_usage_log_isolated(tmp_path: Path) -> None:
-    """Checks `usage_log_isolated_dir` redirects `USAGE_LOG_DIR` into `tmp_path`."""
-    assert os.environ["USAGE_LOG_DIR"] == str(tmp_path / "usage")
+    """Checks `usage_log_isolated_dir` redirects default usage writes into `tmp_path`."""
+    assert Path(usage_log.default_usage_log_config().directory) == tmp_path / "usage"
 
 
 def _assert_model_price_mirror_isolated(tmp_path: Path) -> None:

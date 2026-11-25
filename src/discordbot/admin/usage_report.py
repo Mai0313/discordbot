@@ -32,7 +32,7 @@ from rich.text import Text
 from rich.table import Table
 from rich.console import Console
 
-from discordbot.utils.usage_log import UsageRecord, UsageLogConfig
+from discordbot.utils.usage_log import UsageRecord, default_usage_log_config
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -240,8 +240,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--dir",
-        default=UsageLogConfig().directory,
-        help="Directory holding the monthly record files (defaults to USAGE_LOG_DIR).",
+        default=default_usage_log_config().directory,
+        help="Directory holding the monthly record files (defaults to [global.usage].directory).",
     )
     return parser.parse_args(argv)
 

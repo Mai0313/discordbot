@@ -15,11 +15,17 @@ from discordbot.typings.config import (
     load_bot_config,
     clear_bot_config_cache,
 )
+from discordbot.cogs.economy.cog import EconomyCogs
+from discordbot.admin.usage_report import _parse_args as parse_usage_report_args
+from discordbot.utils.media_delivery import build_media_delivery_planner
+from discordbot.cogs.media_cleanup.cog import MediaCleanupCogs
+
+from tests.helpers.discord_mocks import stub_bot
 
 
 def test_log_level_setting_accepts_only_real_logfire_levels() -> None:
-    """`LOG_LEVEL` is checked against logfire's own table, not a hand-copied list."""
-    accepted = set(get_args(LoggingConfig.model_fields["log_level"].annotation))
+    """`[global.logging].level` is checked against logfire's own table, not a hand-copied list."""
+    accepted = set(get_args(LoggingConfig.model_fields["level"].annotation))
     assert accepted == set(LEVEL_NUMBERS)
 
 
@@ -31,6 +37,14 @@ def test_packaged_config_toml_parses_cleanly_with_expected_defaults() -> None:
 
     assert isinstance(config, BotConfig)
     assert config.global_config.bot.activity == "Discord"
+    assert config.global_config.logging.level == "debug"
+    assert config.global_config.usage.enabled is True
+    assert config.global_config.usage.directory == "./data/usage"
+    assert config.global_config.memory.git_enabled is True
+    assert config.global_config.media_hosting.enabled is True
+    assert config.global_config.media_hosting.available is False
+    assert config.global_config.media_hosting.cleanup_enabled is False
+    assert config.global_config.economy.allow_central_bank_self_approval is False
     assert config.global_config.emojis.twitter == "🐦"
     assert config.global_config.reply.file_api_enabled is True
     assert config.global_config.reply.streaming_enabled is True
@@ -50,6 +64,11 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
     bot_config_isolated.write_text(
         data=(
             '[global.bot]\nactivity = "破貓上線"\n\n'
+            '[global.logging]\nlevel = "info"\n\n'
+            "[global.usage]\nenabled = false\n\n"
+            "[global.memory]\ngit_enabled = false\n\n"
+            '[global.media_hosting]\nbase_url = "https://media.example"\nserve_dir = "/srv/media"\n\n'
+            "[global.economy]\nallow_central_bank_self_approval = true\n\n"
             '[global.emojis]\ntwitter = "<:twitter:1234567890>"\n\n'
             "[global.reply]\nstreaming_enabled = false\nslow_model_blind_test_enabled = true\n\n"
             "[server.auto_expand]\ntwitter = false\n"
@@ -60,6 +79,14 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
     config = load_bot_config()
 
     assert config.global_config.bot.activity == "破貓上線"
+    assert config.global_config.logging.level == "info"
+    assert config.global_config.usage.enabled is False
+    assert config.global_config.usage.directory == "./data/usage"
+    assert config.global_config.memory.git_enabled is False
+    assert config.global_config.media_hosting.available is True
+    assert config.global_config.media_hosting.max_bytes == 8 * 1024**3
+    assert config.global_config.media_hosting.retention_hours == 168.0
+    assert config.global_config.economy.allow_central_bank_self_approval is True
     assert config.global_config.emojis.twitter == "<:twitter:1234567890>"
     assert config.global_config.emojis.threads == "🧵"
     assert config.global_config.reply.streaming_enabled is False
@@ -76,12 +103,30 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
         "unknown_top = true\n",
         "[global]\nunknown_global = true\n",
         "[global.bot]\nunknown_bot = true\n",
+        "[global.logging]\nunknown_logging = true\n",
+        "[global.usage]\nunknown_usage = true\n",
+        "[global.memory]\nunknown_memory = true\n",
+        "[global.media_hosting]\nunknown_host = true\n",
+        "[global.economy]\nunknown_economy = true\n",
         '[global.emojis]\nunknown_emoji = "x"\n',
         "[global.reply]\nanswer_streaming_enabled = false\n",
         "[server]\nunknown_server = true\n",
         "[server.auto_expand]\nbilibili = true\n",
     ],
-    ids=["root", "global", "bot", "emojis", "reply", "server", "auto-expand"],
+    ids=[
+        "root",
+        "global",
+        "bot",
+        "logging",
+        "usage",
+        "memory",
+        "media-hosting",
+        "economy",
+        "emojis",
+        "reply",
+        "server",
+        "auto-expand",
+    ],
 )
 def test_unknown_keys_fail_fast_at_every_nesting_level(tmp_path: Path, bad_toml: str) -> None:
     """Every config model forbids extra keys so typos fail at load rather than silently."""
@@ -138,3 +183,36 @@ def test_llm_config_combines_env_credentials_with_toml_reply_switches(
     assert constructed.api_key == ""
     assert constructed.answer_streaming_enabled is True
     assert constructed.file_api_enabled is True
+
+
+def test_operational_consumers_read_local_config_overrides(
+    bot_config_isolated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Media hosting, economy, and usage-report consumers reflect local `config.toml` overrides."""
+    serve_dir = tmp_path / "media"
+    serve_dir.mkdir()
+    usage_dir = tmp_path / "custom-usage"
+    bot_config_isolated.write_text(
+        data=(
+            f'[global.usage]\ndirectory = "{usage_dir}"\n\n'
+            f'[global.media_hosting]\nbase_url = "https://media.example"\nserve_dir = "{serve_dir}"\n\n'
+            "[global.economy]\nallow_central_bank_self_approval = true\n"
+        ),
+        encoding="utf-8",
+    )
+    clear_bot_config_cache()
+    monkeypatch.setattr("discordbot.utils.usage_log._DEFAULT_USAGE_DIR_OVERRIDE", None)
+
+    planner = build_media_delivery_planner()
+    assert planner.media_hosting.config.available is True
+    assert planner.media_hosting.config.serve_dir == str(serve_dir)
+
+    bot = stub_bot()
+    cleanup_cog = MediaCleanupCogs(bot=bot)
+    assert cleanup_cog.media_hosting.config.available is True
+
+    economy_cog = EconomyCogs(bot=bot)
+    assert economy_cog.economy_config.allow_central_bank_self_approval is True
+
+    parsed = parse_usage_report_args(argv=[])
+    assert parsed.dir == str(usage_dir)
