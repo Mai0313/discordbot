@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING
 from pathlib import Path
 from datetime import datetime
 
+from discordbot.typings.config import clear_bot_config_cache
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.utils.usage_log import UsageRecord, UsageRecorder, UsageLogConfig
+from discordbot.utils.usage_log import UsageRecord, UsageRecorder, default_usage_log_config
 
 from tests.helpers.usage_log import usage_records
 
@@ -69,10 +70,11 @@ async def test_each_use_appends_its_own_line(usage_log_isolated_dir: Path) -> No
 
 
 async def test_the_kill_switch_writes_nothing(
-    usage_log_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    usage_log_isolated_dir: Path, bot_config_isolated: Path
 ) -> None:
-    """`USAGE_LOG_ENABLED=false` records nothing and creates no directory."""
-    monkeypatch.setenv(name="USAGE_LOG_ENABLED", value="false")
+    """`[global.usage].enabled = false` records nothing and creates no directory."""
+    bot_config_isolated.write_text(data="[global.usage]\nenabled = false\n", encoding="utf-8")  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+    clear_bot_config_cache()
 
     await UsageRecorder().record(
         kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
@@ -110,12 +112,12 @@ def test_a_record_written_before_usernames_still_parses() -> None:
 def test_the_recorder_defaults_to_the_data_directory(monkeypatch: pytest.MonkeyPatch) -> None:
     """The records live beside the bot's other durable state, not in `data/logs`.
 
-    The runtime log is debug-level, hand-cleaned and gated on `LOG_LEVEL`; a usage history
-    kept inside it would die with it or silently stop recording.
+    The runtime log is debug-level, hand-cleaned and gated on `[global.logging].level`; a usage
+    history kept inside it would die with it or silently stop recording.
     """
-    monkeypatch.delenv(name="USAGE_LOG_DIR", raising=False)
+    monkeypatch.setattr("discordbot.utils.usage_log._DEFAULT_USAGE_DIR_OVERRIDE", None)
 
-    parts = Path(UsageLogConfig().directory).parts
+    parts = Path(default_usage_log_config().directory).parts
 
     assert parts[0] == "data"
     assert "logs" not in parts

@@ -55,7 +55,7 @@ _VIEW_IDLE_EXPIRY = frozenset({
 })
 
 # How long the hosted-media reaper leaves a just-published file alone. Out of scope for the
-# same reason `MEDIA_HOSTING_RETENTION_HOURS` is: nothing fails when it elapses, the file
+# same reason `[global.media_hosting].retention_hours` is: nothing fails when it elapses, the file
 # simply stops being protected. It reads as a bound only because of how it is named.
 _SWEEP_PROTECTION = frozenset({"_EVICTION_GRACE_SECONDS"})
 

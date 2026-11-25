@@ -11,6 +11,7 @@ from nextcord import File, Locale, Member, Message, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.typings.config import load_bot_config
 from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     LEADERBOARD_SIZE,
@@ -19,7 +20,6 @@ from discordbot.typings.economy import (
     BASE_MESSAGE_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     MESSAGE_REWARD_COOLDOWN_SECONDS,
-    EconomyConfig,
     LoanLenderType,
     monthly_rate_percent_to_bps,
 )
@@ -127,13 +127,13 @@ class EconomyCogs(commands.Cog):
     """Point balance, leaderboard, loan, VIP, and economy-admin commands."""
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialises the cog with environment-backed economy settings.
+        """Initialises the cog with TOML-backed economy settings.
 
         Args:
             bot (commands.Bot): Bot instance registering the cog.
         """
         self.bot = bot
-        self.economy_config = EconomyConfig()
+        self.economy_config = load_bot_config().global_config.economy
         # Captured before the gateway connects so proposals created before `on_ready` survive.
         self._started_at = database_now()
         self._startup_sweeps_done = False

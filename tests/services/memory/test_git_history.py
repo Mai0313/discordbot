@@ -11,6 +11,7 @@ import subprocess
 
 import pytest
 
+from discordbot.typings.config import clear_bot_config_cache
 from discordbot.services.memory.store import user_scope
 from discordbot.services.memory.git_history import MemoryGitService, _GitRequest
 
@@ -178,11 +179,12 @@ def test_enqueue_outside_an_event_loop_drops_requests(memory_repository: Path) -
 
 
 async def test_start_evaluates_config_at_start_not_import(
-    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+    memory_repository: Path, bot_config_isolated: Path
 ) -> None:
-    """`MEMORY_GIT_ENABLED=false` disables git history when `start()` runs."""
+    """`[global.memory].git_enabled = false` disables git history when `start()` runs."""
     del memory_repository
-    monkeypatch.setenv(name="MEMORY_GIT_ENABLED", value="false")
+    bot_config_isolated.write_text(data="[global.memory]\ngit_enabled = false\n", encoding="utf-8")  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+    clear_bot_config_cache()
     service = MemoryGitService()
     service.start()
     assert not service.enabled

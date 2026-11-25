@@ -3,24 +3,12 @@
 import pkgutil
 import importlib
 
-from dotenv import dotenv_values
-import pytest
 from pydantic import AliasChoices
 from pydantic_settings import BaseSettings
 
 import discordbot
-from discordbot.utils.media_delivery import MediaHostingConfig
 
-from tests.helpers.source_tree import REPO_ROOT, env_example_names
-
-
-def test_copied_env_example_leaves_media_hosting_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A `.env` copied verbatim from `.env.example` leaves media hosting unavailable."""
-    for name, value in dotenv_values(dotenv_path=REPO_ROOT / ".env.example").items():
-        if name.startswith("MEDIA_HOSTING_") and value is not None:
-            monkeypatch.setenv(name=name, value=value)
-
-    assert not MediaHostingConfig().available
+from tests.helpers.source_tree import env_example_names
 
 
 def test_env_example_names_every_setting() -> None:

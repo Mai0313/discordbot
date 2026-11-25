@@ -5,7 +5,7 @@ into native attachments, hosted public URLs, dropped items, and clamped items.
 
 `MediaHostingService` is best-effort and returns None when disabled, unconfigured, given a
 non-allowlisted suffix, or on write failure. Every call site must stay host-free under
-`MEDIA_HOSTING_ENABLED=false` or an unconfigured host.
+`[global.media_hosting].enabled = false` or an unconfigured host.
 """
 
 from io import BytesIO
@@ -23,9 +23,9 @@ import contextlib
 
 import logfire
 from nextcord import File, Client, Interaction
-from pydantic import Field, BaseModel, ConfigDict, AliasChoices
-from pydantic_settings import BaseSettings
+from pydantic import Field, BaseModel, ConfigDict
 
+from discordbot.typings.config import MediaHostingConfig, load_bot_config
 from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 
 if TYPE_CHECKING:
@@ -159,54 +159,6 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
             hasher.update(chunk)
     return hasher.hexdigest()[:_HASH_HEX_LEN]
-
-
-class MediaHostingConfig(BaseSettings):
-    """Configuration for the external media host, read from environment variables."""
-
-    enabled: bool = Field(
-        default=True,
-        description=(
-            "Kill-switch for hosting oversized media externally and linking it; when false the "
-            "URL fallback is inert and every oversize item takes the call site's host-free path."
-        ),
-        validation_alias=AliasChoices("MEDIA_HOSTING_ENABLED"),
-    )
-    base_url: str = Field(
-        default="",
-        description="Public base URL the external static host serves from.",
-        examples=["https://media.mai0313.com"],
-        validation_alias=AliasChoices("MEDIA_HOSTING_BASE_URL"),
-    )
-    serve_dir: str = Field(
-        default="",
-        description=(
-            "In-container directory (bind-mounted from the host) hosted files are written into; "
-            "nginx serves those same files from the host path."
-        ),
-        examples=["/mnt/share/media"],
-        validation_alias=AliasChoices("MEDIA_HOSTING_SERVE_DIR"),
-    )
-    max_bytes: int = Field(
-        default=8 * 1024**3,
-        description="Soft cap on total hosted bytes; oldest files are evicted past it (<=0 disables).",
-        validation_alias=AliasChoices("MEDIA_HOSTING_MAX_BYTES"),
-    )
-    retention_hours: float = Field(
-        default=168.0,
-        description="Hosted files older than this many hours are reaped, cap or not (<=0 disables).",
-        validation_alias=AliasChoices("MEDIA_HOSTING_RETENTION_HOURS"),
-    )
-
-    @property
-    def available(self) -> bool:
-        """Returns whether hosting can run: enabled and both base URL and serve dir are set."""
-        return self.enabled and bool(self.base_url.strip()) and bool(self.serve_dir.strip())
-
-    @property
-    def cleanup_enabled(self) -> bool:
-        """Returns whether the cleanup loop should run: hosting available and at least one cap is set."""
-        return self.available and (self.max_bytes > 0 or self.retention_hours > 0)
 
 
 class _HostedFile(BaseModel):
@@ -673,9 +625,11 @@ class MediaDeliveryPlanner(BaseModel):
 
 
 def build_media_delivery_planner() -> MediaDeliveryPlanner:
-    """Returns the default MediaDeliveryPlanner wired to the env-configured external media host.
+    """Returns the default MediaDeliveryPlanner wired to `[global.media_hosting]` in `config.toml`.
 
     `MediaHostingConfig` self-disables when the host is unconfigured, so a planner built here
     stays on the host-free path until hosting is set up.
     """
-    return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
+    return MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(config=load_bot_config().global_config.media_hosting)
+    )
