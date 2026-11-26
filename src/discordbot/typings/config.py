@@ -284,7 +284,7 @@ class ReasoningModelConfig(BaseModel):
 
 
 class SlowModelCandidate(BaseModel):
-    """One QA answer model candidate and its router-failure fallback effort."""
+    """One QA answer model candidate, its router-failure fallback effort, and sampling weight."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -292,6 +292,15 @@ class SlowModelCandidate(BaseModel):
     effort: SlowEffortGrade = Field(
         default="low",
         description="Fallback reasoning effort used only when the triage router fails.",
+    )
+    weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description=(
+            "Relative sampling weight for this candidate; 0 disables it without removing its entry."
+        ),
+        examples=[1.0, 70, 0],
     )
 
     @field_validator("name")
@@ -318,7 +327,7 @@ class SlowModelsConfig(BaseModel):
         default_factory=lambda: [SlowModelCandidate(name="gemini-4-neon", effort="low")],
         min_length=1,
         description=(
-            "Non-empty list of distinct QA candidate models sampled uniformly per turn; each "
+            "Non-empty list of distinct QA candidate models sampled by `weight` per turn; each "
             "entry's `effort` acts as the router-failure fallback for turns drawing that candidate."
         ),
     )
@@ -333,13 +342,13 @@ class SlowModelsConfig(BaseModel):
 
     @field_validator("candidates")
     @classmethod
-    def _validate_unique_candidates(
-        cls, value: list[SlowModelCandidate]
-    ) -> list[SlowModelCandidate]:
-        """Rejects duplicate model names so uniform sampling and regen exclusions stay exact."""
+    def _validate_candidates(cls, value: list[SlowModelCandidate]) -> list[SlowModelCandidate]:
+        """Rejects duplicate model names and all-zero weight pools."""
         names = [candidate.name for candidate in value]
         if len(set(names)) != len(names):
             raise ValueError("slow.candidates must not contain duplicate model names")
+        if sum(candidate.weight for candidate in value) <= 0:
+            raise ValueError("slow.candidates must have a positive total weight")
         return value
 
 

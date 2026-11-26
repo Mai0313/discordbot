@@ -336,7 +336,7 @@ class ReplyRegenerator(BaseModel):
         if user is None:
             return
         state = await load_regen_chain_state(reply_message_id=reply_message_id)
-        candidates = self.slow_candidates()
+        candidates = [candidate for candidate in self.slow_candidates() if candidate.weight > 0]
         max_regens = max_regens_for(candidates=candidates)
         refusal = (
             "這則回覆已超過可重新生成範圍"

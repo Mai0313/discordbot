@@ -70,6 +70,14 @@ class SlowModelSettings(ModelSettings):
             "chosen by the router for one QA turn."
         ),
     )
+    weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description=(
+            "Relative sampling weight for this candidate; 0 disables it without removing its entry."
+        ),
+    )
 
 
 class RuntimeModelCatalog(BaseModel):
@@ -133,14 +141,17 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def slow_candidates(self) -> tuple[SlowModelSettings, ...]:
-        """Configured QA candidate models with each model's router-failure fallback effort.
+        """Active configured QA candidate models with each model's fallback effort and weight.
 
-        Sampled uniformly per QA turn; every entry should support `RouteClassification.effort`
-        (`low`, `medium`, `high`).
+        Excludes zero-weight entries; sampled by `weight` per QA turn. Every entry should support
+        `RouteClassification.effort` (`low`, `medium`, `high`).
         """
         return tuple(
-            SlowModelSettings(name=candidate.name, effort=candidate.effort)
+            SlowModelSettings(
+                name=candidate.name, effort=candidate.effort, weight=candidate.weight
+            )
             for candidate in self._models().slow.candidates
+            if candidate.weight > 0
         )
 
     @property
@@ -150,7 +161,7 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def slow_model(self) -> SlowModelSettings:
-        """Returns the primary slow model (first configured QA candidate).
+        """Returns the primary slow model (first active configured QA candidate).
 
         Callers also inspect `name` to determine provider and supported input modalities.
         """

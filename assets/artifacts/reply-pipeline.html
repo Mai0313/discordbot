@@ -779,7 +779,7 @@ footer.end{
       <div class="branch-col">
         <header><b>預設後端</b><span class="chip proxy">Proxy</span></header>
         <div class="bc-body">
-          <p>由 <code>[global.models.slow].candidates</code> 定義候選池（預設為 <code>gemini-4-neon</code>，部署時可放多個模型均勻抽樣），每輪開頭抽好候選模型後，用路由給的強度（僅在路由失敗時退回該候選各自的預設 <code>effort</code>），開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
+          <p>由 <code>[global.models.slow].candidates</code> 定義候選池（預設為 <code>gemini-4-neon</code>，部署時可放多個模型並以 <code>weight</code> 加權抽樣，預設 <code>1</code>、<code>0</code> 可暫停該候選），每輪開頭抽好候選模型後，用路由給的強度（僅在路由失敗時退回該候選各自的預設 <code>effort</code>），開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
           <p class="mut">這一輪不掛任何自訂 function tool，這是刻意的：一旦掛上，Gemini 那一輪會變成「呼叫工具就結束、正文空白」，接地引用歸零。</p>
         </div>
       </div>
@@ -802,8 +802,8 @@ footer.end{
 
     <h3>候選池抽樣與 🔄 重新生成</h3>
     <div class="kv">
-      <dt>候選池與顯示名稱</dt><dd><code>[global.models.slow].candidates</code> 定義每一輪 QA 均勻抽樣的候選清單（每個模型各自帶一顆僅在路由失敗時生效的 fallback <code>effort</code>）。若設定非空的 <code>[global.models.slow].display_name</code>（例如 <code>Gemini Next</code>），系統提示詞與頁尾可見的模型名稱會改顯示該名稱並隱藏思考強度；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
-      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>global.reply.feedback_enabled</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：單一候選最多重抽 1 次；多個候選最多重抽 <code>候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
+      <dt>候選池與顯示名稱</dt><dd><code>[global.models.slow].candidates</code> 定義每一輪 QA 按 <code>weight</code> 加權抽樣的候選清單（<code>weight</code> 預設 <code>1</code>，<code>0</code> 可暫停候選而不必刪除；每個模型各自帶一顆僅在路由失敗時生效的 fallback <code>effort</code>）。若設定非空的 <code>[global.models.slow].display_name</code>（例如 <code>Gemini Next</code>），系統提示詞與頁尾可見的模型名稱會改顯示該名稱並隱藏思考強度；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
+      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>global.reply.feedback_enabled</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：單一啟用候選（<code>weight &gt; 0</code>）最多重抽 1 次；多個啟用候選最多重抽 <code>啟用候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
       <dt>重抽與刪舊順序</dt><dd>僅限原發問者（或 bot 擁有者）點擊，同一則回覆以鎖序列化防連點。重抽時會重取原始發問訊息、保留原思考強度並強制走 QA 路線（仍執行分類以保留 YouTube、連結貼文與第三人記憶判定）。只有在新回覆順利落地並寫入 <code>reply.db</code> 後，才會對舊回合補記一筆 <code>regen</code> 隱含倒讚（若使用者原本已點過明確 👎 則保留原原因不覆寫）並由後往前刪除舊分段訊息；任何失敗都會保留舊回覆與評分原狀。</dd>
     </div>
 

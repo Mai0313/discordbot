@@ -11,10 +11,15 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.config import clear_bot_config_cache
-from discordbot.typings.models import RouteClassification, RuntimeModelCatalog
+from discordbot.typings.models import (
+    ModelSettings,
+    SlowModelSettings,
+    RouteClassification,
+    RuntimeModelCatalog,
+)
 from discordbot.utils.model_pricing import ModelPriceEntry, _LoadedTable
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.cogs.gen_reply.answer import AnswerTurn
+from discordbot.cogs.gen_reply.answer import AnswerTurn, max_regens_for, select_slow_model
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, IMAGE_REPLY_PROMPT
 from discordbot.cogs.gen_reply.surface import TurnSurface
@@ -60,7 +65,10 @@ async def test_slow_pool_masks_visible_label_and_records_real_model(
     seen_calls: list[dict[str, object]] = []
     finalized_logs: list[dict[str, object]] = []
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: seq[1])
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer._SYSTEM_RANDOM.choices",
+        lambda population, **_kwargs: [population[1]],
+    )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.streaming.logfire.info",
         lambda msg, **kwargs: (
@@ -132,7 +140,10 @@ async def test_slow_pool_records_real_post_fallback_model_while_hiding_footer(
     cog = _cog()
     message = FakeMessage(content="<@999> test fallback")
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: seq[0])
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer._SYSTEM_RANDOM.choices",
+        lambda population, **_kwargs: [population[0]],
+    )
 
     async def fake_create(**_kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
         completed = _completed_event(input_tokens=10, output_tokens=5)
@@ -186,7 +197,10 @@ async def test_unmasked_multi_candidate_pool_shows_drawn_model_in_prompt_and_foo
     message = FakeMessage(content="<@999> who are you")
     seen_instructions: list[str] = []
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: seq[1])
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer._SYSTEM_RANDOM.choices",
+        lambda population, **_kwargs: [population[1]],
+    )
 
     async def fake_create(**kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
         seen_instructions.append(str(kwargs["instructions"]))
@@ -264,7 +278,8 @@ async def test_pipeline_uses_selected_candidate_effort_only_on_router_failure(
     clear_bot_config_cache()
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: seq[pick_index]
+        "discordbot.cogs.gen_reply.answer._SYSTEM_RANDOM.choices",
+        lambda population, **_kwargs: [population[pick_index]],
     )
 
     # First turn: router returns no parsed output -> candidate's fallback effort applies.
@@ -389,3 +404,89 @@ async def test_media_persona_reply_formats_fast_model_identity_label(
     assert len(seen_instructions) == 1
     assert "{model_label}" not in seen_instructions[0]
     assert f"({cog.toolkit.runtime_models.fast_model.name})" in seen_instructions[0]
+
+
+def test_select_slow_model_passes_weights_skips_zero_and_honors_exclusions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`select_slow_model` forwards active weights, ignores zero-weight entries, and rejects empty active pools."""
+    parked = SlowModelSettings(name="gemini-4-parked", effort="low", weight=0.0)
+    neon = SlowModelSettings(name="gemini-4-neon", effort="low", weight=70.0)
+    hydrogen = SlowModelSettings(name="gemini-4-hydrogen", effort="medium", weight=30.0)
+    extra = SlowModelSettings(name="gemini-4-extra", effort="high", weight=10.0)
+    seen_draws: list[tuple[list[str], list[float], int]] = []
+
+    def fake_choices(
+        population: list[SlowModelSettings], weights: list[float], k: int = 1
+    ) -> list[SlowModelSettings]:
+        seen_draws.append(([item.name for item in population], list(weights), k))
+        return [population[-1]]
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.answer._SYSTEM_RANDOM.choices", fake_choices)
+
+    picked = select_slow_model(candidates=[parked, neon, hydrogen, extra])
+    assert picked == extra
+    assert seen_draws[-1] == (
+        ["gemini-4-neon", "gemini-4-hydrogen", "gemini-4-extra"],
+        [70.0, 30.0, 10.0],
+        1,
+    )
+
+    # Excluding one active model passes only the remaining active weights.
+    picked_after_exclude = select_slow_model(
+        candidates=[parked, neon, hydrogen, extra], excluded_models=frozenset({"gemini-4-neon"})
+    )
+    assert picked_after_exclude == extra
+    assert seen_draws[-1] == (["gemini-4-hydrogen", "gemini-4-extra"], [30.0, 10.0], 1)
+
+    # Excluding every active model falls back to the active pool, never drawing a zero-weight entry.
+    seen_draws.clear()
+    only_active = select_slow_model(
+        candidates=[parked, neon], excluded_models=frozenset({"gemini-4-neon"})
+    )
+    assert only_active == neon
+    assert seen_draws == []
+
+    with pytest.raises(ValueError, match="positive weight"):
+        select_slow_model(candidates=[])
+    with pytest.raises(ValueError, match="positive weight"):
+        select_slow_model(candidates=[parked])
+
+
+def test_select_slow_model_real_weighted_draw_prefers_heavy_weight_and_never_draws_zero() -> None:
+    """Unmocked weighted sampling respects candidate weights and excludes zero-weight entries."""
+    heavy = SlowModelSettings(name="gemini-4-heavy", effort="low", weight=1e12)
+    tiny = SlowModelSettings(name="gemini-4-tiny", effort="medium", weight=1e-12)
+    parked = SlowModelSettings(name="gemini-4-parked", effort="high", weight=0.0)
+
+    draws = [select_slow_model(candidates=[parked, heavy, tiny]).name for _ in range(20)]
+    assert draws == ["gemini-4-heavy"] * 20
+
+    # Even when the heavy model is excluded, only the remaining active model is drawn, never parked.
+    excluded_draw = select_slow_model(
+        candidates=[parked, heavy, tiny], excluded_models=frozenset({"gemini-4-heavy"})
+    )
+    assert excluded_draw == tiny
+
+
+def test_max_regens_for_counts_only_active_candidates() -> None:
+    """`max_regens_for` ignores zero-weight `SlowModelSettings` and counts plain `ModelSettings`."""
+    active_a = SlowModelSettings(name="gemini-4-a", effort="low", weight=70.0)
+    active_b = SlowModelSettings(name="gemini-4-b", effort="medium", weight=30.0)
+    active_c = SlowModelSettings(name="gemini-4-c", effort="high", weight=10.0)
+    parked_a = SlowModelSettings(name="gemini-4-p1", effort="low", weight=0.0)
+    parked_b = SlowModelSettings(name="gemini-4-p2", effort="low", weight=0.0)
+
+    assert max_regens_for(candidates=[active_a, parked_a, parked_b]) == 1
+    assert max_regens_for(candidates=[active_a, active_b, parked_a]) == 1
+    assert max_regens_for(candidates=[active_a, active_b, active_c, parked_a]) == 2
+    assert (
+        max_regens_for(
+            candidates=[
+                ModelSettings(name="gemini-4-a"),
+                ModelSettings(name="gemini-4-b"),
+                ModelSettings(name="gemini-4-c"),
+            ]
+        )
+        == 2
+    )

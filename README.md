@@ -59,7 +59,7 @@ flowchart TD
     class UP,LF,YT,V2,DR direct
 ```
 
-Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly. Attachment uploads and channel history start alongside the route call and are waited on only when the reply is written. Finished replies carry feedback buttons (`👍`/`👎`), and gateway/DM QA replies also carry `🔄` for the original asker to regenerate in place (replacing the old reply once the new one lands; configuring multiple `[global.models.slow].candidates` samples across them and an optional `display_name` masks the visible model label).
+Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly. Attachment uploads and channel history start alongside the route call and are waited on only when the reply is written. Finished replies carry feedback buttons (`👍`/`👎`), and gateway/DM QA replies also carry `🔄` for the original asker to regenerate in place (replacing the old reply once the new one lands; configuring multiple `[global.models.slow].candidates` samples across them by weight and an optional `display_name` masks the visible model label).
 
 ## Features
 
