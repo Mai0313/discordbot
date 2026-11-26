@@ -95,25 +95,42 @@ class RegenOptions(BaseModel):
     )
 
 
+_SYSTEM_RANDOM = secrets.SystemRandom()
+
+
 def select_slow_model(
     candidates: Sequence[SlowModelSettings], excluded_models: frozenset[str] = frozenset()
 ) -> SlowModelSettings:
-    """Draws one QA candidate uniformly, excluding `excluded_models` while untried models remain.
+    """Draws one active QA candidate weighted by `weight`, excluding tried models while others remain.
 
     Args:
-        candidates (Sequence[SlowModelSettings]): Non-empty pool of configured QA candidates.
+        candidates (Sequence[SlowModelSettings]): Pool of configured QA candidates; entries with
+            `weight <= 0` are ignored.
         excluded_models (frozenset[str]): Model names already tried earlier in a regen chain.
+
+    Raises:
+        ValueError: If `candidates` contains no entry with positive weight.
     """
-    remaining = [candidate for candidate in candidates if candidate.name not in excluded_models]
-    pool = remaining or list(candidates)
+    active = [candidate for candidate in candidates if candidate.weight > 0]
+    if not active:
+        raise ValueError("candidates must contain at least one entry with positive weight")
+    remaining = [candidate for candidate in active if candidate.name not in excluded_models]
+    pool = remaining or active
     if len(pool) == 1:
         return pool[0]
-    return secrets.choice(seq=pool)
+    return _SYSTEM_RANDOM.choices(
+        population=pool, weights=[candidate.weight for candidate in pool], k=1
+    )[0]
 
 
 def max_regens_for(candidates: Sequence[ModelSettings]) -> int:
     """Returns the maximum number of regenerations allowed for one QA reply chain."""
-    return max(1, len(candidates) - 1)
+    active_count = sum(
+        1
+        for candidate in candidates
+        if (candidate.weight > 0 if isinstance(candidate, SlowModelSettings) else True)
+    )
+    return max(1, active_count - 1)
 
 
 def build_runtime_instructions(system_prompt: str, message: Message, guild_id: int | None) -> str:

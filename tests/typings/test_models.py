@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from discordbot.typings.config import clear_bot_config_cache
 from discordbot.typings.models import (
@@ -138,6 +139,39 @@ def test_runtime_model_catalog_reads_local_config_overrides(bot_config_isolated:
         SlowModelSettings(name="gemini-4-hydrogen", effort="medium"),
     )
     assert catalog.slow_model == SlowModelSettings(name="gemini-4-neon", effort="low")
+
+
+def test_runtime_model_catalog_filters_zero_weight_slow_candidates(
+    bot_config_isolated: Path,
+) -> None:
+    """`slow_candidates` and `slow_model` skip zero-weight entries and preserve positive weights."""
+    bot_config_isolated.write_text(
+        data=(
+            "[global.models.slow]\n"
+            "candidates = [\n"
+            '  { name = "gemini-4-parked", effort = "low", weight = 0 },\n'
+            '  { name = "gemini-4-neon", effort = "low", weight = 70 },\n'
+            '  { name = "gemini-4-mid-parked", effort = "high", weight = 0.0 },\n'
+            '  { name = "gemini-4-hydrogen", effort = "medium", weight = 30 },\n'
+            "]\n"
+        ),
+        encoding="utf-8",
+    )
+    clear_bot_config_cache()
+
+    catalog = RuntimeModelCatalog()
+    assert catalog.slow_candidates == (
+        SlowModelSettings(name="gemini-4-neon", effort="low", weight=70.0),
+        SlowModelSettings(name="gemini-4-hydrogen", effort="medium", weight=30.0),
+    )
+    assert catalog.slow_model == SlowModelSettings(name="gemini-4-neon", effort="low", weight=70.0)
+
+
+@pytest.mark.parametrize("bad_weight", [-0.1, float("nan"), float("inf"), float("-inf")])
+def test_slow_model_settings_rejects_invalid_weights(bad_weight: float) -> None:
+    """`SlowModelSettings.weight` rejects negative and non-finite values."""
+    with pytest.raises(ValidationError):
+        SlowModelSettings(name="gemini-4-neon", effort="low", weight=bad_weight)
 
 
 @pytest.mark.parametrize("route_shape", [RouteClassification, RecallRouteClassification])

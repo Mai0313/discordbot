@@ -68,8 +68,8 @@ def test_packaged_config_toml_parses_cleanly_with_expected_defaults() -> None:
         config.global_config.models.memory.effort,
     ) == ("gemini-4-neon", "medium")
     assert config.global_config.models.slow.display_name == ""
-    assert [(c.name, c.effort) for c in config.global_config.models.slow.candidates] == [
-        ("gemini-4-neon", "low")
+    assert [(c.name, c.effort, c.weight) for c in config.global_config.models.slow.candidates] == [
+        ("gemini-4-neon", "low", 1.0)
     ]
     assert config.server.auto_expand.model_dump() == {
         "twitter": True,
@@ -155,7 +155,14 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
         "[global.models.slow]\nunknown_slow = true\n",
         "[global.models.slow]\ncandidates = []\n",
         '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low" }, { name = "gemini-4-neon", effort = "medium" }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = 1 }, { name = "gemini-4-neon", effort = "medium", weight = 0 }]\n',
         '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "minimal" }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = 10 }, { name = "gemini-4-hydrogen", effort = "medium", weight = -1 }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = nan }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = inf }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = -inf }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = 0 }]\n',
+        '[global.models.slow]\ncandidates = [{ name = "gemini-4-neon", effort = "low", weight = 0 }, { name = "gemini-4-hydrogen", effort = "medium", weight = 0.0 }]\n',
         '[global.models.slow]\ndisplay_name = "line1\\nline2"\n',
         "[server]\nunknown_server = true\n",
         "[server.auto_expand]\nbilibili = true\n",
@@ -178,7 +185,14 @@ def test_local_config_toml_deep_merges_partial_overrides(bot_config_isolated: Pa
         "slow-extra",
         "slow-empty-candidates",
         "slow-duplicate-candidates",
+        "slow-duplicate-candidate-with-zero-weight",
         "slow-invalid-effort",
+        "slow-negative-weight",
+        "slow-nan-weight",
+        "slow-inf-weight",
+        "slow-neg-inf-weight",
+        "slow-single-zero-weight",
+        "slow-all-zero-weights",
         "slow-multiline-display-name",
         "server",
         "auto-expand",
@@ -191,6 +205,32 @@ def test_unknown_keys_fail_fast_at_every_nesting_level(tmp_path: Path, bad_toml:
 
     with pytest.raises(ValidationError):
         load_bot_config(local_path=bad_file)
+
+
+def test_slow_candidates_parse_optional_weights(tmp_path: Path) -> None:
+    """Slow candidate weights default to 1.0 and accept integers, floats, and zero alongside active entries."""
+    override = tmp_path / "weights.toml"
+    override.write_text(
+        data=(
+            "[global.models.slow]\n"
+            "candidates = [\n"
+            '  { name = "gemini-4-parked", effort = "low", weight = 0 },\n'
+            '  { name = "gemini-4-neon", effort = "low", weight = 70 },\n'
+            '  { name = "gemini-4-hydrogen", effort = "medium", weight = 0.3 },\n'
+            '  { name = "gemini-4-default", effort = "high" },\n'
+            "]\n"
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_bot_config(local_path=override)
+
+    assert [(c.name, c.effort, c.weight) for c in config.global_config.models.slow.candidates] == [
+        ("gemini-4-parked", "low", 0.0),
+        ("gemini-4-neon", "low", 70.0),
+        ("gemini-4-hydrogen", "medium", 0.3),
+        ("gemini-4-default", "high", 1.0),
+    ]
 
 
 def test_explicit_missing_local_path_falls_back_to_packaged_defaults(tmp_path: Path) -> None:

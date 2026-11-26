@@ -76,7 +76,8 @@ memory = { name = "gemini-4-neon", effort = "medium" }
 # Non-empty masks the visible model label (and hides effort) in the system prompt and usage footer,
 # e.g. "Gemini Next", while pricing, logs, and reply.db still record the real model and effort.
 display_name = ""
-# Uniformly sampled per QA turn; each candidate's `effort` is used only when routing fails.
+# Weighted-sampled per QA turn (`weight` defaults to 1; 0 parks a candidate without removing it);
+# each candidate's `effort` is used only when routing fails.
 candidates = [
   { name = "gemini-4-neon", effort = "low" },
 ]

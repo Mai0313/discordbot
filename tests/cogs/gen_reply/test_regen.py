@@ -256,13 +256,20 @@ async def test_regen_multi_candidate_excludes_tried_models_tracks_remaining_and_
     )
 
     last_pool: tuple[str, ...] = ()
+    last_weights: tuple[float, ...] = ()
 
-    def deterministic_choice(seq: list[SlowModelSettings]) -> SlowModelSettings:
-        nonlocal last_pool
-        last_pool = tuple(item.name for item in seq)
-        return seq[0]
+    def deterministic_choices(
+        population: list[SlowModelSettings], weights: list[float], k: int = 1
+    ) -> list[SlowModelSettings]:
+        nonlocal last_pool, last_weights
+        assert k == 1
+        last_pool = tuple(item.name for item in population)
+        last_weights = tuple(weights)
+        return [population[0]]
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.secrets.choice", deterministic_choice)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer._SYSTEM_RANDOM.choices", deterministic_choices
+    )
 
     # First regen (R1 -> R2): neon excluded -> picks hydrogen, remaining = 1, R2 keeps 🔄.
     c2 = _completed_event(input_tokens=5, output_tokens=5)
@@ -272,6 +279,7 @@ async def test_regen_multi_candidate_excludes_tried_models_tracks_remaining_and_
     await cog.regenerator.handle(interaction=as_interaction(fake=click1))
 
     assert last_pool == ("gemini-4-hydrogen", "gemini-4-extra")
+    assert last_weights == (1.0, 1.0)
     assert click1.edits[0]["content"] == "正在換另一個模型重新生成中⋯（本次後剩餘 1 次重抽）"
     assert click1.edits[-1]["content"] == "已重新生成回覆"
     r2 = source.replies[0]
@@ -720,3 +728,61 @@ async def test_regen_validates_access_with_single_row_lookup_and_walks_chain_onc
     assert asker.edits[-1]["content"] == "已重新生成回覆"
     assert row_lookups == [2901]
     assert chain_walks == [2901]
+
+
+@pytest.mark.usefixtures("no_memory_review")
+async def test_regen_treats_zero_weight_candidates_as_inactive(
+    bot_config_isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero-weight candidates never trigger multi-candidate wording or extra regens, even when injected directly."""
+    bot_config_isolated.write_text(  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+        data=(
+            "[global.models.slow]\n"
+            "candidates = [\n"
+            '  { name = "gemini-4-parked", effort = "low", weight = 0 },\n'
+            '  { name = "gemini-4-neon", effort = "medium", weight = 70 },\n'
+            "]\n"
+        ),
+        encoding="utf-8",
+    )
+    clear_bot_config_cache()
+    cog = _cog()
+
+    # Also verify ReplyRegenerator itself filters zero-weight candidates even if a caller skips RuntimeModelCatalog.
+    monkeypatch.setattr(
+        cog.regenerator,
+        "slow_candidates",
+        lambda: (
+            SlowModelSettings(name="gemini-4-parked", effort="low", weight=0.0),
+            SlowModelSettings(name="gemini-4-neon", effort="medium", weight=70.0),
+        ),
+    )
+
+    source = FakeMessage(content="<@999> single active model", author=FakeAuthor(user_id=100))
+    channel = _FakeRegenChannel(messages={source.id: source})
+    await record_reply_turn(
+        reply_message_id=3001,
+        source_message_id=source.id,
+        guild_id=1,
+        channel_id=channel.id,
+        author_id=100,
+        surface="gateway",
+        route="QA",
+        model="gemini-4-neon",
+        effort="medium",
+        backend="responses",
+        question="single active model",
+        answer="answer 1",
+        reply_message_ids=[3001],
+    )
+
+    completed = _completed_event(input_tokens=5, output_tokens=5)
+    completed.response.model = "gemini-4-neon"
+    _recorded(cog).responses.stream_queue = [[_text_event(delta="answer 2"), completed]]
+
+    click = _regen_interaction(reply_message_id=3001, user_id=100, channel=channel)
+    await cog.regenerator.handle(interaction=as_interaction(fake=click))
+
+    assert [edit["content"] for edit in click.edits] == ["正在重新生成回覆中⋯", "已重新生成回覆"]
+    assert _recorded(cog).responses.create_models == ["gemini-4-neon"]
+    assert _has_regen_button(view=source.replies[0].view) is False
