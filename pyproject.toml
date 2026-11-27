@@ -69,13 +69,13 @@ authors = [
 dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.20.1",
-    "anthropic>=2.10.0",
-    "google-genai>=3.5.0",
-    "logfire>=5.6.0",
+    "anthropic>=2.14.0",
+    "google-genai>=3.6.1",
+    "logfire>=6.0.1",
     "nextcord[speed,voice]>=3.2.0",
-    "openai>=3.55.1",
+    "openai>=3.60.0",
     "pillow>=13.0.0",
-    "pydantic>=2.14.3",
+    "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
     "python-dotenv>=1.2.4",
     "requests>=2.34.2",
@@ -83,7 +83,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.1.9",
     "tenacity>=9.1.4",
     "xai-sdk>=1.21.0",
-    "yt-dlp>=2026.10.26",
+    "yt-dlp>=2026.11.23",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -107,7 +107,7 @@ dev = [
     "ipykernel",
     "ipywidgets",
     "notebook",
-    "openai-agents>=0.25.0",
+    "openai-agents>=0.26.0",
     "poethepoet",
     "pre-commit",
 ]
