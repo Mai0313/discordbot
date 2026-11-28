@@ -23,6 +23,7 @@ from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 from discordbot.services.platforms.bilibili import BILIBILI_POST_LINK
 from discordbot.services.platforms.facebook import FACEBOOK_POST_LINK
 from discordbot.services.platforms.instagram import INSTAGRAM_POST_LINK
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_TIMEOUT_NOTICE,
     build_douyin_context_messages,
@@ -50,62 +51,90 @@ from discordbot.cogs.gen_reply.link_sources.instagram import (
 
 
 async def _build_threads_link_context(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Threads builder to the registry signature (a straight pass-through)."""
+    """Adapts the Threads builder to the registry signature."""
     return await build_threads_context_messages(
-        url=url, media_client=media_client, deadline=deadline
+        url=url, image_renderer=image_renderer, video_client=video_client, deadline=deadline
     )
 
 
 async def _build_douyin_link_context(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Douyin builder to the registry signature (a straight pass-through)."""
+    """Adapts the Douyin builder to the registry signature."""
     return await build_douyin_context_messages(
-        url=url, media_client=media_client, deadline=deadline
+        url=url, image_renderer=image_renderer, video_client=video_client, deadline=deadline
     )
 
 
 async def _build_bilibili_link_context(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Bilibili builder to the registry signature (a straight pass-through)."""
+    """Adapts the video-only Bilibili builder to the registry signature."""
+    del image_renderer
     return await build_bilibili_context_messages(
-        url=url, media_client=media_client, deadline=deadline
+        url=url, video_client=video_client, deadline=deadline
     )
 
 
 async def _build_facebook_link_context(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Facebook builder to the registry signature (a straight pass-through)."""
+    """Adapts the image-only Facebook builder to the registry signature."""
+    del video_client
     return await build_facebook_context_messages(
-        url=url, media_client=media_client, deadline=deadline
+        url=url, image_renderer=image_renderer, deadline=deadline
     )
 
 
 async def _build_twitter_link_context(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Twitter builder to the registry signature (a straight pass-through)."""
+    """Adapts the image-only Twitter builder to the registry signature."""
+    del video_client
     return await build_twitter_context_messages(
-        url=url, media_client=media_client, deadline=deadline
+        url=url, image_renderer=image_renderer, deadline=deadline
     )
 
 
 async def _build_instagram_link_context(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Instagram builder to the registry signature (a straight pass-through)."""
+    """Adapts the image-only Instagram builder to the registry signature."""
+    del video_client
     return await build_instagram_context_messages(
-        url=url, media_client=media_client, deadline=deadline
+        url=url, image_renderer=image_renderer, deadline=deadline
     )
 
 
 def _needs_files_api(config: LLMConfig) -> bool:
     """Returns whether the Gemini Files API is enabled and configured with an API key."""
     return config.file_api_enabled and config.gemini_key_configured
+
+
+def _no_video_ingest(config: LLMConfig) -> bool:
+    """Returns False for sources that never download or upload video clips."""
+    del config
+    return False
 
 
 # Sources with `search_replied_to_message=True` fetch comments/replies omitted by auto-expansion.
@@ -116,7 +145,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_threads_link_context,
         timeout_notice=THREADS_TIMEOUT_NOTICE,
-        media_ingest_allowed=_needs_files_api,
+        video_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="facebook",
@@ -124,7 +153,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_facebook_link_context,
         timeout_notice=FACEBOOK_TIMEOUT_NOTICE,
-        media_ingest_allowed=_needs_files_api,
+        video_ingest_allowed=_no_video_ingest,
     ),
     LinkContextSource(
         name="instagram",
@@ -132,7 +161,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_instagram_link_context,
         timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,
-        media_ingest_allowed=_needs_files_api,
+        video_ingest_allowed=_no_video_ingest,
     ),
     LinkContextSource(
         name="twitter",
@@ -140,20 +169,20 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_twitter_link_context,
         timeout_notice=TWITTER_TIMEOUT_NOTICE,
-        media_ingest_allowed=_needs_files_api,
+        video_ingest_allowed=_no_video_ingest,
     ),
     LinkContextSource(
         name="douyin",
         post_link=DOUYIN_POST_LINK,
         build=_build_douyin_link_context,
         timeout_notice=DOUYIN_TIMEOUT_NOTICE,
-        media_ingest_allowed=_needs_files_api,
+        video_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="bilibili",
         post_link=BILIBILI_POST_LINK,
         build=_build_bilibili_link_context,
         timeout_notice=BILIBILI_TIMEOUT_NOTICE,
-        media_ingest_allowed=_needs_files_api,
+        video_ingest_allowed=_needs_files_api,
     ),
 )

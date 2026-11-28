@@ -35,7 +35,10 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
             return unchanged
         keep_png = image.has_transparency_data or image.mode == "P"
         within_bounds = max(image.size) <= _MAX_IMAGE_DIMENSION
-        if within_bounds and (content_type == "image/jpeg" or keep_png):
+        if within_bounds and (
+            (content_type == "image/jpeg" and image.format == "JPEG")
+            or (keep_png and content_type == "image/png" and image.format == "PNG")
+        ):
             return unchanged
         image.thumbnail(
             size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS

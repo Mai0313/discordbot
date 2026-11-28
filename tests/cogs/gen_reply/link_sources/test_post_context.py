@@ -32,12 +32,12 @@ from discordbot.services.platforms.twitter import TwitterDownloader
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
     LinkContextSource,
-    LinkContextBuilder,
     defuse_markers,
     link_context_blocks,
 )
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookDownloader
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramDownloader
+from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.link_sources.twitter import (
     TWITTER_SEPARATORS,
     TWITTER_UNREADABLE_NOTICE,
@@ -62,8 +62,8 @@ from discordbot.cogs.gen_reply.link_sources.image_ingest import (
     gather_media_parts,
 )
 
-from tests.helpers.casting import make_stub_gemini_client
 from tests.helpers.llm_input import LINK_SOURCE_BLOCKS
+from tests.helpers.reply_fakes import _fake_uploader
 from tests.helpers.link_sources import (
     TWITTER_URL,
     FACEBOOK_URL,
@@ -88,7 +88,7 @@ class _PostSource(BaseModel):
 
     name: str = Field(..., description="Its registry name, which also prefixes its uploads.")
     url: str = Field(..., description="A post URL the source reads.")
-    build: SkipValidation[LinkContextBuilder] = Field(..., description="The source's builder.")
+    build: SkipValidation[Callable[..., Any]] = Field(..., description="The source's builder.")
     downloader: type[PlatformDownloader] = Field(
         ..., description="The reader the builder constructs, whose read each test stubs."
     )
@@ -162,12 +162,11 @@ commented_sources = pytest.mark.parametrize(
 )
 
 
-async def _build(source: _PostSource, media: bool = False) -> list[Any]:
-    """Runs the source's builder on its URL, with a stub media client when `media` is set."""
+async def _build(source: _PostSource, media: bool = False, inline: bool = False) -> list[Any]:
+    """Runs the source's builder on its URL with the requested image renderer."""
+    renderer = InlineRenderer() if inline else (_fake_uploader() if media else None)
     return await source.build(
-        url=source.url,
-        media_client=make_stub_gemini_client() if media else None,
-        deadline=link_build_deadline(),
+        url=source.url, image_renderer=renderer, deadline=link_build_deadline()
     )
 
 
@@ -212,6 +211,28 @@ async def test_the_images_ride_as_uploaded_parts_inside_the_trailer(
         "file_id": f"https://files.test/{source.name}_image_0.jpg",
         "filename": f"{source.name}_image_0.jpg",
     }
+    assert parts[-1]["text"] == source.separators.trailer
+
+
+@every_source
+async def test_inline_renderer_embeds_linked_post_images_as_base64_inside_the_trailer(
+    monkeypatch: pytest.MonkeyPatch, source: _PostSource
+) -> None:
+    """Non-Gemini or Files-API-off turns inline linked-post images as base64 `input_image` parts."""
+    serve_conversation(
+        monkeypatch,
+        downloader=source.downloader,
+        post=source.post(image_urls=["https://cdn.test/a.jpg"]),
+    )
+    fetched = accept_image_uploads(monkeypatch=monkeypatch)
+
+    blocks = await _build(source=source, inline=True)
+
+    assert fetched == ["https://cdn.test/a.jpg"]
+    assert block_separator(blocks=blocks) == source.separators.attached
+    parts = block_parts(blocks=blocks)
+    assert parts[-2]["type"] == "input_image"
+    assert parts[-2]["image_url"].startswith("data:image/jpeg;base64,")
     assert parts[-1]["text"] == source.separators.trailer
 
 

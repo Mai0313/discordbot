@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import asyncio
 from pathlib import Path
 import itertools
+import contextlib
 from collections import Counter
 
 from google import genai
@@ -18,6 +19,7 @@ from pydantic import Field, BaseModel
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
+from discordbot.typings.media import RenderedPart
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.llm_transcript import marker_block
@@ -39,7 +41,11 @@ from discordbot.cogs.gen_reply.link_sources import (
     reply_media_note,
     post_context_blocks,
 )
-from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_image, bounded_media_step
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
+from discordbot.cogs.gen_reply.link_sources.image_ingest import (
+    bounded_media_step,
+    render_linked_image,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -268,9 +274,9 @@ class PostMedia(BaseModel):
         description="How the block names the post this media belongs to",
         examples=["the linked post"],
     )
-    parts: list[ResponseInputFileParam] = Field(
+    parts: list[RenderedPart] = Field(
         default_factory=list,
-        description="Uploaded media parts, in page order, ready to ride in the user block",
+        description="Rendered media parts, in page order, ready to ride in the user block",
         examples=[[]],
     )
     missing_image_urls: list[str] = Field(
@@ -304,8 +310,8 @@ class IngestedMedia(BaseModel):
     )
 
     @property
-    def parts(self) -> list[ResponseInputFileParam]:
-        """Returns every uploaded part across the posts, concatenated in group order."""
+    def parts(self) -> list[RenderedPart]:
+        """Returns every rendered part across the posts, concatenated in group order."""
         return [part for group in self.groups for part in group.parts]
 
     @property
@@ -344,46 +350,17 @@ class MediaPlanEntry(BaseModel):
     )
 
 
-async def _upload_post_media(
-    entry: MediaPlanEntry, gemini_client: genai.Client, download_dir: str
+def _collect_post_media(
+    entry: MediaPlanEntry,
+    image_urls: list[str],
+    video_urls: list[str],
+    results: list[RenderedPart | BaseException | None],
 ) -> PostMedia:
-    """Fetches and uploads up to `entry.budget` items for one post, listing unattached URLs."""
-    image_urls = entry.post.image_urls[: entry.budget]
-    remaining = entry.budget - len(image_urls)
-    video_urls = entry.post.video_urls[:remaining] if remaining > 0 else []
-
-    async def video_part(index: int, video_url: str) -> ResponseInputFileParam | None:
-        """Downloads one clip to the caller's scratch dir and uploads it from disk."""
-        downloader = ThreadsDownloader(output_folder=download_dir)
-        filename = f"{entry.filename_prefix}video_{index}.mp4"
-        path = await asyncio.to_thread(downloader.download_media, url=video_url, filename=filename)
-        try:
-            return await upload_as_input_file(
-                client=gemini_client,
-                source=path,
-                mime_type="video/mp4",
-                filename=filename,
-                timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            )
-        finally:
-            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
-
-    tasks: list[Coroutine[Any, Any, ResponseInputFileParam | None]] = []
-    for index, image_url in enumerate(image_urls):
-        tasks.append(
-            upload_image(
-                image_url=image_url,
-                filename=f"{entry.filename_prefix}image_{index}.jpg",
-                gemini_client=gemini_client,
-            )
-        )
-    for index, video_url in enumerate(video_urls):
-        tasks.append(video_part(index=index, video_url=video_url))
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    """Splits gathered per-item results into attached parts and missing URL lists."""
     for result in results:
         if isinstance(result, BaseException) and not isinstance(result, Exception):
             raise result
-    parts: list[ResponseInputFileParam] = []
+    parts: list[RenderedPart] = []
     failed_images: list[str] = []
     failed_videos: list[str] = []
     for offset, (media_url, result) in enumerate(
@@ -410,10 +387,64 @@ async def _upload_post_media(
     )
 
 
-def _media_plan(target: ThreadsOutput) -> list[MediaPlanEntry]:
+async def _upload_post_media(
+    entry: MediaPlanEntry,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    download_dir: str,
+) -> PostMedia:
+    """Fetches and ingests up to `entry.budget` items for one post, listing unattached URLs."""
+    image_urls = entry.post.image_urls[: entry.budget] if image_renderer is not None else []
+    remaining = entry.budget - len(image_urls)
+    video_urls = (
+        entry.post.video_urls[:remaining] if (video_client is not None and remaining > 0) else []
+    )
+
+    async def video_part(
+        index: int, video_url: str, client: genai.Client
+    ) -> ResponseInputFileParam | None:
+        """Downloads one clip to the caller's scratch dir and uploads it from disk."""
+        downloader = ThreadsDownloader(output_folder=download_dir)
+        filename = f"{entry.filename_prefix}video_{index}.mp4"
+        path = await asyncio.to_thread(downloader.download_media, url=video_url, filename=filename)
+        try:
+            return await upload_as_input_file(
+                client=client,
+                source=path,
+                mime_type="video/mp4",
+                filename=filename,
+                timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+            )
+        finally:
+            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
+
+    tasks: list[Coroutine[Any, Any, RenderedPart | None]] = []
+    if image_renderer is not None:
+        for index, image_url in enumerate(image_urls):
+            tasks.append(
+                render_linked_image(
+                    source=image_url,
+                    filename=f"{entry.filename_prefix}image_{index}.jpg",
+                    image_renderer=image_renderer,
+                )
+            )
+    if video_client is not None:
+        for index, video_url in enumerate(video_urls):
+            tasks.append(video_part(index=index, video_url=video_url, client=video_client))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return _collect_post_media(
+        entry=entry, image_urls=image_urls, video_urls=video_urls, results=results
+    )
+
+
+def _media_plan(
+    target: ThreadsOutput, ingest_images: bool, ingest_videos: bool
+) -> list[MediaPlanEntry]:
     """Splits `MAX_THREADS_MEDIA_PARTS` across `target` then `target.quoted` in attachment order.
 
-    Keeps a `budget=0` entry for `target.quoted` when exhausted so its URLs still report missing.
+    Counts only ingestible modalities against the budget so un-ingested videos never starve
+    quoted-post images, while keeping a `budget=0` entry when exhausted so its URLs still report
+    missing.
     """
     plan: list[MediaPlanEntry] = []
     budget = MAX_THREADS_MEDIA_PARTS
@@ -424,19 +455,37 @@ def _media_plan(target: ThreadsOutput) -> list[MediaPlanEntry]:
         if post is None or not (post.image_urls or post.video_urls):
             continue
         plan.append(MediaPlanEntry(post=post, owner=owner, budget=budget, filename_prefix=prefix))
-        budget -= min(len(post.image_urls) + len(post.video_urls), budget)
+        ingestible = (len(post.image_urls) if ingest_images else 0) + (
+            len(post.video_urls) if ingest_videos else 0
+        )
+        budget -= min(ingestible, budget)
     return plan
 
 
 async def _ingest_media(
-    target: ThreadsOutput, gemini_client: genai.Client, deadline: float
+    target: ThreadsOutput,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> IngestedMedia:
     """Ingests planned media under `bounded_media_step`, degrading to an empty `IngestedMedia`."""
-    plan = _media_plan(target=target)
-    if not plan:
+    ingest_images = image_renderer is not None
+    ingest_videos = video_client is not None
+    plan = _media_plan(target=target, ingest_images=ingest_images, ingest_videos=ingest_videos)
+    has_work = any(
+        entry.budget > 0
+        and (
+            (ingest_images and bool(entry.post.image_urls))
+            or (ingest_videos and bool(entry.post.video_urls))
+        )
+        for entry in plan
+    )
+    if not has_work:
         return IngestedMedia()
     return await bounded_media_step(
-        step=_upload_planned_media(plan=plan, gemini_client=gemini_client),
+        step=_upload_planned_media(
+            plan=plan, image_renderer=image_renderer, video_client=video_client
+        ),
         subject="Threads media",
         fallback="text only",
         degraded=IngestedMedia(),
@@ -444,23 +493,38 @@ async def _ingest_media(
         deadline=deadline,
         timeout_fields={
             "posts": len(plan),
-            "image_count": sum(len(entry.post.image_urls) for entry in plan),
-            "video_count": sum(len(entry.post.video_urls) for entry in plan),
+            "image_count": sum(len(entry.post.image_urls) for entry in plan)
+            if ingest_images
+            else 0,
+            "video_count": sum(len(entry.post.video_urls) for entry in plan)
+            if ingest_videos
+            else 0,
         },
     )
 
 
 async def _upload_planned_media(
-    plan: list[MediaPlanEntry], gemini_client: genai.Client
+    plan: list[MediaPlanEntry],
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
 ) -> IngestedMedia:
-    """Uploads every planned post's media concurrently, their clips sharing one scratch dir."""
-    with scratch_directory(prefix="threads-ai-") as download_dir:
+    """Ingests every planned post's media concurrently, sharing one scratch dir for clips."""
+    needs_scratch = video_client is not None and any(
+        entry.budget > 0 and entry.post.video_urls for entry in plan
+    )
+    dir_ctx = (
+        scratch_directory(prefix="threads-ai-") if needs_scratch else contextlib.nullcontext("")
+    )
+    with dir_ctx as download_dir:
         return IngestedMedia(
             groups=list(
                 await asyncio.gather(
                     *(
                         _upload_post_media(
-                            entry=entry, gemini_client=gemini_client, download_dir=download_dir
+                            entry=entry,
+                            image_renderer=image_renderer,
+                            video_client=video_client,
+                            download_dir=download_dir,
                         )
                         for entry in plan
                     )
@@ -567,19 +631,24 @@ def _render_conversation_sections(
 
 
 async def build_threads_context_messages(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Threads post URL.
 
     Returns `[separator, user-content]` for a readable conversation, or a single notice marker
     block when the post cannot be read. Never raises. Renders the reply chain, any post quoted
-    by the target, and the reply branches as text, and uploads up to `MAX_THREADS_MEDIA_PARTS`
-    of the target and quoted post's media to the Files API when `media_client` is provided.
+    by the target, and the reply branches as text, and ingests up to `MAX_THREADS_MEDIA_PARTS`
+    of the target and quoted post's images (via `image_renderer`) and videos (via `video_client`).
 
     Args:
         url (str): The Threads post URL selected from the conversation.
-        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
-            media ingestion is active, or `None` to build text-only context.
+        image_renderer (AttachmentRenderer | None): Turn attachment renderer uploading or inlining
+            images when image ingestion is active, or `None` to skip images.
+        video_client (genai.Client | None): Direct-to-Google client for Files API video uploads
+            when video ingestion is active, or `None` to skip video clips.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span("gen_reply threads context"):
@@ -602,9 +671,12 @@ async def build_threads_context_messages(
             logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
         text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
         media = IngestedMedia()
-        if media_client is not None:
+        if image_renderer is not None or video_client is not None:
             media = await _ingest_media(
-                target=target, gemini_client=media_client, deadline=deadline
+                target=target,
+                image_renderer=image_renderer,
+                video_client=video_client,
+                deadline=deadline,
             )
 
     url_lines: list[str] = []

@@ -33,6 +33,8 @@ from discordbot.cogs.gen_reply.speculation import (
 )
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import DONE_EMOJI
+from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
+from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
 
 from tests.helpers.casting import as_message
 from tests.helpers.llm_input import (
@@ -369,6 +371,12 @@ class _LinkCase(BaseModel):
         ..., description="Whether a link in the replied-to message is read as well."
     )
     media_switch: str = Field(..., description="The config field that turns its media ingest off.")
+    takes_images: bool = Field(
+        ..., description="Whether the source's builder accepts `image_renderer` for post images."
+    )
+    takes_video: bool = Field(
+        ..., description="Whether the source's builder accepts `video_client` for video clips."
+    )
 
 
 # Keyed by registry name. Every family below is parametrized over the registry itself, so a source
@@ -380,6 +388,8 @@ _LINK_CASES: dict[str, _LinkCase] = {
         emoji=THREADS_EMOJI,
         reads_replied_to=True,
         media_switch="file_api_enabled",
+        takes_images=True,
+        takes_video=True,
     ),
     "facebook": _LinkCase(
         builder="build_facebook_context_messages",
@@ -387,6 +397,8 @@ _LINK_CASES: dict[str, _LinkCase] = {
         emoji=FACEBOOK_EMOJI,
         reads_replied_to=True,
         media_switch="file_api_enabled",
+        takes_images=True,
+        takes_video=False,
     ),
     "instagram": _LinkCase(
         builder="build_instagram_context_messages",
@@ -394,6 +406,8 @@ _LINK_CASES: dict[str, _LinkCase] = {
         emoji=INSTAGRAM_EMOJI,
         reads_replied_to=True,
         media_switch="file_api_enabled",
+        takes_images=True,
+        takes_video=False,
     ),
     "twitter": _LinkCase(
         builder="build_twitter_context_messages",
@@ -401,6 +415,8 @@ _LINK_CASES: dict[str, _LinkCase] = {
         emoji=TWITTER_EMOJI,
         reads_replied_to=True,
         media_switch="file_api_enabled",
+        takes_images=True,
+        takes_video=False,
     ),
     "douyin": _LinkCase(
         builder="build_douyin_context_messages",
@@ -408,6 +424,8 @@ _LINK_CASES: dict[str, _LinkCase] = {
         emoji=DOUYIN_EMOJI,
         reads_replied_to=False,
         media_switch="file_api_enabled",
+        takes_images=True,
+        takes_video=True,
     ),
     "bilibili": _LinkCase(
         builder="build_bilibili_context_messages",
@@ -415,6 +433,8 @@ _LINK_CASES: dict[str, _LinkCase] = {
         emoji=BILIBILI_EMOJI,
         reads_replied_to=False,
         media_switch="file_api_enabled",
+        takes_images=False,
+        takes_video=True,
     ),
 }
 
@@ -518,7 +538,14 @@ async def test_on_message_injects_a_selected_link_source_before_current(
 
     (call,) = builder.calls
     assert call["url"] == SAMPLE_POST_URLS[name]
-    assert call["media_client"] is cog.toolkit.gemini_client
+    if case.takes_images:
+        assert isinstance(call["image_renderer"], GeminiFileUploader)
+    else:
+        assert "image_renderer" not in call
+    if case.takes_video:
+        assert call["video_client"] is cog.toolkit.gemini_client
+    else:
+        assert "video_client" not in call
     answer = request_input(responses=_recorded(cog).responses)
     assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
     assert block_index(request=answer, kind=name) < block_index(request=answer, kind="current")
@@ -570,6 +597,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     ingest flag needs the key as well, or a builder would be told it may upload while holding no
     client to upload with.
     """
+    case = _LINK_CASES[name]
     cog = _link_cog(sources=[name], gemini_api_key="")
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
@@ -578,7 +606,14 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     )
 
     (call,) = builder.calls
-    assert call["media_client"] is None
+    if case.takes_images:
+        assert isinstance(call["image_renderer"], InlineRenderer)
+    else:
+        assert "image_renderer" not in call
+    if case.takes_video:
+        assert call["video_client"] is None
+    else:
+        assert "video_client" not in call
     assert has_link_context_block(
         request=request_input(responses=_recorded(cog).responses), source=name
     )
@@ -589,7 +624,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
 async def test_on_message_link_media_ingest_kill_switch(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """With the source's switch off the builder still runs, with `media_client=None`."""
+    """With `file_api_enabled=False`, images inline via `InlineRenderer` and video clips skip."""
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
     monkeypatch.setattr(cog.config, case.media_switch, False)
@@ -599,15 +634,24 @@ async def test_on_message_link_media_ingest_kill_switch(
         message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
     )
 
-    assert [call["media_client"] for call in builder.calls] == [None]
+    (call,) = builder.calls
+    if case.takes_images:
+        assert isinstance(call["image_renderer"], InlineRenderer)
+    else:
+        assert "image_renderer" not in call
+    if case.takes_video:
+        assert call["video_client"] is None
+    else:
+        assert "video_client" not in call
 
 
 @pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_skips_link_media_ingest_for_non_gemini_slow_model(
+async def test_on_message_uses_inline_images_and_skips_video_for_non_gemini_slow_model(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """A non-Gemini slow model cannot resolve Files API URIs, so the pipeline passes no client."""
+    """A non-Gemini slow model inlines linked-post images and skips Gemini-only video ingestion."""
+    case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
     monkeypatch.setattr(
         RuntimeModelCatalog,
@@ -620,7 +664,15 @@ async def test_on_message_skips_link_media_ingest_for_non_gemini_slow_model(
         message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
     )
 
-    assert [call["media_client"] for call in builder.calls] == [None]
+    (call,) = builder.calls
+    if case.takes_images:
+        assert isinstance(call["image_renderer"], InlineRenderer)
+    else:
+        assert "image_renderer" not in call
+    if case.takes_video:
+        assert call["video_client"] is None
+    else:
+        assert "video_client" not in call
 
 
 @pytest.mark.parametrize("name", _LINK_SOURCES)

@@ -98,7 +98,7 @@ async def _build(media: bool = True) -> list[EasyInputMessageParam]:
     """Runs the builder with the defaults most tests share."""
     return await build_bilibili_context_messages(
         url=_URL,
-        media_client=make_stub_gemini_client() if media else None,
+        video_client=make_stub_gemini_client() if media else None,
         deadline=link_build_deadline(),
     )
 
@@ -256,7 +256,7 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
     short_url = "https://b23.tv/abc123X"
 
     blocks = await build_bilibili_context_messages(
-        url=short_url, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
+        url=short_url, video_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
 
     text = block_body(blocks=blocks)
@@ -336,7 +336,7 @@ async def test_the_media_step_timeout_degrades_to_the_text(
 
     blocks = await build_bilibili_context_messages(
         url=_URL,
-        media_client=make_stub_gemini_client(),
+        video_client=make_stub_gemini_client(),
         deadline=link_build_deadline(media_seconds=0.05),
     )
 
@@ -377,7 +377,7 @@ async def test_a_read_that_spent_the_media_budget_starts_no_download(
     try:
         blocks = await run_until_deadline(
             awaitable=build_bilibili_context_messages(
-                url=_URL, media_client=make_stub_gemini_client(), deadline=deadline
+                url=_URL, video_client=make_stub_gemini_client(), deadline=deadline
             ),
             deadline=deadline,
         )
@@ -484,7 +484,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         other = await asyncio.wait_for(
             build_bilibili_context_messages(
                 url="https://www.bilibili.com/video/av170001",
-                media_client=make_stub_gemini_client(),
+                video_client=make_stub_gemini_client(),
                 deadline=link_build_deadline(),
             ),
             timeout=5.0,
