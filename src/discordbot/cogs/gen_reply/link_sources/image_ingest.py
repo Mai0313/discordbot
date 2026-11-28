@@ -1,7 +1,8 @@
 """Fetching a linked post's media and rendering it for the answer model to look at.
 
 `render_linked_image` is the one-image step, delegating to the turn's `AttachmentRenderer` so
-Gemini uploads via Files API while non-Gemini or disabled-Files-API turns inline as base64.
+keyed Gemini and Claude turns upload via Files API while other or disabled-Files-API turns inline
+as base64.
 `ingest_post_images` runs it over a post's image URLs, and two properties are the whole point of
 that. Every item is independent and best-effort, so one expired signed CDN url never costs the
 rest; and the step is bounded rather than left to the caller's grace, so a slow fetch still

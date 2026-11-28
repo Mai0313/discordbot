@@ -70,9 +70,21 @@ class UploadedFile(BaseModel):
     )
 
 
-# Files-API handles use `input_file` with a file URI; inlined attachments use `input_image`
-# (images), `input_file` (PDFs), or `input_text` (text/code).
-type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
+class FormattedInputFileParam(ResponseInputFileParam, total=False):
+    """`ResponseInputFileParam` extended with LiteLLM's non-OpenAI `format` MIME key."""
+
+    format: str
+
+
+# Files-API handles use `input_file` with a file URI or id (plus `format` for Anthropic); inlined
+# attachments use `input_image` (images), `input_file` (PDFs), or `input_text` (text/code).
+# `FormattedInputFileParam` precedes `ResponseInputFileParam` so Pydantic retains `format`.
+type RenderedPart = (
+    ResponseInputTextParam
+    | ResponseInputImageParam
+    | FormattedInputFileParam
+    | ResponseInputFileParam
+)
 
 
 class RenderedAttachment(BaseModel):

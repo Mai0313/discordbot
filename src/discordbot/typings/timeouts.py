@@ -39,7 +39,7 @@ DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 # `PendingUpload` for re-polling on the next reference.
 ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 15.0
 
-# Transfer bound for uploading a Discord attachment to Gemini Files API; expiry drops it.
+# Transfer bound for uploading a Discord attachment to a provider Files API; expiry drops it.
 ATTACHMENT_UPLOAD_TIMEOUT_SECONDS: Final[float] = 120.0
 
 # Per-call bound on `files.get` during attachment activation and pending re-polls.

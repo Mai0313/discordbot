@@ -39,5 +39,5 @@
 
 ### Attachments (`gen_reply/input.py`)
 
-- **Do not delete the commented `OpenAIFileUploader` / `AnthropicFileUploader` / `GrokFileUploader` branches or their modules as dead code**: they are scaffolding awaiting a verified reference path (`attachment/select.py::build_attachment_handler`).
-- **Every attachment to a Gemini answer goes through the Files API whatever its size, by owner decision** (one path and uniform semantics over the upload latency): do not add a small-files-inline threshold. Only a disabled or keyless Files API inlines (`attachment/select.py`).
+- **Do not delete the commented `OpenAIFileUploader` / `GrokFileUploader` branches or their modules as dead code**: they are scaffolding awaiting a verified reference path (`attachment/select.py::build_attachment_handler`).
+- **Every attachment to a keyed Gemini answer (and every supported image or PDF to a keyed Claude answer) goes through the provider's Files API whatever its size, by owner decision** (one path and uniform semantics over the upload latency): do not add a small-files-inline threshold. Non-PDF UTF-8 text files still inline as `input_text` for Claude, and only a disabled or keyless Files API inlines everything (`attachment/select.py`).

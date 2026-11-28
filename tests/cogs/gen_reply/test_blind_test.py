@@ -1,9 +1,13 @@
 """Tests for `[global.models.slow]` candidate sampling, label masking, per-model fallback, and mixed providers."""
 
+from io import BytesIO
+from types import SimpleNamespace
 import asyncio
 from pathlib import Path
+from datetime import UTC, datetime
 from collections.abc import AsyncIterator
 
+from PIL import Image
 import pytest
 from sqlalchemy import select
 from openai.types.responses import ResponseStreamEvent
@@ -27,6 +31,7 @@ from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.feedback_store import ReplyTurnRow, open_session
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
+from discordbot.cogs.gen_reply.attachment.anthropic_file_api import AnthropicFileUploader
 
 from tests.helpers.casting import as_message
 from tests.helpers.gen_reply import FakeGeminiFiles
@@ -365,6 +370,97 @@ async def test_toolkit_input_builder_for_reuses_gemini_uploads_and_isolates_mixe
     assert neon_parts == hydrogen_parts
     assert neon_parts[0]["type"] == "input_file"
     assert claude_parts[0]["type"] == "input_image"
+
+
+async def test_toolkit_isolates_gemini_claude_and_openai_attachment_buckets(
+    bot_config_isolated: Path,
+) -> None:
+    """Mixed Gemini, Claude, and OpenAI pools keep separate provider upload caches with no leaks."""
+    bot_config_isolated.write_text(  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+        data=(
+            "[global.models.slow]\n"
+            "candidates = [\n"
+            '  { name = "gemini-4-neon", effort = "low" },\n'
+            '  { name = "claude-sonnet-test", effort = "medium" },\n'
+            '  { name = "claude-opus-test", effort = "high" },\n'
+            '  { name = "gpt-5-test", effort = "medium" },\n'
+            "]\n"
+        ),
+        encoding="utf-8",
+    )
+    clear_bot_config_cache()
+
+    anthropic_uploads: list[tuple[str, str, int | None]] = []
+
+    class _FakeAnthropicFiles:
+        async def upload(
+            self, file: tuple[str, BytesIO, str], expires_in_seconds: int | None = None
+        ) -> SimpleNamespace:
+            filename, _buf, content_type = file
+            anthropic_uploads.append((filename, content_type, expires_in_seconds))
+            return SimpleNamespace(
+                id="file_011shared", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
+            )
+
+    toolkit = ReplyToolkit(
+        bot=stub_bot(),
+        openai_client=FakeClient(),
+        config=LLMConfig.model_construct(
+            gemini_api_key="test-gemini-key", anthropic_api_key="test-anthropic-key"
+        ),
+    )
+    fake_gemini_files = FakeGeminiFiles()
+    toolkit.__dict__["gemini_client"] = FakeGeminiClient(files=fake_gemini_files)
+    toolkit.__dict__["anthropic_client"] = SimpleNamespace(files=_FakeAnthropicFiles())
+    gemini_model, claude_sonnet, claude_opus, gpt_model = toolkit.runtime_models.slow_candidates
+
+    gemini_builder = toolkit.input_builder_for(model=gemini_model)
+    sonnet_builder = toolkit.input_builder_for(model=claude_sonnet)
+    opus_builder = toolkit.input_builder_for(model=claude_opus)
+    gpt_builder = toolkit.input_builder_for(model=gpt_model)
+
+    assert isinstance(gemini_builder.attachment_handler, GeminiFileUploader)
+    assert isinstance(sonnet_builder.attachment_handler, AnthropicFileUploader)
+    assert opus_builder.attachment_handler is sonnet_builder.attachment_handler
+    assert opus_builder._attachment_cache is sonnet_builder._attachment_cache
+    assert isinstance(gpt_builder.attachment_handler, InlineRenderer)
+    assert sonnet_builder._attachment_cache is not gemini_builder._attachment_cache
+    assert gpt_builder._attachment_cache is not sonnet_builder._attachment_cache
+    assert gpt_builder._attachment_cache is not gemini_builder._attachment_cache
+
+    buf = BytesIO()
+    Image.new(mode="RGBA", size=(4, 4), color=(0, 128, 255, 128)).save(fp=buf, format="PNG")
+    message = FakeMessage(content="check this")
+    message.attachments = [
+        FakeAttachment(filename="pic.png", content_type="image/png", payload=buf.getvalue())
+    ]
+    discord_msg = as_message(fake=message)
+
+    gemini_parts = await gemini_builder.get_attachment_parts(
+        message=discord_msg, sources=gemini_builder.supported_sources(message=discord_msg)
+    )
+    sonnet_parts = await sonnet_builder.get_attachment_parts(
+        message=discord_msg, sources=sonnet_builder.supported_sources(message=discord_msg)
+    )
+    opus_parts = await opus_builder.get_attachment_parts(
+        message=discord_msg, sources=opus_builder.supported_sources(message=discord_msg)
+    )
+    gpt_parts = await gpt_builder.get_attachment_parts(
+        message=discord_msg, sources=gpt_builder.supported_sources(message=discord_msg)
+    )
+
+    assert len(fake_gemini_files.upload_calls) == 1
+    assert len(anthropic_uploads) == 1
+    assert gemini_parts[0]["type"] == "input_file"
+    assert str(gemini_parts[0]["file_id"]).startswith("https://files.test/")
+    assert sonnet_parts == opus_parts
+    assert sonnet_parts[0] == {
+        "type": "input_file",
+        "file_id": "file_011shared",
+        "filename": "pic.png",
+        "format": "image/png",
+    }
+    assert gpt_parts[0]["type"] == "input_image"
 
 
 async def test_media_persona_reply_formats_fast_model_identity_label(

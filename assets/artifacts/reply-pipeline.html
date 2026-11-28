@@ -437,8 +437,8 @@ footer.end{
         <p>用 <code>OpenAI SDK</code> 打 <code>OPENAI_BASE_URL</code>，一律 Responses API。有 proxy 端的成本與用量追蹤，也有 router 自己的 fallback。</p>
       </div>
       <div>
-        <h4 class="ld">直連 Google</h4>
-        <p>用 <code>google-genai SDK</code> 打 Google 官方端點，走 Interactions API 或 Files API。用 <code>GEMINI_API_KEY</code>，<b>沒有</b> proxy 端的成本追蹤。</p>
+        <h4 class="ld">直連供應商</h4>
+        <p>用 <code>google-genai SDK</code> 打 Google 官方端點（Interactions API / Files API，<code>GEMINI_API_KEY</code>），或用 <code>anthropic SDK</code> 直連 Anthropic Files API（<code>ANTHROPIC_API_KEY</code>）。<b>沒有</b> proxy 端的成本追蹤。</p>
       </div>
       <div>
         <h4 class="ll">沒有模型參與</h4>
@@ -478,7 +478,7 @@ footer.end{
   <!-- ══════════════════════════════════════════════ MAP -->
   <section id="map">
     <div class="s-head"><span class="s-num">◇</span><h2>一則訊息走過的路</h2></div>
-    <p class="lede">這張圖只畫形狀，也就是一則訊息會經過哪幾步、在哪裡分成三條路線、每一步走 proxy 還是直連 Google。失敗與降級的分支不在圖上，點方塊就會跳到寫它的那一段。</p>
+    <p class="lede">這張圖只畫形狀，也就是一則訊息會經過哪幾步、在哪裡分成三條路線、每一步走 proxy 還是直連供應商。失敗與降級的分支不在圖上，點方塊就會跳到寫它的那一段。</p>
 
     <figure class="map">
       <div class="map-scroll">
@@ -562,7 +562,7 @@ footer.end{
       <figcaption>
         <span class="why">分類是唯一擋住分派的呼叫。附件上傳與頻道歷史跟它同時開跑，等到答案或人格回話要用時才等。伺服器記憶與參與者記憶在開跑前就讀好了，因為分類要帶著它們挑第三人。</span>
         <span><i class="sw px"></i>走 proxy</span>
-        <span><i class="sw dx"></i>直連 Google</span>
+        <span><i class="sw dx"></i>直連供應商</span>
         <span><i class="sw"></i>沒有模型</span>
         <span><i class="sw fl"></i>不回應</span>
         <span><i class="sw fr"></i>同時開跑</span>
@@ -576,7 +576,7 @@ footer.end{
   <!-- ══════════════════════════════════════════════ 00 -->
   <section id="s0">
     <div class="s-head"><span class="s-num">00</span><h2>兩條網路路徑，以及為什麼一定要有第二條</h2></div>
-    <p class="lede">整個專案原則上只用一套 SDK：OpenAI SDK 打 LiteLLM Proxy，模型字串換一下就能換後端。直連 Google 是例外清單，不是預設。</p>
+    <p class="lede">整個專案原則上只用一套 SDK：OpenAI SDK 打 LiteLLM Proxy，模型字串換一下就能換後端。直連供應商是例外清單，不是預設。</p>
 
     <div class="lanes">
       <div class="node px">
@@ -586,8 +586,8 @@ footer.end{
       </div>
       <div class="node dx">
         <span class="nlabel">例外清單</span>
-        <span class="ntitle">google-genai SDK → Google</span>
-        <span class="nbody">Files API 上傳、影片生成與編輯、音樂生成、看 YouTube 的那一輪回答、深度研究 agent。全部走 Interactions API 或 Files API，用 <code>GEMINI_API_KEY</code>。</span>
+        <span class="ntitle">google-genai / anthropic SDK → 直連</span>
+        <span class="nbody">Google：Gemini Files API 上傳、影片生成與編輯、音樂生成、看 YouTube 的那一輪回答、深度研究 agent（<code>GEMINI_API_KEY</code>）。Anthropic：Claude 答案模型的圖片與 PDF Files API 上傳（<code>ANTHROPIC_API_KEY</code>）。</span>
       </div>
     </div>
 
@@ -601,7 +601,7 @@ footer.end{
 
     <div class="note key">
       <span class="tag">一把金鑰的規則</span>
-      <p>Files API 上傳的檔案<strong>只有上傳它的專案讀得到</strong>，而且一個請求同時引用兩把金鑰的檔案會直接失敗。所以「上傳附件的金鑰」必須等於「回答這則訊息的金鑰」。實務上就是 bot 端用 <code>GEMINI_API_KEY</code> 直接上傳，而 proxy 裡的對話類別名也綁同一把。第二把、第三把金鑰只服務不會攜帶檔案的工作（媒體生成、TTS、音樂、embedding）。</p>
+      <p>Files API 上傳的檔案<strong>只有上傳它的專案或工作區讀得到</strong>，而且一個請求同時引用兩把金鑰的檔案會直接失敗。所以「上傳附件的金鑰」必須等於「回答這則訊息的金鑰」。實務上就是 bot 端用 <code>GEMINI_API_KEY</code> 直接上傳給 Gemini、用 <code>ANTHROPIC_API_KEY</code> 直接上傳給同一個 Anthropic 工作區的 Claude，而 proxy 裡的對應對話類別名也綁同一把。第二把、第三把 Gemini 金鑰只服務不會攜帶檔案的工作（媒體生成、TTS、音樂、embedding）。</p>
     </div>
   </section>
 
@@ -668,9 +668,9 @@ footer.end{
       <p class="lf-head">同時開跑，互不等待</p>
       <div class="lanes">
         <div class="node dx">
-          <span class="nlabel">線 A · 直連 Google</span>
-          <span class="ntitle">附件上傳與啟用輪詢</span>
-          <span class="nbody">把當前訊息與被回覆訊息的附件推上 Gemini Files API，輪詢到 ACTIVE。<strong>只有最後的答案會等它</strong>——分類讀的是純文字版本，所以路由從不卡在上傳上。</span>
+          <span class="nlabel">線 A · 直連供應商</span>
+          <span class="ntitle">附件上傳（Files API）</span>
+          <span class="nbody">依當輪答案模型把當前訊息與被回覆訊息的附件推上對應的 Files API（Gemini 輪詢到 ACTIVE，Claude 上傳支援的圖片與 PDF 並設 48 小時 TTL、UTF-8 文字則內嵌；無金鑰或關掉開關時一律內嵌）。<strong>只有最後的答案會等它</strong>——分類讀的是純文字版本，所以路由從不卡在上傳上。</span>
         </div>
         <div class="node px">
           <span class="nlabel">線 B · Proxy · 一支呼叫</span>
@@ -962,7 +962,7 @@ footer.end{
       <li><span class="st">本地掃到連結</span><span class="sd">只掃「模型實際看得到的文字」，所以掃描器不可能對一個模型從沒被展示過的連結開火。</span></li>
       <li class="px"><span class="st">路由決定要不要讀</span><span class="sd">要「總結、解釋、分析、反應、問內容」才算要讀。只是分享、只是引用當背景，就不選。</span></li>
       <li><span class="st">選中的才開始抓，並固定一個共用截止時間</span><span class="sd">180 秒，所有被選中的來源共用同一個截止點，跟後續的回覆準備工作重疊進行。</span></li>
-      <li><span class="st">先拿到文字，再拿媒體</span><span class="sd">先解析中繼資料（快，文字先落地），再抓媒體：圖片走該輪答案模型的附件渲染器（Gemini 啟用 Files API 且有金鑰時走 <span class="chip direct">Files API</span>，非 Gemini、無金鑰或關閉 <code>file_api_enabled</code> 時以 base64 內嵌），影片則只限 Gemini 且啟用 Files API 時走 <span class="chip direct">Files API</span>。媒體那一步要在共用截止前留一段餘裕就結束，讀文字花掉的時間會從媒體那邊扣，慢了就<strong>降級成純文字</strong>，而不是整個被取消掉什麼都不剩。</span></li>
+      <li><span class="st">先拿到文字，再拿媒體</span><span class="sd">先解析中繼資料（快，文字先落地），再抓媒體：圖片走該輪答案模型的附件渲染器（Gemini 或 Claude 啟用 Files API 且有對應金鑰時走 <span class="chip direct">Files API</span>，其餘模型、無金鑰或關閉 <code>file_api_enabled</code> 時以 base64 內嵌），影片則只限 Gemini 且啟用 Files API 時走 <span class="chip direct">Files API</span>。媒體那一步要在共用截止前留一段餘裕就結束，讀文字花掉的時間會從媒體那邊扣，慢了就<strong>降級成純文字</strong>，而不是整個被取消掉什麼都不剩。</span></li>
       <li><span class="st">失敗與逾時都有明確說法</span><span class="sd">會注入一段說明，而不是什麼都不給：平台說貼文不在、這次讀不到（限流、5xx、斷線）、來不及讀，各是不同的說法，讀不到絕不會被說成貼文已刪除。所以模型絕對不會編一段內容出來，也不會宣稱它看過其實沒拿到的影片。</span></li>
     </ol>
 
@@ -973,7 +973,7 @@ footer.end{
           <td class="nowrap"><b>Threads</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>整串對話（祖先鏈、目標貼文、它引用的貼文、底下的留言），但只吃<strong>目標貼文</strong>和<strong>被引用貼文</strong>的媒體。鏈與留言各有獨立上限，互不排擠</td>
-          <td>圖片走當輪附件渲染器（Gemini + Files API 上傳，其餘內嵌）；影片限 Gemini ＋ <code>file_api_enabled</code> ＋ 直連金鑰</td>
+          <td>圖片走當輪附件渲染器（Gemini / Claude + Files API 上傳，其餘內嵌）；影片限 Gemini ＋ <code>file_api_enabled</code> ＋ 直連金鑰</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Facebook</b></td>
@@ -1052,9 +1052,9 @@ footer.end{
         <li><span class="q">要用哪種渲染方式？</span>
           <ul>
             <li><span class="a">Files API 總開關關著 →</span> <span class="out">一律內嵌</span></li>
-            <li><span class="a">答案模型是 Gemini 但沒有 <code>GEMINI_API_KEY</code> →</span> <span class="out">內嵌</span>（沒有金鑰就上傳不了，與其下載完再丟掉，不如直接內嵌）</li>
-            <li><span class="a">答案模型是 Gemini →</span> <span class="out dx">上傳 Files API，引用完整 uri</span></li>
-            <li><span class="a">其他 provider →</span> <span class="out">內嵌</span>（它們解析不了 Gemini 的 Files uri，proxy 會轉錯）。圖片轉 base64、PDF 轉 base64、UTF-8 文字直接當文字放進去、<strong>影音在模態閘就已擋下</strong></li>
+            <li><span class="a">答案模型是 Gemini 且有 <code>GEMINI_API_KEY</code> →</span> <span class="out dx">上傳 Gemini Files API，引用完整 uri</span></li>
+            <li><span class="a">答案模型是 Claude 且有 <code>ANTHROPIC_API_KEY</code> →</span> <span class="out dx">圖片（≤ 10 MB）與 PDF（≤ 32 MB）上傳 Anthropic Files API（48h TTL），以帶 <code>format</code> 的 <code>input_file</code> 引用；UTF-8 文字檔內嵌為 <code>input_text</code>，影音在模態閘擋下</span></li>
+            <li><span class="a">其餘模型或缺少對應直連金鑰 →</span> <span class="out">內嵌</span>（不跨 provider 共用快取）。圖片轉 base64、PDF 轉 base64、UTF-8 文字直接當文字放進去、<strong>影音在模態閘就已擋下</strong></li>
           </ul>
         </li>
       </ul>
@@ -1123,8 +1123,8 @@ footer.end{
         <tr><td><b>音樂生成</b></td><td class="mut"><code>generate-music</code> 標記</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions</td><td class="m">lyria-3.5</td></tr>
         <tr><td><b>深度研究</b></td><td class="mut"><code>deep-research</code> 標記、<code>/deep_research</code></td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions（背景 agent）</td><td class="m">antigravity-preview-09-2026<br>· 推理 gemini-4-hydrogen</td></tr>
         <tr><td><b>研究討論串標題</b></td><td class="mut">研究啟動時</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
-        <tr><td><b>附件上傳</b></td><td class="mut">Gemini 答案模型 ＋ 開關開著 ＋ 有 <code>GEMINI_API_KEY</code>（否則內嵌經 proxy 送）</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
-        <tr><td><b>連結媒體上傳</b></td><td class="mut">圖片走當輪附件渲染器（Gemini ＋ 開關開著 ＋ 有金鑰上傳 Files API，其餘內嵌經 proxy 送）；影片限 Gemini ＋ 開關開著 ＋ 有金鑰</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
+        <tr><td><b>附件上傳</b></td><td class="mut">Gemini（<code>GEMINI_API_KEY</code>）或 Claude（<code>ANTHROPIC_API_KEY</code>）答案模型 ＋ 開關開著（否則內嵌經 proxy 送）</td><td><span class="chip direct">直連</span></td><td class="m">google-genai / anthropic · Files API</td><td class="mut">—</td></tr>
+        <tr><td><b>連結媒體上傳</b></td><td class="mut">圖片走當輪附件渲染器（Gemini / Claude ＋ 開關開著 ＋ 有對應金鑰上傳 Files API，其餘內嵌經 proxy 送）；影片限 Gemini ＋ 開關開著 ＋ 有金鑰</td><td><span class="chip direct">直連</span></td><td class="m">google-genai / anthropic · Files API</td><td class="mut">—</td></tr>
         <tr><td><b>記憶審查 / 整併</b></td><td class="mut">下了記憶標記之後（背景）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-neon · medium</td></tr>
         <tr><td><b>記憶跟上進度</b>（提出筆記，再走同一個審查）</td><td class="mut"><code>/memory server catchup</code></td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-neon · medium</td></tr>
       </tbody>
