@@ -11,8 +11,8 @@ import asyncio
 from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
+from discordbot.typings.media import RenderedPart
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.llm_transcript import marker_block
@@ -34,9 +34,11 @@ from discordbot.cogs.gen_reply.link_sources import (
     link_context_blocks,
     link_timeout_notice,
 )
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.link_sources.image_ingest import (
     bounded_media_step,
     gather_media_parts,
+    render_linked_image,
 )
 
 if TYPE_CHECKING:
@@ -99,37 +101,60 @@ def _render_post_text(post: DouyinMetadata, url: str) -> str:
     return "\n".join(lines)
 
 
-async def _upload_media(
-    url: str, download: DouyinDownload, gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
-    """Uploads the downloaded files concurrently, keeping the parts that succeeded."""
-    tasks: list[Coroutine[Any, Any, ResponseInputFileParam | None]] = []
-    for path in download.filenames:
-        tasks.append(
-            upload_as_input_file(
-                client=gemini_client,
-                source=path,
-                mime_type="image/jpeg" if download.is_photo else "video/mp4",
-                filename=path.name,
-                timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+async def _ingest_media(
+    url: str,
+    post: DouyinMetadata,
+    download: DouyinDownload,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+) -> list[RenderedPart]:
+    """Renders downloaded photo files or uploads a video clip, keeping parts that succeeded."""
+    tasks: list[Coroutine[Any, Any, RenderedPart | None]] = []
+    if download.is_photo:
+        if image_renderer is None:
+            return []
+        key_prefix = post.aweme_id or url.split("?", 1)[0]
+        for path in download.filenames:
+            tasks.append(
+                render_linked_image(
+                    source=path,
+                    filename=path.name,
+                    image_renderer=image_renderer,
+                    cache_key=f"douyin:{key_prefix}:{path.name}",
+                )
             )
-        )
+    else:
+        if video_client is None:
+            return []
+        for path in download.filenames:
+            tasks.append(
+                upload_as_input_file(
+                    client=video_client,
+                    source=path,
+                    mime_type="video/mp4",
+                    filename=path.name,
+                    timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+                )
+            )
     return await gather_media_parts(
-        tasks=tasks, warning="Douyin media upload failed for one item", url=url
+        tasks=tasks, warning="Douyin media ingestion failed for one item", url=url
     )
 
 
-async def _fetch_and_upload(
-    url: str, post: DouyinMetadata, gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
-    """Downloads post media into a scratch dir and uploads it; returns `[]` past the size cap.
+async def _fetch_and_ingest(
+    url: str,
+    post: DouyinMetadata,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+) -> list[RenderedPart]:
+    """Downloads post media into a scratch dir and ingests it; returns `[]` past the size cap.
 
     Raises on download errors so the caller degrades to caption-only.
     """
     try:
         with scratch_directory(prefix="douyin-ai-") as download_dir:
             downloader = DouyinDownloader(output_folder=download_dir)
-            # Release semaphore before upload so Google round-trips do not block other links.
+            # Release semaphore before upload/render so remote round-trips do not block other links.
             async with douyin_fetch_semaphore.get():
                 download = await asyncio.to_thread(
                     downloader.download,
@@ -139,7 +164,13 @@ async def _fetch_and_upload(
                     max_images=MAX_DOUYIN_INGEST_IMAGES,
                     max_bytes=FILES_API_MAX_BYTES,
                 )
-            return await _upload_media(url=url, download=download, gemini_client=gemini_client)
+            return await _ingest_media(
+                url=url,
+                post=post,
+                download=download,
+                image_renderer=image_renderer,
+                video_client=video_client,
+            )
     except DouyinTooLargeError:
         logfire.warn(
             "Douyin clip exceeds the Files API ceiling; answering from the caption",
@@ -151,7 +182,10 @@ async def _fetch_and_upload(
 
 
 async def build_douyin_context_messages(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str,
+    image_renderer: AttachmentRenderer | None,
+    video_client: genai.Client | None,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Douyin post URL.
 
@@ -160,13 +194,15 @@ async def build_douyin_context_messages(
 
     Args:
         url (str): The Douyin URL found in the current message.
-        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
-            media ingestion is active, or `None` to build caption-only context.
+        image_renderer (AttachmentRenderer | None): Turn attachment renderer uploading or inlining
+            photo-gallery images when image ingestion is active, or `None` to skip photos.
+        video_client (genai.Client | None): Direct-to-Google client for Files API video uploads
+            when video ingestion is active, or `None` to skip video clips.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span("gen_reply douyin context"):
         try:
-            # Per-URL lock deduplicates share-page fetches; release before `_fetch_and_upload`
+            # Per-URL lock deduplicates share-page fetches; release before `_fetch_and_ingest`
             # because `douyin_fetch_semaphore` is non-reentrant and upload has its own cap.
             async with douyin_url_locks.hold(key=url), douyin_fetch_semaphore.get():
                 # No output folder because `parse_metadata` writes nothing.
@@ -206,10 +242,13 @@ async def build_douyin_context_messages(
             )
             return [marker_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
-        media_parts: list[ResponseInputFileParam] = []
-        if media_client is not None:
+        media_parts: list[RenderedPart] = []
+        can_ingest = image_renderer is not None if post.is_photo else video_client is not None
+        if can_ingest:
             media_parts = await bounded_media_step(
-                step=_fetch_and_upload(url=url, post=post, gemini_client=media_client),
+                step=_fetch_and_ingest(
+                    url=url, post=post, image_renderer=image_renderer, video_client=video_client
+                ),
                 subject="Douyin media",
                 fallback="the caption",
                 degraded=[],

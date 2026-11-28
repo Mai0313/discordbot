@@ -48,7 +48,7 @@ def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
     *head, last = offered
     media_list = f"{', '.join(head)}, or {last}." if len(head) > 1 else f"{' or '.join(offered)}."
     watches = {
-        source.name: source.media_ingest_allowed(config=config) for source in LINK_CONTEXT_SOURCES
+        source.name: source.video_ingest_allowed(config=config) for source in LINK_CONTEXT_SOURCES
     }
     document = CAPABILITIES_DOC
     for passage, kept, instead in (

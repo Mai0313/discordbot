@@ -247,7 +247,8 @@ class ReplyGlobalConfig(BaseModel):
         default=True,
         description=(
             "Whether media may reach the answer model as a provider Files API reference; when "
-            "false attachments inline as base64 instead and link media is not uploaded at all."
+            "false attachments and linked-post images inline as base64 instead, while "
+            "linked-post video clips are skipped."
         ),
     )
     streaming_enabled: bool = Field(

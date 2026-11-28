@@ -962,7 +962,7 @@ footer.end{
       <li><span class="st">本地掃到連結</span><span class="sd">只掃「模型實際看得到的文字」，所以掃描器不可能對一個模型從沒被展示過的連結開火。</span></li>
       <li class="px"><span class="st">路由決定要不要讀</span><span class="sd">要「總結、解釋、分析、反應、問內容」才算要讀。只是分享、只是引用當背景，就不選。</span></li>
       <li><span class="st">選中的才開始抓，並固定一個共用截止時間</span><span class="sd">180 秒，所有被選中的來源共用同一個截止點，跟後續的回覆準備工作重疊進行。</span></li>
-      <li><span class="st">先拿到文字，再拿媒體</span><span class="sd">先解析中繼資料（快，文字先落地），再抓媒體，再上傳 <span class="chip direct">Files API</span> 變成檔案部件。媒體那一步要在共用截止前留一段餘裕就結束，讀文字花掉的時間會從媒體那邊扣，慢了就<strong>降級成純文字</strong>，而不是整個被取消掉什麼都不剩。</span></li>
+      <li><span class="st">先拿到文字，再拿媒體</span><span class="sd">先解析中繼資料（快，文字先落地），再抓媒體：圖片走該輪答案模型的附件渲染器（Gemini 啟用 Files API 且有金鑰時走 <span class="chip direct">Files API</span>，非 Gemini、無金鑰或關閉 <code>file_api_enabled</code> 時以 base64 內嵌），影片則只限 Gemini 且啟用 Files API 時走 <span class="chip direct">Files API</span>。媒體那一步要在共用截止前留一段餘裕就結束，讀文字花掉的時間會從媒體那邊扣，慢了就<strong>降級成純文字</strong>，而不是整個被取消掉什麼都不剩。</span></li>
       <li><span class="st">失敗與逾時都有明確說法</span><span class="sd">會注入一段說明，而不是什麼都不給：平台說貼文不在、這次讀不到（限流、5xx、斷線）、來不及讀，各是不同的說法，讀不到絕不會被說成貼文已刪除。所以模型絕對不會編一段內容出來，也不會宣稱它看過其實沒拿到的影片。</span></li>
     </ol>
 
@@ -973,37 +973,37 @@ footer.end{
           <td class="nowrap"><b>Threads</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>整串對話（祖先鏈、目標貼文、它引用的貼文、底下的留言），但只吃<strong>目標貼文</strong>和<strong>被引用貼文</strong>的媒體。鏈與留言各有獨立上限，互不排擠</td>
-          <td>共用 <code>global.reply.file_api_enabled</code> 與直連金鑰</td>
+          <td>圖片走當輪附件渲染器（Gemini + Files API 上傳，其餘內嵌）；影片限 Gemini ＋ <code>file_api_enabled</code> ＋ 直連金鑰</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Facebook</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>公開貼文的全文、圖片、互動數字，加上<strong>頁面預先載入的那幾則留言</strong>（不是整個留言區）。網址帶 <code>comment_id</code> 時會標出被指名的那一則。影片拿不到檔案，只帶連結</td>
-          <td>同上</td>
+          <td>圖片走當輪附件渲染器（不吃影片）</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Instagram</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>公開貼文的內文、輪播原圖、互動數字，加上<strong>頁面給的留言</strong>——登出狀態下一般貼文就是全部（實測 11 則報 11 則），這是它比 Facebook 多的地方；熱門貼文只有第一頁，最多帶 20 則。網址帶 <code>/c/&lt;id&gt;/</code> 時會標出被指名的那一則。Reel 只帶連結，不上傳影片</td>
-          <td>同上</td>
+          <td>圖片走當輪附件渲染器（不吃影片）</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Twitter</b></td>
           <td>當前訊息，<strong>或它回覆的那一則</strong></td>
           <td>貼文本身與它引用的那一則走官方嵌入端點；<strong>它上面的整串</strong>（最多 6 篇）和<strong>底下最熱門的回覆</strong>（第一頁，最多 30 則，回覆的回覆接在它回的那則後面）另外向第三方的 FxTwitter 要；長文與它引用的那一則的全文也向它要，因為官方端點在約 275 字處截斷，而且引用的那一則截了也不標記。FxTwitter 讀不到時退回官方端點附的上一層與截斷的文字，並明說留言這次讀不到。只吃目標貼文的圖，影片只帶連結，不下載</td>
-          <td>同上</td>
+          <td>圖片走當輪附件渲染器（不吃影片）</td>
         </tr>
         <tr>
           <td class="nowrap"><b>抖音</b></td>
           <td>只在當前訊息</td>
           <td>影片或圖集，以 <code>low</code> 畫質下載（刻意低於給人看的展開品質）</td>
-          <td>同上</td>
+          <td>圖集走當輪附件渲染器；影片限 Gemini ＋ <code>file_api_enabled</code> ＋ 直連金鑰</td>
         </tr>
         <tr>
           <td class="nowrap"><b>Bilibili</b></td>
           <td>只在當前訊息</td>
           <td>標題、簡介與影片，同樣 <code>low</code> 畫質</td>
-          <td>同上</td>
+          <td>限 Gemini ＋ <code>file_api_enabled</code> ＋ 直連金鑰</td>
         </tr>
       </tbody>
     </table></div>
@@ -1124,7 +1124,7 @@ footer.end{
         <tr><td><b>深度研究</b></td><td class="mut"><code>deep-research</code> 標記、<code>/deep_research</code></td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions（背景 agent）</td><td class="m">antigravity-preview-09-2026<br>· 推理 gemini-4-hydrogen</td></tr>
         <tr><td><b>研究討論串標題</b></td><td class="mut">研究啟動時</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
         <tr><td><b>附件上傳</b></td><td class="mut">Gemini 答案模型 ＋ 開關開著 ＋ 有 <code>GEMINI_API_KEY</code>（否則內嵌經 proxy 送）</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
-        <tr><td><b>連結媒體上傳</b></td><td class="mut">被選中的來源抓到媒體時</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
+        <tr><td><b>連結媒體上傳</b></td><td class="mut">圖片走當輪附件渲染器（Gemini ＋ 開關開著 ＋ 有金鑰上傳 Files API，其餘內嵌經 proxy 送）；影片限 Gemini ＋ 開關開著 ＋ 有金鑰</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
         <tr><td><b>記憶審查 / 整併</b></td><td class="mut">下了記憶標記之後（背景）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-neon · medium</td></tr>
         <tr><td><b>記憶跟上進度</b>（提出筆記，再走同一個審查）</td><td class="mut"><code>/memory server catchup</code></td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-neon · medium</td></tr>
       </tbody>
@@ -1145,7 +1145,7 @@ footer.end{
       <thead><tr><th>開關（<code>[global.reply]</code>）</th><th>關掉（或開啟）會怎樣</th><th>需要直連金鑰</th></tr></thead>
       <tbody>
         <tr><td class="m">feedback_enabled</td><td>完成的回覆不再附帶 👍 / 👎 / 🔄 按鈕與評分小字，也不寫入 <code>reply.db</code> 回合快照，並停用 🔄 重新生成</td><td>否</td></tr>
-        <tr><td class="m">file_api_enabled</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
+        <tr><td class="m">file_api_enabled</td><td>附件與連結貼文圖片改成 base64 內嵌（附件影音在模態閘擋下，連結貼文影片則直接跳過不下載也不上傳）。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
         <tr><td class="m">streaming_enabled</td><td>QA 回覆（含 YouTube Interactions）與 IMAGE / VIDEO 人格化回話改走非串流（<code>stream=False</code>），等完整結果回來後一次貼出，不做即時預覽編輯</td><td>否</td></tr>
       </tbody>
     </table></div>

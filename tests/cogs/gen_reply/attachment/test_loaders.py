@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from datetime import UTC, datetime, timedelta
 
 from PIL import Image, UnidentifiedImageError
@@ -12,7 +13,7 @@ import nextcord
 
 from discordbot.typings.media import LoadedMedia
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OPENAI_FILE_EXPIRY_SECONDS
 
 from tests.helpers.reply_fakes import (
@@ -24,6 +25,9 @@ from tests.helpers.reply_fakes import (
     _fake_uploader,
     _fake_openai_uploader,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def test_dead_source_skipped_within_ttl_then_retried(
@@ -225,3 +229,16 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         expiry,
         {"model": TEST_LLM_MODEL},
     )
+
+
+async def test_load_image_bytes_reencodes_mislabeled_local_webp_path(tmp_path: Path) -> None:
+    """A WebP saved under a `.jpg` filename is re-encoded to real JPEG rather than passed through."""
+    path = tmp_path / "777_1.jpg"
+    Image.new(mode="RGB", size=(16, 16), color=(12, 34, 56)).save(fp=path, format="WEBP")
+
+    loaded = await load_image_bytes(source=path)
+
+    assert loaded.mime_type == "image/jpeg"
+    with Image.open(fp=BytesIO(initial_bytes=loaded.data)) as decoded:
+        assert decoded.format == "JPEG"
+    assert resolve_source_filename(source=path, url_fallback="image.png") == "777_1.jpg"

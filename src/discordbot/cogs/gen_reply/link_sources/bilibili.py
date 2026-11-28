@@ -127,7 +127,7 @@ async def _fetch_and_upload(url: str, gemini_client: genai.Client) -> list[Respo
 
 
 async def build_bilibili_context_messages(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str, video_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Bilibili video URL.
 
@@ -136,7 +136,7 @@ async def build_bilibili_context_messages(
 
     Args:
         url (str): The Bilibili URL found in the current message.
-        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
+        video_client (genai.Client | None): Direct-to-Google client for Files API uploads when
             video ingestion is active, or `None` to build text-only context.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
@@ -174,7 +174,7 @@ async def build_bilibili_context_messages(
 
         text = _render_video_text(metadata=metadata, url=url)
         media_parts: list[ResponseInputFileParam] = []
-        if media_client is not None:
+        if video_client is not None:
             too_long = (
                 metadata.is_live
                 or metadata.duration_seconds > MAX_BILIBILI_INGEST_DURATION_SECONDS
@@ -188,7 +188,7 @@ async def build_bilibili_context_messages(
                 )
                 return link_context_blocks(separator=BILIBILI_TOO_LONG_SEPARATOR, text=text)
             media_parts = await bounded_media_step(
-                step=_fetch_and_upload(url=url, gemini_client=media_client),
+                step=_fetch_and_upload(url=url, gemini_client=video_client),
                 subject="Bilibili media",
                 fallback="the text",
                 degraded=[],

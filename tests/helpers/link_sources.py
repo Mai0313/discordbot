@@ -31,10 +31,12 @@ from discordbot.utils.expansion_cog import ConversationExpansionCog
 from discordbot.utils.file_downloads import DownloadTooLargeError
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.base import PlatformDownloader, PlatformConversation
+from discordbot.cogs.gen_reply.attachment import base as attachment_base
+from discordbot.cogs.gen_reply.attachment import inline as attachment_inline
+from discordbot.cogs.gen_reply.attachment import gemini_file_api as attachment_gemini
 from discordbot.services.platforms.douyin import DouyinDownload, DouyinMetadata
 from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
 from discordbot.services.platforms.twitter import TwitterOutput, TwitterConversation
-from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramConversation
 from discordbot.services.platforms.page_json import FetchedPage
@@ -580,11 +582,9 @@ class FirstUploadHeld(FakeUploads):
 
 
 def accept_image_uploads(
-    monkeypatch: pytest.MonkeyPatch,
-    uploads: FakeUploads | None = None,
-    refused: Callable[[str], bool] | None = None,
+    monkeypatch: pytest.MonkeyPatch, refused: Callable[[str], bool] | None = None
 ) -> list[str]:
-    """Makes the shared image fetch answer and installs `uploads` as the Files API upload.
+    """Makes the shared image loader answer for every attachment renderer without touching the network.
 
     A source `refused` accepts fails its fetch the way an expired CDN URL does.
 
@@ -593,17 +593,16 @@ def accept_image_uploads(
     """
     fetched: list[str] = []
 
-    async def load_image_bytes(source: str) -> LoadedMedia:
+    async def load_image_bytes(source: object) -> LoadedMedia:
         """Pretends the CDN answered, unless this source is one it refuses."""
-        fetched.append(source)
-        if refused is not None and refused(source):
-            raise RuntimeError(f"cdn url expired: {source}")
+        source_key = str(source)
+        fetched.append(source_key)
+        if refused is not None and refused(source_key):
+            raise RuntimeError(f"cdn url expired: {source_key}")
         return LoadedMedia(data=b"image-bytes", mime_type="image/jpeg")
 
-    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
-    monkeypatch.setattr(
-        target=image_ingest, name="upload_as_input_file", value=uploads or FakeUploads()
-    )
+    for module in (attachment_base, attachment_inline, attachment_gemini):
+        monkeypatch.setattr(target=module, name="load_image_bytes", value=load_image_bytes)
     return fetched
 
 

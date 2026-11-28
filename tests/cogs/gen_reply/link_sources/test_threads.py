@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from google.genai.types import FileState
 from openai.types.responses import EasyInputMessageParam
 
 from discordbot.typings.media import LoadedMedia
@@ -13,6 +14,7 @@ from discordbot.typings.context_budgets import (
     MAX_THREADS_REPLIES,
     MAX_THREADS_MEDIA_PARTS,
 )
+from discordbot.cogs.gen_reply.attachment import gemini_file_api as attachment_gemini
 from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.services.platforms.threads import (
     ThreadsOutput,
@@ -21,6 +23,7 @@ from discordbot.services.platforms.threads import (
 )
 from discordbot.cogs.gen_reply.link_sources import threads as threads_builder
 from discordbot.cogs.gen_reply.link_sources import image_ingest
+from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.link_sources.threads import (
     THREADS_CONTEXT_TRAILER,
     THREADS_QUOTED_POST_LEAD,
@@ -36,6 +39,8 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
 )
 
 from tests.helpers.casting import make_stub_gemini_client
+from tests.helpers.gen_reply import FakeGeminiFiles
+from tests.helpers.reply_fakes import _fake_uploader
 from tests.helpers.link_sources import (
     FakeUploads,
     block_body,
@@ -111,9 +116,7 @@ def _stub_media(
         Every image and clip URL fetched.
     """
     fetched = accept_image_uploads(
-        monkeypatch=monkeypatch,
-        uploads=uploads,
-        refused=(lambda source: True) if image_fetch_fails else None,
+        monkeypatch=monkeypatch, refused=(lambda source: True) if image_fetch_fails else None
     )
 
     def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
@@ -133,22 +136,28 @@ async def _build(  # noqa: PLR0913 -- one knob per way a test varies the read
     chain: list[ThreadsOutput],
     branches: list[list[ThreadsOutput]] | None = None,
     uploads: FakeUploads | None = None,
+    image_files: FakeGeminiFiles | None = None,
     image_fetch_fails: bool = False,
     media: bool = True,
 ) -> list[EasyInputMessageParam]:
     """Builds the context for a canned conversation with its media stubbed.
 
-    Passes a stub media client unless `media` is off.
+    Passes a stub image uploader and video client unless `media` is off.
     """
     _stub_parse(monkeypatch=monkeypatch, results=chain, branches=branches)
+    resolved_uploads = uploads or FakeUploads()
     _stub_media(
-        monkeypatch=monkeypatch,
-        uploads=uploads or FakeUploads(),
-        image_fetch_fails=image_fetch_fails,
+        monkeypatch=monkeypatch, uploads=resolved_uploads, image_fetch_fails=image_fetch_fails
+    )
+    resolved_files = image_files or (
+        FakeGeminiFiles(final_state=FileState.FAILED)
+        if resolved_uploads.fail
+        else FakeGeminiFiles()
     )
     return await build_threads_context_messages(
         url=_URL,
-        media_client=make_stub_gemini_client() if media else None,
+        image_renderer=_fake_uploader(files=resolved_files) if media else None,
+        video_client=make_stub_gemini_client() if media else None,
         deadline=link_build_deadline(),
     )
 
@@ -192,14 +201,14 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
 
 async def test_images_are_downscaled_before_upload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Images go through load_image_bytes, which downscales; raw URLs bypassed that entirely."""
-    uploads = FakeUploads()
+    image_files = FakeGeminiFiles()
     await _build(
-        monkeypatch=monkeypatch, chain=[_post(images=["https://cdn.test/a.jpg"])], uploads=uploads
+        monkeypatch=monkeypatch,
+        chain=[_post(images=["https://cdn.test/a.jpg"])],
+        image_files=image_files,
     )
 
-    source, mime_type, _ = uploads.calls[0]
-    assert source == b"image-bytes"  # the downscaled bytes, not the URL
-    assert mime_type == "image/jpeg"
+    assert image_files.upload_calls == [("threads_image_0.jpg", "image/jpeg")]
 
 
 async def test_video_is_uploaded_from_disk_and_cleaned_up(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -220,13 +229,15 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
     """Ancestors contribute text only; each media part costs a fetch plus an upload."""
     ancestor = _post(text="ancestor", images=["https://cdn.test/ancestor.jpg"])
     target = _post(text="target", images=["https://cdn.test/target.jpg"])
-    uploads = FakeUploads()
+    image_files = FakeGeminiFiles()
     # The chain is [root, ..., target].
-    blocks = await _build(monkeypatch=monkeypatch, chain=[ancestor, target], uploads=uploads)
+    blocks = await _build(
+        monkeypatch=monkeypatch, chain=[ancestor, target], image_files=image_files
+    )
 
     media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert len(media) == 1
-    assert len(uploads.calls) == 1
+    assert len(image_files.upload_calls) == 1
     text = block_body(blocks=blocks)
     assert "ancestor" in text  # the ancestor still supplies context, just no media
 
@@ -594,17 +605,17 @@ async def test_a_text_only_quote_post_hands_the_whole_media_budget_to_what_it_qu
 ) -> None:
     """This is the shape the feature exists for: the commentary has no media, the subject does."""
     quoted_images = [f"https://cdn.test/q{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
-    uploads = FakeUploads()
+    image_files = FakeGeminiFiles()
     blocks = await _build(
         monkeypatch=monkeypatch,
         chain=[_post(text="一句話評論", quoted=_quoted(images=quoted_images))],
-        uploads=uploads,
+        image_files=image_files,
     )
 
     parts = block_parts(blocks=blocks)
     media = [part for part in parts if part["type"] == "input_file"]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
-    assert len(uploads.calls) == MAX_THREADS_MEDIA_PARTS
+    assert len(image_files.upload_calls) == MAX_THREADS_MEDIA_PARTS
     text = parts[0]["text"]
     assert f"{MAX_THREADS_MEDIA_PARTS:,} item(s) belonging to the post it quotes" in text
     assert "belonging to the linked post" not in text
@@ -615,7 +626,7 @@ async def test_the_target_keeps_first_claim_on_the_media_budget(
 ) -> None:
     """The quoted post takes leftovers only, and whatever it loses is named as its own."""
     target_images = [f"https://cdn.test/t{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
-    uploads = FakeUploads()
+    image_files = FakeGeminiFiles()
     blocks = await _build(
         monkeypatch=monkeypatch,
         chain=[
@@ -625,7 +636,7 @@ async def test_the_target_keeps_first_claim_on_the_media_budget(
                 quoted=_quoted(images=["https://cdn.test/squeezed.jpg"]),
             )
         ],
-        uploads=uploads,
+        image_files=image_files,
     )
 
     parts = block_parts(blocks=blocks)
@@ -633,7 +644,7 @@ async def test_the_target_keeps_first_claim_on_the_media_budget(
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     assert all(part["filename"].startswith("threads_image_") for part in media)
     # The squeezed-out item is never fetched, and it is reported against the post that owns it.
-    assert len(uploads.calls) == MAX_THREADS_MEDIA_PARTS
+    assert len(image_files.upload_calls) == MAX_THREADS_MEDIA_PARTS
     text = parts[0]["text"]
     assert block_separator(blocks=blocks) == THREADS_PARTIAL_MEDIA_SEPARATOR
     assert (
@@ -704,7 +715,10 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
     await build_threads_context_messages(
-        url=_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
+        url=_URL,
+        image_renderer=_fake_uploader(),
+        video_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
     # Order-independent on purpose: `_ingest_media` gathers the two posts concurrently so a slow
@@ -745,12 +759,13 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
         await asyncio.sleep(delay=5)
         raise AssertionError("the bound should have fired first")
 
-    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=never_returns)
+    monkeypatch.setattr(target=attachment_gemini, name="load_image_bytes", value=never_returns)
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     blocks = await build_threads_context_messages(
         url=_URL,
-        media_client=make_stub_gemini_client(),
+        image_renderer=_fake_uploader(),
+        video_client=make_stub_gemini_client(),
         deadline=link_build_deadline(media_seconds=0.01),
     )
 
@@ -789,13 +804,16 @@ async def test_a_slow_read_still_returns_the_post_inside_the_build_deadline(
 
     monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=slow_read)
     _stub_media(monkeypatch, uploads=FakeUploads())
-    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=never_returns)
+    monkeypatch.setattr(target=attachment_gemini, name="load_image_bytes", value=never_returns)
     monkeypatch.setattr(target=image_ingest, name="LINK_MEDIA_DEGRADE_MARGIN_SECONDS", value=0.4)
     deadline = asyncio.get_running_loop().time() + 1.0
 
     blocks = await run_until_deadline(
         awaitable=build_threads_context_messages(
-            url=_URL, media_client=make_stub_gemini_client(), deadline=deadline
+            url=_URL,
+            image_renderer=_fake_uploader(),
+            video_client=make_stub_gemini_client(),
+            deadline=deadline,
         ),
         deadline=deadline,
     )
@@ -869,7 +887,7 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
 
 async def test_comment_media_is_noted_but_never_ingested(monkeypatch: pytest.MonkeyPatch) -> None:
     """A comment's media is never fetched, so a picture-only comment says so instead of reading blank."""
-    uploads = FakeUploads()
+    image_files = FakeGeminiFiles()
     blocks = await _build(
         monkeypatch=monkeypatch,
         chain=[_post(text="target", images=["https://cdn.test/target.jpg"])],
@@ -883,12 +901,12 @@ async def test_comment_media_is_noted_but_never_ingested(monkeypatch: pytest.Mon
                 )
             ]
         ],
-        uploads=uploads,
+        image_files=image_files,
     )
 
     text = block_body(blocks=blocks)
     assert "1 image(s), NOT attached" in text
-    assert len(uploads.calls) == 1  # the target's image, and nothing from the comment
+    assert len(image_files.upload_calls) == 1  # the target's image, and nothing from the comment
     assert "https://cdn.test/comment.jpg" not in text
 
 
@@ -915,7 +933,7 @@ async def test_without_media_client_fetches_nothing_and_rides_urls_as_text(
     fetched = _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, media_client=None, deadline=link_build_deadline()
+        url=_URL, image_renderer=None, video_client=None, deadline=link_build_deadline()
     )
 
     assert fetched == []
@@ -1049,7 +1067,10 @@ async def test_build_empty_post_returns_unavailable_notice(
     _stub_parse(monkeypatch, [])
 
     blocks = await build_threads_context_messages(
-        url=_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
+        url=_URL,
+        image_renderer=_fake_uploader(),
+        video_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
     assert len(blocks) == 1
@@ -1064,7 +1085,10 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
     )
 
     blocks = await build_threads_context_messages(
-        url=_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
+        url=_URL,
+        image_renderer=_fake_uploader(),
+        video_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
     assert len(blocks) == 1
@@ -1080,7 +1104,7 @@ async def test_upload_post_media_propagates_cancellation(
         del kwargs
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(threads_builder, "upload_image", cancelled)
+    monkeypatch.setattr(threads_builder, "render_linked_image", cancelled)
     entry = threads_builder.MediaPlanEntry(
         post=_post(images=["https://cdn.test/a.jpg"]),
         owner="the linked post",
@@ -1090,5 +1114,88 @@ async def test_upload_post_media_propagates_cancellation(
 
     with pytest.raises(asyncio.CancelledError):
         await threads_builder._upload_post_media(
-            entry=entry, gemini_client=make_stub_gemini_client(), download_dir=str(tmp_path)
+            entry=entry,
+            image_renderer=_fake_uploader(),
+            video_client=make_stub_gemini_client(),
+            download_dir=str(tmp_path),
         )
+
+
+async def test_inline_renderer_inlines_images_and_skips_videos_honestly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `InlineRenderer` and `video_client=None`, images inline and videos report unattached."""
+    _stub_parse(
+        monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
+    )
+    uploads = FakeUploads()
+    fetched = _stub_media(monkeypatch, uploads=uploads)
+
+    blocks = await build_threads_context_messages(
+        url=_URL,
+        image_renderer=InlineRenderer(),
+        video_client=None,
+        deadline=link_build_deadline(),
+    )
+
+    assert fetched == ["https://cdn.test/a.jpg"]
+    assert uploads.calls == []
+    assert block_separator(blocks=blocks) == THREADS_PARTIAL_MEDIA_SEPARATOR
+    parts = block_parts(blocks=blocks)
+    images = [part for part in parts if part["type"] == "input_image"]
+    assert len(images) == 1
+    assert images[0]["image_url"].startswith("data:image/jpeg;base64,")
+    assert (
+        "Videos of the linked post NOT attached (1), URLs only: https://cdn.test/v.mp4"
+        in parts[0]["text"]
+    )
+
+
+async def test_uningested_target_videos_do_not_starve_quoted_post_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When video ingestion is off, target videos consume zero budget so quoted images still inline."""
+    target_videos = [f"https://cdn.test/v{index}.mp4" for index in range(MAX_THREADS_MEDIA_PARTS)]
+    quoted_images = ["https://cdn.test/q0.jpg", "https://cdn.test/q1.jpg"]
+    _stub_parse(
+        monkeypatch, [_post(text="t", videos=target_videos, quoted=_quoted(images=quoted_images))]
+    )
+    fetched = _stub_media(monkeypatch, uploads=FakeUploads())
+
+    blocks = await build_threads_context_messages(
+        url=_URL,
+        image_renderer=InlineRenderer(),
+        video_client=None,
+        deadline=link_build_deadline(),
+    )
+
+    assert sorted(fetched) == quoted_images
+    parts = block_parts(blocks=blocks)
+    assert len([part for part in parts if part["type"] == "input_image"]) == 2
+    assert (
+        f"Videos of the linked post NOT attached ({MAX_THREADS_MEDIA_PARTS})" in parts[0]["text"]
+    )
+
+
+async def test_video_only_post_without_video_client_short_circuits_before_media_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A video-only post with `video_client=None` skips `bounded_media_step` even past the margin."""
+    _stub_parse(monkeypatch, [_post(videos=["https://cdn.test/v.mp4"])])
+    fetched = _stub_media(monkeypatch, uploads=FakeUploads())
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    blocks = await build_threads_context_messages(
+        url=_URL,
+        image_renderer=InlineRenderer(),
+        video_client=None,
+        deadline=asyncio.get_running_loop().time() + 0.1,
+    )
+
+    assert fetched == []
+    assert warns == []
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    assert (
+        "Videos of the linked post NOT attached (1), URLs only: https://cdn.test/v.mp4"
+        in block_body(blocks=blocks)
+    )

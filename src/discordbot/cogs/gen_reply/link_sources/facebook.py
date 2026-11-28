@@ -5,7 +5,6 @@ separators and rendered text state both limits explicitly. A `?comment_id=` targ
 marked inline. Notices avoid naming whether the URL was in the current or replied-to message.
 """
 
-from google import genai
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.context_budgets import MAX_FACEBOOK_COMMENTS, MAX_FACEBOOK_INGEST_IMAGES
@@ -22,6 +21,7 @@ from discordbot.services.platforms.facebook import (
     FacebookDownloader,
     FacebookConversation,
 )
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
 
 FACEBOOK_CONTEXT_SEPARATOR = (
@@ -112,14 +112,14 @@ def _render_conversation(
 
 
 async def build_facebook_context_messages(
-    url: str, media_client: genai.Client | None, deadline: float
+    url: str, image_renderer: AttachmentRenderer | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Facebook post URL.
 
     Args:
         url (str): The Facebook post URL selected from the conversation.
-        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
-            image ingestion is active, or `None` to build text-only context.
+        image_renderer (AttachmentRenderer | None): Turn attachment renderer uploading or inlining
+            images when image ingestion is active, or `None` to build text-only context.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     return await build_post_context(
@@ -131,6 +131,6 @@ async def build_facebook_context_messages(
         unavailable_notice=FACEBOOK_UNAVAILABLE_NOTICE,
         unreadable_notice=FACEBOOK_UNREADABLE_NOTICE,
         image_cap=MAX_FACEBOOK_INGEST_IMAGES,
-        media_client=media_client,
+        image_renderer=image_renderer,
         deadline=deadline,
     )

@@ -1,11 +1,13 @@
-"""Fetching a linked post's media and uploading it for the answer model to look at.
+"""Fetching a linked post's media and rendering it for the answer model to look at.
 
-`upload_image` is the one-image step. `upload_post_images` runs it over a post's image URLs, and
-two properties are the whole point of that. Every item is independent and best-effort, so one
-expired signed CDN url never costs the rest; and the step is bounded rather than left to the
-caller's grace, so a slow fetch still produces the honest text-only block instead of being
-cancelled with nothing to inject. A source that keeps its own per-URL accounting, or downloads
-files of its own beside the images, runs the one-image step itself.
+`render_linked_image` is the one-image step, delegating to the turn's `AttachmentRenderer` so
+Gemini uploads via Files API while non-Gemini or disabled-Files-API turns inline as base64.
+`ingest_post_images` runs it over a post's image URLs, and two properties are the whole point of
+that. Every item is independent and best-effort, so one expired signed CDN url never costs the
+rest; and the step is bounded rather than left to the caller's grace, so a slow fetch still
+produces the honest text-only block instead of being cancelled with nothing to inject. A source
+that keeps its own per-URL accounting, or downloads files of its own beside the images, runs the
+one-image step itself.
 
 `bounded_media_step` is that bound, and every source's media step runs under it, whether or not
 its media is images.
@@ -13,18 +15,15 @@ its media is images.
 
 from typing import Any
 import asyncio
+from pathlib import Path
+from mimetypes import guess_type
 from collections.abc import Sequence, Coroutine
 
-from google import genai
 import logfire
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.timeouts import (
-    LINK_MEDIA_TIMEOUT_SECONDS,
-    LINK_MEDIA_DEGRADE_MARGIN_SECONDS,
-)
-from discordbot.cogs.gen_reply.files_api import upload_as_input_file
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
+from discordbot.typings.media import RenderedPart
+from discordbot.typings.timeouts import LINK_MEDIA_DEGRADE_MARGIN_SECONDS
+from discordbot.cogs.gen_reply.attachment.base import AttachmentSource, AttachmentRenderer
 
 
 async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wording, its fallback value and its bound all vary per source
@@ -90,38 +89,45 @@ async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wor
         return degraded
 
 
-async def upload_image(
-    image_url: str, filename: str, gemini_client: genai.Client
-) -> ResponseInputFileParam | None:
-    """Returns one fetched, downscaled, and uploaded image part, or `None` when skipped.
+async def render_linked_image(
+    source: str | Path,
+    filename: str,
+    image_renderer: AttachmentRenderer,
+    cache_key: str | None = None,
+) -> RenderedPart | None:
+    """Returns one fetched, downscaled, and rendered image part, or `None` when skipped.
 
-    Downscales full-resolution originals via `load_image_bytes` before uploading; fetch and
-    downscale exceptions propagate to the caller, while upload failures return `None`.
+    Delegates to `image_renderer.render_image` with `allow_dead_cache=False` so transient CDN
+    failures on linked posts never poison the renderer's dead-source cache.
 
     Args:
-        image_url (str): URL of the image to fetch.
-        filename (str): Filename attached to the uploaded part.
-        gemini_client (genai.Client): Direct-to-Google client used for the upload.
+        source (str | Path): Remote image URL or local file path to render.
+        filename (str): Filename attached to the rendered part.
+        image_renderer (AttachmentRenderer): Turn attachment renderer uploading or inlining images.
+        cache_key (str | None): Stable key for upload/pending caches; defaults to `str(source)`.
     """
-    loaded = await load_image_bytes(source=image_url)
-    return await upload_as_input_file(
-        client=gemini_client,
-        source=loaded.data,
-        mime_type=loaded.mime_type,
-        filename=filename,
-        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+    rendered = await image_renderer.render_image(
+        source=AttachmentSource(
+            handle=source,
+            kind="image",
+            content_type=guess_type(filename)[0] or "image/jpeg",
+            cache_key=cache_key or str(source),
+            filename=filename,
+        ),
+        allow_dead_cache=False,
     )
+    return rendered.part if rendered is not None else None
 
 
 async def gather_media_parts(
-    tasks: Sequence[Coroutine[Any, Any, ResponseInputFileParam | None]], warning: str, url: str
-) -> list[ResponseInputFileParam]:
-    """Runs `tasks` concurrently, returning uploaded parts while logging per-item failures.
+    tasks: Sequence[Coroutine[Any, Any, RenderedPart | None]], warning: str, url: str
+) -> list[RenderedPart]:
+    """Runs `tasks` concurrently, returning rendered parts while logging per-item failures.
 
     Re-raises non-`Exception` `BaseException`s so cancellations and signals are never swallowed.
 
     Args:
-        tasks (Sequence[Coroutine[Any, Any, ResponseInputFileParam | None]]): Per-item upload
+        tasks (Sequence[Coroutine[Any, Any, RenderedPart | None]]): Per-item render/upload
             coroutines.
         warning (str): Log message recorded for each failing item.
         url (str): Post URL attached to failure logs.
@@ -130,7 +136,7 @@ async def gather_media_parts(
     for result in results:
         if isinstance(result, BaseException) and not isinstance(result, Exception):
             raise result
-    parts: list[ResponseInputFileParam] = []
+    parts: list[RenderedPart] = []
     for result in results:
         if isinstance(result, BaseException):
             logfire.warn(warning, url=url, error_type=type(result).__name__, _exc_info=result)
@@ -140,17 +146,17 @@ async def gather_media_parts(
     return parts
 
 
-async def _upload_each(
-    platform: str, post_url: str, image_urls: list[str], gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
-    """Uploads the images concurrently, keeping whatever succeeded."""
-    tasks: list[Coroutine[Any, Any, ResponseInputFileParam | None]] = []
+async def _render_each(
+    platform: str, post_url: str, image_urls: list[str], image_renderer: AttachmentRenderer
+) -> list[RenderedPart]:
+    """Renders the images concurrently, keeping whatever succeeded."""
+    tasks: list[Coroutine[Any, Any, RenderedPart | None]] = []
     for index, image_url in enumerate(image_urls):
         tasks.append(
-            upload_image(
-                image_url=image_url,
+            render_linked_image(
+                source=image_url,
                 filename=f"{platform.lower()}_image_{index}.jpg",
-                gemini_client=gemini_client,
+                image_renderer=image_renderer,
             )
         )
     return await gather_media_parts(
@@ -158,33 +164,33 @@ async def _upload_each(
     )
 
 
-async def upload_post_images(  # noqa: PLR0913 -- the post, its images and cap, the client and the build's deadline
+async def ingest_post_images(  # noqa: PLR0913 -- the post, its images and cap, the renderer and the build's deadline
     platform: str,
     post_url: str,
     image_urls: list[str],
     cap: int,
-    gemini_client: genai.Client,
+    image_renderer: AttachmentRenderer,
     deadline: float,
-) -> list[ResponseInputFileParam]:
-    """Returns up to `cap` uploaded image parts for a post, degrading to `[]` on failure.
+) -> list[RenderedPart]:
+    """Returns up to `cap` rendered image parts for a post, degrading to `[]` on failure.
 
     Callers must count the returned parts rather than assuming `cap` succeeded so the rendered
-    block never claims images that failed to upload.
+    block never claims images that failed to render.
 
     Args:
         platform (str): Display name of the platform for log messages.
         post_url (str): Post URL the images belong to.
         image_urls (list[str]): Image URLs carried by the post, in page order.
-        cap (int): Maximum number of images to fetch and upload.
-        gemini_client (genai.Client): Direct-to-Google client used for the upload.
+        cap (int): Maximum number of images to fetch and render.
+        image_renderer (AttachmentRenderer): Turn attachment renderer uploading or inlining images.
         deadline (float): Event-loop timestamp at which the pipeline cancels the build.
     """
     return await bounded_media_step(
-        step=_upload_each(
+        step=_render_each(
             platform=platform,
             post_url=post_url,
             image_urls=image_urls[:cap],
-            gemini_client=gemini_client,
+            image_renderer=image_renderer,
         ),
         subject=f"{platform} image",
         fallback="the text",

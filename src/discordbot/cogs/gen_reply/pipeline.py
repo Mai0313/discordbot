@@ -150,6 +150,7 @@ class ReplyPipeline(BaseModel):
         if not selected:
             return None
         deadline = asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
+        image_renderer = self.toolkit.input_builder_for(model=slow_model).attachment_handler
         link_tasks: dict[str, LinkTask] = {}
         for link_source in LINK_CONTEXT_SOURCES:
             if link_source.name not in selected:
@@ -163,15 +164,18 @@ class ReplyPipeline(BaseModel):
                     message_id=self.message.id,
                 )
                 continue
-            media_client = (
+            video_client = (
                 self.toolkit.gemini_client_if_configured
-                if slow_model.is_gemini and link_source.media_ingest_allowed(config=self.config)
+                if slow_model.is_gemini and link_source.video_ingest_allowed(config=self.config)
                 else None
             )
             link_tasks[link_source.name] = asyncio.create_task(
                 coro=run_until_deadline(
                     awaitable=link_source.build(
-                        url=link_url, media_client=media_client, deadline=deadline
+                        url=link_url,
+                        image_renderer=image_renderer,
+                        video_client=video_client,
+                        deadline=deadline,
                     ),
                     deadline=deadline,
                 )

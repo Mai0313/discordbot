@@ -10,7 +10,7 @@ from discordbot.cogs.gen_reply.link_sources.instagram import (
     build_instagram_context_messages,
 )
 
-from tests.helpers.casting import make_stub_gemini_client
+from tests.helpers.reply_fakes import _fake_uploader
 from tests.helpers.link_sources import (
     INSTAGRAM_URL,
     block_body,
@@ -29,7 +29,7 @@ async def test_the_post_names_both_the_handle_and_the_display_name(
     serve_conversation(monkeypatch, downloader=InstagramDownloader, post=instagram_post())
 
     blocks = await build_instagram_context_messages(
-        url=INSTAGRAM_URL, media_client=None, deadline=link_build_deadline()
+        url=INSTAGRAM_URL, image_renderer=None, deadline=link_build_deadline()
     )
 
     body = block_body(blocks=blocks)
@@ -56,7 +56,7 @@ async def test_the_comment_cap_bounds_what_rides_and_the_header_says_how_many(
     )
 
     blocks = await build_instagram_context_messages(
-        url=INSTAGRAM_URL, media_client=None, deadline=link_build_deadline()
+        url=INSTAGRAM_URL, image_renderer=None, deadline=link_build_deadline()
     )
 
     body = block_body(blocks=blocks)
@@ -77,10 +77,10 @@ async def test_both_separators_stop_short_of_promising_the_whole_comment_section
     accept_image_uploads(monkeypatch=monkeypatch)
 
     with_media = await build_instagram_context_messages(
-        url=INSTAGRAM_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
+        url=INSTAGRAM_URL, image_renderer=_fake_uploader(), deadline=link_build_deadline()
     )
     text_only = await build_instagram_context_messages(
-        url=INSTAGRAM_URL, media_client=None, deadline=link_build_deadline()
+        url=INSTAGRAM_URL, image_renderer=None, deadline=link_build_deadline()
     )
 
     caveat = "the first page rather than every reply"

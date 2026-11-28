@@ -18,11 +18,11 @@ from google import genai
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.utils.urls import PostLink
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.media import RenderedPart
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
 from discordbot.utils.link_errors import LinkUnavailableError
@@ -35,14 +35,15 @@ from discordbot.services.platforms.base import (
     PlatformConversation,
     LinkableCommentOutput,
 )
-from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
+from discordbot.cogs.gen_reply.link_sources.image_ingest import ingest_post_images
 
 # Lowest preset: the model downsamples frames, so higher resolution only adds transfer latency.
 AI_INGEST_QUALITY: VideoQuality = "low"
 
 
 def link_context_blocks(
-    separator: str, text: str, media_parts: Sequence[ResponseInputFileParam] = ()
+    separator: str, text: str, media_parts: Sequence[RenderedPart] = ()
 ) -> list[EasyInputMessageParam]:
     """Returns the `[separator, user-content]` input blocks for a readable linked post.
 
@@ -52,7 +53,7 @@ def link_context_blocks(
     Args:
         separator (str): Marker stating what is attached below.
         text (str): Rendered post text.
-        media_parts (Sequence[ResponseInputFileParam]): Uploaded media parts to attach.
+        media_parts (Sequence[RenderedPart]): Rendered media parts to attach.
     """
     return [
         marker_block(text=separator),
@@ -89,7 +90,7 @@ class PostSeparators(BaseModel):
 
 def post_context_blocks(
     text: str,
-    media_parts: Sequence[ResponseInputFileParam],
+    media_parts: Sequence[RenderedPart],
     post_carries_media: bool,
     separators: PostSeparators,
 ) -> list[EasyInputMessageParam]:
@@ -101,7 +102,7 @@ def post_context_blocks(
 
     Args:
         text (str): The rendered post text.
-        media_parts (Sequence[ResponseInputFileParam]): Uploaded media parts that arrived.
+        media_parts (Sequence[RenderedPart]): Rendered media parts that arrived.
         post_carries_media (bool): Whether the post has any media, selecting `separators.text_only`
             when `media_parts` is empty.
         separators (PostSeparators): The source's opener and trailer strings.
@@ -217,10 +218,10 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
     unavailable_notice: str,
     unreadable_notice: str,
     image_cap: int,
-    media_client: genai.Client | None,
+    image_renderer: AttachmentRenderer | None,
     deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Returns answer-model input blocks for a post URL, uploading up to `image_cap` images.
+    """Returns answer-model input blocks for a post URL, rendering up to `image_cap` images.
 
     Returns `[separator, user-content]` for a readable post, or a single notice marker when
     the post cannot be read. Never raises.
@@ -237,9 +238,9 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
             private.
         unreadable_notice (str): Notice returned when the read fails without proving the post is
             gone.
-        image_cap (int): Maximum number of post images to fetch and upload.
-        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
-            media ingestion is active, or `None` to build text-only context.
+        image_cap (int): Maximum number of post images to fetch and render.
+        image_renderer (AttachmentRenderer | None): Turn attachment renderer uploading or inlining
+            images when image ingestion is active, or `None` to build text-only context.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span(f"gen_reply {platform.lower()} context"):
@@ -256,14 +257,14 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
             return [marker_block(text=unavailable_notice)]
 
         target = conversation.target
-        media_parts: list[ResponseInputFileParam] = []
-        if media_client is not None:
-            media_parts = await upload_post_images(
+        media_parts: list[RenderedPart] = []
+        if image_renderer is not None and target.image_urls:
+            media_parts = await ingest_post_images(
                 platform=platform,
                 post_url=target.url,
                 image_urls=target.image_urls,
                 cap=image_cap,
-                gemini_client=media_client,
+                image_renderer=image_renderer,
                 deadline=deadline,
             )
 
@@ -349,18 +350,22 @@ class LinkContextBuilder(Protocol):
     """Normalized builder signature every source adapter satisfies."""
 
     def __call__(
-        self, url: str, media_client: genai.Client | None, deadline: float
+        self,
+        url: str,
+        image_renderer: AttachmentRenderer | None,
+        video_client: genai.Client | None,
+        deadline: float,
     ) -> Coroutine[Any, Any, list[EasyInputMessageParam]]: ...
 
 
 class MediaIngestPredicate(Protocol):
-    """Config predicate deciding whether the source may download and upload media."""
+    """Config predicate deciding whether the source may download and upload video clips."""
 
     def __call__(self, config: LLMConfig) -> bool: ...
 
 
 class LinkContextSource(BaseModel):
-    """One linked-content source: how to spot its URL, build its blocks, and gate its media."""
+    """One linked-content source: how to spot its URL, build its blocks, and gate its video."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -387,8 +392,8 @@ class LinkContextSource(BaseModel):
             "slow fetch does not leave the model with only the raw URL."
         ),
     )
-    media_ingest_allowed: SkipValidation[MediaIngestPredicate] = Field(
-        ..., description="Kill-switch predicate for media ingestion."
+    video_ingest_allowed: SkipValidation[MediaIngestPredicate] = Field(
+        ..., description="Kill-switch predicate for Gemini Files API video clip ingestion."
     )
 
     def timeout_blocks(self) -> list[EasyInputMessageParam]:

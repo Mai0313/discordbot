@@ -1,10 +1,12 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
+from io import BytesIO
 from typing import Unpack
 import asyncio
 from pathlib import Path
 import threading
 
+from PIL import Image
 import pytest
 from openai.types.responses import EasyInputMessageParam
 
@@ -19,6 +21,8 @@ from discordbot.services.platforms.douyin import (
     DouyinUnavailableError,
 )
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
+from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
     DOUYIN_TRANSFER_NOTICE,
@@ -30,6 +34,8 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
 )
 
 from tests.helpers.casting import make_stub_gemini_client
+from tests.helpers.gen_reply import FakeGeminiFiles
+from tests.helpers.reply_fakes import _fake_uploader
 from tests.helpers.link_sources import (
     FakeUploads,
     FirstUploadHeld,
@@ -80,11 +86,24 @@ def _stub_douyin(
     return resolved_uploads, made
 
 
-async def _build(media: bool = True) -> list[EasyInputMessageParam]:
+async def _build(
+    media: bool = True,
+    image_renderer: AttachmentRenderer | None = None,
+    video_client: object = None,
+) -> list[EasyInputMessageParam]:
     """Runs the builder with the defaults most tests share."""
+    resolved_renderer = (
+        image_renderer if image_renderer is not None else (_fake_uploader() if media else None)
+    )
+    resolved_video = (
+        video_client
+        if video_client is not None
+        else (make_stub_gemini_client() if media else None)
+    )
     return await build_douyin_context_messages(
         url=_URL,
-        media_client=make_stub_gemini_client() if media else None,
+        image_renderer=resolved_renderer,
+        video_client=resolved_video,  # ty: ignore[invalid-argument-type]
         deadline=link_build_deadline(),
     )
 
@@ -137,23 +156,66 @@ async def test_the_parsed_post_is_handed_to_the_download(monkeypatch: pytest.Mon
 
 async def test_a_gallery_is_capped_and_uploaded_as_images(monkeypatch: pytest.MonkeyPatch) -> None:
     """A photo post rides as image parts, capped so a huge gallery cannot blow the budget."""
-    uploads, made = _stub_douyin(
+    image_files = FakeGeminiFiles()
+    _, made = _stub_douyin(
         monkeypatch,
         post=_post(is_photo=True, images=20),
         files=[(f"777_{index}.jpg", b"media-bytes") for index in range(20)],
     )
 
-    blocks = await _build()
+    blocks = await _build(image_renderer=_fake_uploader(files=image_files))
 
     (call,) = made[-1].download_calls
     assert call["max_images"] == MAX_DOUYIN_INGEST_IMAGES
     media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert len(media) == MAX_DOUYIN_INGEST_IMAGES
-    assert all(mime == "image/jpeg" for _source, mime, _name in uploads.calls)
+    assert all(mime == "image/jpeg" for _name, mime in image_files.upload_calls)
 
     # The same post read as a video renders differently, so the model is told which it got.
     _stub_douyin(monkeypatch)
     assert block_body(blocks=await _build()) != block_body(blocks=blocks)
+
+
+async def test_photo_gallery_inlines_images_without_video_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-Gemini or Files-API-off turns inline Douyin photos and normalize mislabeled WebP bytes."""
+    buf = BytesIO()
+    Image.new(mode="RGB", size=(16, 16), color=(10, 20, 30)).save(fp=buf, format="WEBP")
+    webp_bytes = buf.getvalue()
+    _stub_douyin(
+        monkeypatch, post=_post(is_photo=True, images=1), files=[("777_1.jpg", webp_bytes)]
+    )
+
+    blocks = await build_douyin_context_messages(
+        url=_URL,
+        image_renderer=InlineRenderer(),
+        video_client=None,
+        deadline=link_build_deadline(),
+    )
+
+    assert block_separator(blocks=blocks) == DOUYIN_CONTEXT_SEPARATOR
+    images = [part for part in block_parts(blocks=blocks) if part["type"] == "input_image"]
+    assert len(images) == 1
+    assert images[0]["image_url"].startswith("data:image/jpeg;base64,")
+
+
+async def test_video_post_skips_download_without_video_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A video post with only an inline image renderer skips downloading the clip."""
+    uploads, made = _stub_douyin(monkeypatch)
+
+    blocks = await build_douyin_context_messages(
+        url=_URL,
+        image_renderer=InlineRenderer(),
+        video_client=None,
+        deadline=link_build_deadline(),
+    )
+
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert all(not d.download_calls for d in made)
+    assert uploads.calls == []
 
 
 async def test_a_blocked_read_is_never_reported_as_a_missing_post(
@@ -371,7 +433,10 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         # A different link must get through while the first build sits in its upload.
         other = await asyncio.wait_for(
             build_douyin_context_messages(
-                url="https://v.douyin.com/other", media_client=None, deadline=link_build_deadline()
+                url="https://v.douyin.com/other",
+                image_renderer=None,
+                video_client=None,
+                deadline=link_build_deadline(),
             ),
             timeout=5.0,
         )

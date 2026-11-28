@@ -2,6 +2,7 @@
 
 import time
 from typing import TYPE_CHECKING, Literal, ClassVar, cast
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 import logfire
@@ -53,8 +54,9 @@ class AttachmentSource(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    handle: SkipValidation[Attachment | StickerItem | str] = Field(
-        ..., description="The attachment, sticker, or image URL the loaders consume."
+    handle: SkipValidation[Attachment | StickerItem | Path | str] = Field(
+        ...,
+        description="The attachment, sticker, local image path, or image URL the loaders consume.",
     )
     kind: Literal["image", "file"] = Field(
         ..., description="Whether the source renders as an image or a generic file."
