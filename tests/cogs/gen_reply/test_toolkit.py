@@ -13,6 +13,7 @@ from discordbot.typings.models import SlowModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
+from discordbot.cogs.gen_reply.attachment.anthropic_file_api import AnthropicFileUploader
 
 from tests.helpers.casting import as_bot
 from tests.helpers.reply_fakes import FakeClient
@@ -50,6 +51,38 @@ def test_gemini_uploader_uploads_through_the_toolkit_client(
         bot=bot,
         openai_client=FakeClient(),
         config=LLMConfig.model_construct(gemini_api_key="test-key", file_api_enabled=False),
+    )
+    assert isinstance(switched_off.input_builder.attachment_handler, InlineRenderer)
+
+
+def test_anthropic_uploader_uploads_through_the_toolkit_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude attachments upload with the toolkit's direct client and inline when keyless/off."""
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_candidates",
+        property(lambda _self: (SlowModelSettings(name="claude-sonnet-test", effort="high"),)),
+    )
+    bot = stub_bot()
+    keyed = ReplyToolkit(
+        bot=bot,
+        openai_client=FakeClient(),
+        config=LLMConfig.model_construct(anthropic_api_key="sk-ant-test"),
+    )
+    keyed_handler = keyed.input_builder.attachment_handler
+    assert isinstance(keyed_handler, AnthropicFileUploader)
+    assert keyed_handler.anthropic_client() is keyed.anthropic_client
+
+    keyless = ReplyToolkit(
+        bot=bot, openai_client=FakeClient(), config=LLMConfig.model_construct(anthropic_api_key="")
+    )
+    assert isinstance(keyless.input_builder.attachment_handler, InlineRenderer)
+
+    switched_off = ReplyToolkit(
+        bot=bot,
+        openai_client=FakeClient(),
+        config=LLMConfig.model_construct(anthropic_api_key="sk-ant-test", file_api_enabled=False),
     )
     assert isinstance(switched_off.input_builder.attachment_handler, InlineRenderer)
 

@@ -4,11 +4,13 @@ Shared across turns so `input_builder`'s rendered-part and Files API caches pers
 replies. Delivery and usage services (`media_delivery`, `usage_recorder`) remain on the cog.
 """
 
+from typing import Literal
 from functools import cached_property
 
 from google import genai
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from anthropic import AsyncAnthropic
 from nextcord.ext import commands
 from google.genai.types import HttpOptions
 
@@ -27,6 +29,8 @@ from discordbot.cogs.gen_reply.generation import (
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 
+type AttachmentBucketKey = Literal["gemini", "claude", "inline"]
+
 
 class ReplyToolkit(BaseModel):
     """The clients, generators and caches every reply is composed with."""
@@ -42,13 +46,13 @@ class ReplyToolkit(BaseModel):
     config: LLMConfig = Field(
         ...,
         description=(
-            "Runtime LLM config supplying the Google AI Studio key for direct-to-Google paths "
-            "and the Files API kill-switch."
+            "Runtime LLM config supplying the direct provider API keys (Google AI Studio, "
+            "Anthropic) and the Files API kill-switch."
         ),
     )
     _memory_writer: MemoryWriterAI | None = PrivateAttr(default=None)
-    _attachment_buckets: dict[bool, tuple[AttachmentRenderer, AttachmentCache]] = PrivateAttr(
-        default_factory=dict
+    _attachment_buckets: dict[AttachmentBucketKey, tuple[AttachmentRenderer, AttachmentCache]] = (
+        PrivateAttr(default_factory=dict)
     )
     _input_builders: dict[str, MessageInputBuilder] = PrivateAttr(default_factory=dict)
 
@@ -76,6 +80,21 @@ class ReplyToolkit(BaseModel):
         if not self.config.gemini_key_configured:
             return None
         return self.gemini_client
+
+    @cached_property
+    def anthropic_client(self) -> AsyncAnthropic:
+        """Returns the native Anthropic client for direct Files API uploads.
+
+        Callers that can run without a key use `anthropic_client_if_configured` instead.
+        """
+        return AsyncAnthropic(api_key=self.config.anthropic_api_key)
+
+    @property
+    def anthropic_client_if_configured(self) -> AsyncAnthropic | None:
+        """Returns the direct Anthropic client, or None when `config.anthropic_key_configured` is false."""
+        if not self.config.anthropic_key_configured:
+            return None
+        return self.anthropic_client
 
     @cached_property
     def voice_generator(self) -> VoiceGenerator:
@@ -112,11 +131,21 @@ class ReplyToolkit(BaseModel):
             client=self.gemini_client, music_model=self.runtime_models.music_model
         )
 
+    def _attachment_bucket_key(self, model: ModelSettings) -> AttachmentBucketKey:
+        """Returns the provider bucket key isolating rendered attachment caches across providers."""
+        if not self.config.file_api_enabled:
+            return "inline"
+        if model.is_gemini and self.config.gemini_key_configured:
+            return "gemini"
+        if model.is_claude and self.config.anthropic_key_configured:
+            return "claude"
+        return "inline"
+
     def input_builder_for(self, model: ModelSettings) -> MessageInputBuilder:
         """Returns the cached input builder matching `model`'s provider and modality set.
 
-        Shares one `(AttachmentRenderer, AttachmentCache)` pair per provider bucket so multiple
-        Gemini candidates reuse uploaded Files API handles across history and regenerations while
+        Shares one `(AttachmentRenderer, AttachmentCache)` pair per provider bucket so same-provider
+        candidates reuse uploaded Files API handles across history and regenerations while
         mixed-provider candidate pools never serve one provider's rendered parts to another.
 
         Args:
@@ -125,16 +154,18 @@ class ReplyToolkit(BaseModel):
         builder = self._input_builders.get(model.name)
         if builder is not None:
             return builder
-        bucket = self._attachment_buckets.get(model.is_gemini)
+        bucket_key = self._attachment_bucket_key(model=model)
+        bucket = self._attachment_buckets.get(bucket_key)
         if bucket is None:
             handler = build_attachment_handler(
                 model=model,
                 gemini_client=lambda: self.gemini_client_if_configured,
+                anthropic_client=lambda: self.anthropic_client_if_configured,
                 file_api_enabled=self.config.file_api_enabled,
             )
             cache: AttachmentCache = BoundedLRU()
             bucket = (handler, cache)
-            self._attachment_buckets[model.is_gemini] = bucket
+            self._attachment_buckets[bucket_key] = bucket
         handler, cache = bucket
         builder = MessageInputBuilder(
             bot=self.bot,

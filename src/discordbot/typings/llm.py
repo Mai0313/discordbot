@@ -38,8 +38,9 @@ class LLMCredentials(BaseSettings):
     anthropic_api_key: str = Field(
         default="",
         description=(
-            "Reserved Anthropic API key for the scaffolded direct Anthropic Files API uploader "
-            "(not enabled at runtime)."
+            "Anthropic API key for direct Anthropic Files API uploads on Claude answer models. "
+            "Must belong to the same Anthropic workspace as the proxy's Claude deployments so "
+            "uploaded file IDs are readable at answer time."
         ),
         examples=["sk-ant-..."],
         validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
@@ -75,7 +76,7 @@ class LLMConfig(BaseModel):
     )
     anthropic_api_key: str = Field(
         default="",
-        description="Reserved Anthropic API key for the scaffolded direct Files API uploader.",
+        description="Anthropic API key for direct Anthropic Files API uploads on Claude answer models.",
         examples=["sk-ant-..."],
     )
     xai_api_key: str = Field(
@@ -134,3 +135,8 @@ class LLMConfig(BaseModel):
     def gemini_key_configured(self) -> bool:
         """Returns whether a non-blank direct Gemini API key is configured."""
         return bool(self.gemini_api_key.strip())
+
+    @property
+    def anthropic_key_configured(self) -> bool:
+        """Returns whether a non-blank direct Anthropic API key is configured."""
+        return bool(self.anthropic_api_key.strip())

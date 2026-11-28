@@ -39,6 +39,11 @@ class ModelSettings(BaseModel):
         return "gemini" in self.name
 
     @property
+    def is_claude(self) -> bool:
+        """Returns whether `name` identifies a Claude model (`"claude"` in `name`)."""
+        return "claude" in self.name
+
+    @property
     def tools(self) -> list[ToolParam]:
         """Returns the built-in search and URL-grounding tool payloads for this model's provider.
 
@@ -47,7 +52,7 @@ class ModelSettings(BaseModel):
         """
         if self.is_gemini:
             return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
-        if "claude" in self.name:
+        if self.is_claude:
             return cast(
                 "list[ToolParam]",
                 [

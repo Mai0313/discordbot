@@ -59,7 +59,7 @@ flowchart TD
     class UP,LF,YT,V2,DR direct
 ```
 
-藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google。附件上傳和頻道歷史跟路由同時開跑，等到寫回覆時才等它們。完成的回覆會附帶回饋按鈕（`👍`/`👎`），伺服器與私訊的 QA 回覆還會附帶 `🔄` 供原發問者就地重新生成（新回覆落地後才刪除舊回覆；在 `[global.models.slow].candidates` 設定多個候選模型時會在其間按權重抽樣，填寫 `display_name` 可遮蔽頁尾與提示詞中的模型名）。
+藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫供應商（Google 或 Anthropic）。附件上傳和頻道歷史跟路由同時開跑，等到寫回覆時才等它們。完成的回覆會附帶回饋按鈕（`👍`/`👎`），伺服器與私訊的 QA 回覆還會附帶 `🔄` 供原發問者就地重新生成（新回覆落地後才刪除舊回覆；在 `[global.models.slow].candidates` 設定多個候選模型時會在其間按權重抽樣，填寫 `display_name` 可遮蔽頁尾與提示詞中的模型名）。
 
 ## 功能
 
